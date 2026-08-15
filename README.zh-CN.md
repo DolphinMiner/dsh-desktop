@@ -31,8 +31,10 @@ Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React
 
 ## Connections
 
-Connections 页面通过官方 Harness client slot 注入。v0.4 支持用 API Key 或
-由发行方配置的 OAuth 应用连接多个 Linear 工作区。
+Connections 页面通过官方 Harness client slot 注入。当前基础能力支持通过已
+配置的 OAuth 应用连接多个 Linear 工作区，并保留高级 API Key 回退。产品方向
+是认证优先：常规连接应使用浏览器 OAuth、服务商安装流程、Device Flow 或
+MCP OAuth，而不是要求用户粘贴长期凭据。
 
 - API Key、OAuth Token、Refresh Token 和 PKCE 恢复状态通过 Electron
   `safeStorage` 加密，macOS 上由 Keychain 提供保护。
@@ -42,15 +44,17 @@ Connections 页面通过官方 Harness client slot 注入。v0.4 支持用 API K
   单次审批，结果不明确时不会自动重放。
 - UI 真实展示连接中、已连接、授权过期、错误和已断开状态。
 
-API Key 无需额外配置。要在本地启用 OAuth，请创建 Linear OAuth 应用并把
-回调地址设为 `dsh-desktop://oauth/linear/callback`，然后运行：
+API Key 无需额外配置，仅作为开发和自托管场景的回退。要在本地启用 OAuth，
+请创建 Linear OAuth 应用并把回调地址设为
+`dsh-desktop://oauth/linear/callback`，然后运行：
 
 ```bash
 DSH_DESKTOP_LINEAR_CLIENT_ID=your_client_id npm start
 ```
 
-仅在 OAuth 客户端要求时设置 `DSH_DESKTOP_LINEAR_CLIENT_SECRET`，不要提交
-这两个值。
+`DSH_DESKTOP_LINEAR_CLIENT_SECRET` 只允许作为本地或自托管开发的高级覆盖
+配置。不要把它内置或分发到桌面应用；生产环境中要求机密客户端的服务商必须
+通过独立部署、权限收敛的 OAuth broker 完成交换。
 
 ## 工作台体验
 
@@ -63,6 +67,22 @@ v0.4 继续使用官方 Harness 服务承载完整编码流程，同时增加桌
   路径穿越与符号链接逃逸；
 - 窗口位置和尺寸可跨冷启动恢复，Harness 意外退出时采用有上限的退避重启，
   未完成的原生操作会取消且不会重放。
+
+## Computer Observe
+
+v0.5 增加只读的 macOS 桌面观察能力，同时不向 Harness 网页渲染层开放通用
+桌面权限：
+
+- 用户必须先明确选择一个显示器、窗口或应用；
+- 原生 Swift Helper 展示屏幕录制和辅助功能权限状态，通过 ScreenCaptureKit
+  截图、Vision OCR，并读取有上限的辅助功能树；
+- Agent 通过 `computer_get_permissions`、`computer_list_apps` 和
+  `computer_observe` 获得版本化的结构化证据；
+- 安全输入框区域和值会在 OCR 和模型可见结果产生前被遮盖；
+- 临时截图使用私有目录和文件权限，具备数量上限，并在停止观察或退出时清理。
+
+Observe 不能点击、输入、按键或滚动。这些操作属于 v0.6 独立审批的 Computer
+Act 生命周期。
 
 ## 架构边界
 
@@ -139,7 +159,8 @@ Harness 仅监听 `127.0.0.1`。Electron 渲染进程启用沙箱并关闭 Node.
 - 尚未进行代码签名和 Apple 公证。
 - 暂无自动更新。
 - Linear OAuth 需要单独配置 OAuth 应用。
-- Computer Use 尚未实现。
+- 点击、输入、按键和滚动等 Computer Act 操作尚未实现。
+- 完整的辅助功能树观察需要用户向已签名应用授予 macOS 辅助功能权限。
 
 ## 桌面集成边界
 
@@ -149,9 +170,11 @@ Electron 环境才具备的原生能力，并通过版本化白名单协议调�
 这条子进程能力通道。当前桥接能力包括任务完成/失败通知、真实任务状态，以及
 限定工作区的 Finder 定位和文件打开。
 
-Computer Use 属于更大的独立能力，需要明确申请屏幕录制和辅助功能权限，
-并提供严格限制的截图、点击和键盘操作。仅把 Harness 放进 Electron 窗口，
-并不会自动获得这些能力。
+Computer Observe 已作为独立的原生 Helper 能力实现，包含明确目标选择、权限
+状态、安全值遮盖、有限截图保留和只读 Harness 工具。Computer Act 仍是另一
+套生命周期：每次点击、按键、输入或滚动都必须关联兼容观察结果、受限授权、
+取消与审计规则，并对敏感操作请求审批。仅把 Harness 放进 Electron 窗口，
+不会自动获得这些能力。
 
 ## 参与贡献
 

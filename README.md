@@ -33,8 +33,11 @@ session storage, tools, or Web UI.
 ## Connections
 
 The Connections page is contributed through the official Harness client-slot
-API. v0.4 supports multiple Linear workspaces through either an API key or an
-OAuth application configured by the distributor.
+API. The current foundation supports multiple Linear workspaces through a
+configured OAuth application or an advanced API-key fallback. The product
+direction is authentication-first: normal connection flows should use browser
+OAuth, provider installation, Device Flow, or MCP OAuth instead of asking users
+to paste long-lived credentials.
 
 - API keys, OAuth access tokens, refresh tokens, and PKCE recovery state are
   encrypted with Electron `safeStorage`, backed by macOS Keychain.
@@ -46,16 +49,19 @@ OAuth application configured by the distributor.
 - The UI reports connecting, connected, expired, error, and disconnected states
   from the desktop host rather than assuming a connection is healthy.
 
-API-key connections work without additional build configuration. To enable the
-OAuth button for local development, configure a Linear OAuth application whose
-callback is `dsh-desktop://oauth/linear/callback`, then start with:
+API-key connections work without additional build configuration and are kept
+for development and self-hosted deployments. To enable the OAuth button for
+local development, configure a Linear OAuth application whose callback is
+`dsh-desktop://oauth/linear/callback`, then start with:
 
 ```bash
 DSH_DESKTOP_LINEAR_CLIENT_ID=your_client_id npm start
 ```
 
-`DSH_DESKTOP_LINEAR_CLIENT_SECRET` is optional for clients configured to use
-PKCE without a secret. Never commit either value.
+`DSH_DESKTOP_LINEAR_CLIENT_SECRET` may be supplied only as an advanced local or
+self-hosted development override. Do not embed or distribute that secret with
+the desktop application. Production providers that require a confidential
+client must use a separately deployed, narrowly scoped OAuth broker.
 
 ## Workstation Experience
 
@@ -77,6 +83,25 @@ desktop affordances:
 Cross-platform reuse comes from Electron plus the official React Web UI, not
 React Native. The same host code can later target Windows and Linux; using
 React Native would require rewriting the Harness interface.
+
+## Computer Observe
+
+v0.5 adds a read-only macOS observation path without granting the Harness
+renderer unrestricted desktop access:
+
+- users explicitly select one display, window, or application before capture;
+- a native Swift helper reports Screen Recording and Accessibility permission
+  state, captures through ScreenCaptureKit, runs Vision OCR, and returns a
+  bounded accessibility tree;
+- the agent receives versioned structured evidence through
+  `computer_get_permissions`, `computer_list_apps`, and `computer_observe`;
+- secure-field regions and values are redacted before OCR or model-visible
+  output; and
+- temporary captures use a private directory and files, bounded retention, and
+  explicit cleanup when observation stops or the application exits.
+
+Observe cannot click, type, press keys, or scroll. Those actions belong to the
+separately approved Computer Act lifecycle planned for v0.6.
 
 ## Architecture
 
@@ -147,7 +172,10 @@ Signing and notarization are deliberately outside the first MVP.
 - Releases are not yet code signed or notarized.
 - Releases do not yet have an automatic updater.
 - Linear OAuth requires a separately configured Linear application.
-- Computer Use is not yet implemented.
+- Computer Act actions such as click, type, key, and scroll are not yet
+  implemented.
+- Rich accessibility-tree observations require the user to grant macOS
+  Accessibility permission to the signed application.
 
 ## Local Data
 
@@ -213,10 +241,13 @@ payloads, responses, request IDs, timeouts, cancellation, and disconnects. The
 plugin does not own prompts, sessions, model calls, tools, or persistence;
 those remain in Harness as the single source of truth.
 
-Computer Use would be a separate, larger integration. It would need explicit
-screen-capture and accessibility permissions plus tightly scoped screenshot,
-click, and keyboard operations with user approval. Merely displaying Harness
-inside Electron does not grant those capabilities.
+Computer Observe is implemented as a separate native-helper capability with
+explicit target selection, permission reporting, secure-value redaction,
+bounded capture retention, and read-only Harness tools. Computer Act remains a
+separate lifecycle: every click, key, type, or scroll operation will require a
+compatible observation, scoped authorization, cancellation and audit rules,
+and approval for sensitive effects. Merely displaying Harness inside Electron
+does not grant either capability.
 
 ## Contributing
 

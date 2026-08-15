@@ -34,6 +34,13 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic window-state restoration and bounded automatic Harness recovery.
 - Product-level contracts for official session persistence, workspace routing,
   tool execution, diff presentation, reconnect, and cold-start behavior.
+- A versioned read-only Computer Observe lifecycle with explicit display,
+  window, or application targeting and deterministic stop/revoke behavior.
+- A signed-ready Swift helper using ScreenCaptureKit, Vision OCR, and a bounded
+  macOS accessibility tree without exposing generic native APIs to the renderer.
+- Read-only `computer_get_permissions`, `computer_list_apps`, and
+  `computer_observe` agent tools plus Computer settings for permission state,
+  target selection, observation status, refresh, and stop.
 
 ### Security
 
@@ -48,3 +55,9 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directories, and executable targets.
 - Pending native work is cancelled on Harness disconnect and never replayed by
   automatic recovery.
+- Computer captures use private directories and files, bounded retention, and
+  explicit cleanup; secure-field regions and values are redacted before OCR or
+  model-visible output.
+- The native computer helper has bounded input/output, execution time, and
+  accessibility-tree depth, with crash, cancellation, stale-target, and
+  permission-denial handling.
