@@ -43,7 +43,7 @@
     "@types/node": "24.10.9",
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   },
   "build": {
     "appId": "com.dolphinminer.dsh-desktop",
