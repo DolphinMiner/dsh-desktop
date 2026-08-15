@@ -12,6 +12,10 @@ DSH Desktop 是一个独立的社区项目，用 Electron 在 macOS 桌面端托
 > 当前版本是面向 Apple Silicon 的早期 MVP，尚未签名和公证。本项目与
 > DeepSeek 没有关联，也未获得 DeepSeek 官方背书。
 
+## 功能展示
+
+![DSH Desktop 运行官方 DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
+
 MVP 刻意保持很薄：
 
 1. Electron 启动项目锁定版本并随应用打包的 `@deepseek-ai/dsh` 进程。

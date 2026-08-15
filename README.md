@@ -12,6 +12,10 @@ An independent, community-built macOS desktop host for the official
 > This is an early Apple Silicon MVP. Builds are currently unsigned and not
 > notarized. DSH Desktop is not affiliated with or endorsed by DeepSeek.
 
+## Preview
+
+![DSH Desktop running the official DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
+
 This first MVP intentionally keeps the architecture narrow:
 
 1. Electron starts a pinned, bundled `@deepseek-ai/dsh` process.
