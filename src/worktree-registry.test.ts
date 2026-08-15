@@ -145,6 +145,38 @@ test('persists a recovery inspection batch atomically in one revision', async t 
   assert.equal(registry.get(first.id)?.recoveryReason, 'missing')
 })
 
+test('marks ready unbound managed checkouts orphaned in one durable revision', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-orphan-batch-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.v1.json')
+  const registry = new WorktreeRegistry(path)
+  const first = registry.reserve(reservation())
+  registry.markReady(first.id, 'create-1')
+  const second = registry.reserve(reservation({
+    operationId: 'create-2',
+    requestedBySessionId: 'session-2',
+    worktreePath: '/worktrees/session-2',
+    branch: 'refs/heads/dsh/session-2',
+  }))
+  registry.markReady(second.id, 'create-2')
+  registry.bindSession(second.id, 'session-bound')
+  const revision = registry.status().revision
+
+  const [orphaned] = registry.markOrphanedBatch([first.id])
+  assert.equal(orphaned?.lifecycle, 'orphaned')
+  assert.equal(orphaned?.sessionId, undefined)
+  assert.equal(registry.status().revision, revision + 1)
+  assert.equal(registry.markOrphanedBatch([first.id])[0]?.lifecycle, 'orphaned')
+  assert.equal(registry.status().revision, revision + 1)
+  assert.throws(() => registry.markOrphanedBatch([second.id]),
+    (error: WorktreeRegistryError) => error.code === 'CONFLICT')
+  assert.equal(registry.status().revision, revision + 1)
+
+  const restored = new WorktreeRegistry(path)
+  assert.equal(restored.get(first.id)?.lifecycle, 'orphaned')
+  assert.equal(restored.get(second.id)?.lifecycle, 'ready')
+})
+
 test('recovers interrupted create and remove operations without replaying them', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-recovery-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

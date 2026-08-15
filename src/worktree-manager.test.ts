@@ -144,6 +144,8 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   assert.equal(healthy.inspected, 1)
   assert.equal(healthy.healthy, 1)
   assert.equal(healthy.recoveryRequired, 0)
+  assert.equal(healthy.orphaned, 0)
+  assert.equal(healthy.snapshot.worktrees[0]?.lifecycle, 'ready')
 
   await writeFile(join(first.worktreePath!, 'README.md'), 'session one\n')
   const duplicate = await manager.provision(firstInput, new AbortController().signal)
@@ -165,6 +167,44 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   const firstAfterDrift = drifted.snapshot.worktrees.find(worktree => worktree.id === first.id)
   assert.equal(firstAfterDrift?.lifecycle, 'recovery-required')
   assert.equal(firstAfterDrift?.recoveryReason, 'locked')
+})
+
+test('discovers a previously ready checkout with no bound Harness session as orphaned', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-orphan-reconcile-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.v1.json')
+  const registry = new WorktreeRegistry(path)
+  const record = readyWorktree(registry, 'orphan')
+  const manager = new WorktreeManager(
+    cleanupOperations(record),
+    registry,
+    '/managed',
+    () => undefined,
+  )
+  const revision = registry.status().revision
+
+  const liveRecheck = await manager.reconcile(new AbortController().signal)
+  assert.equal(liveRecheck.orphaned, 0)
+  assert.equal(liveRecheck.snapshot.worktrees[0]?.lifecycle, 'ready')
+  assert.equal(registry.status().revision, revision)
+
+  const result = await manager.reconcile(
+    new AbortController().signal,
+    { orphanUnboundReady: true },
+  )
+  assert.equal(result.healthy, 1)
+  assert.equal(result.recoveryRequired, 0)
+  assert.equal(result.orphaned, 1)
+  assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'orphaned')
+  assert.equal(registry.status().revision, revision + 1)
+
+  const duplicate = await manager.reconcile(
+    new AbortController().signal,
+    { orphanUnboundReady: true },
+  )
+  assert.equal(duplicate.orphaned, 1)
+  assert.equal(registry.status().revision, revision + 1)
+  assert.equal(new WorktreeRegistry(path).get(record.id)?.lifecycle, 'orphaned')
 })
 
 test('does not dispatch a concurrent duplicate while creation is in flight', async t => {

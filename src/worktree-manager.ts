@@ -83,7 +83,12 @@ export interface WorktreeReconciliationResult {
   inspected: number
   healthy: number
   recoveryRequired: number
+  orphaned: number
   snapshot: WorktreeSnapshot
+}
+
+export interface WorktreeReconciliationOptions {
+  orphanUnboundReady?: boolean
 }
 
 export interface WorktreeCleanupState {
@@ -422,7 +427,10 @@ export class WorktreeManager {
     return withMappedErrorSync(() => this.registry.markRemoved(id, operationId), true)
   }
 
-  async reconcile(signal: AbortSignal): Promise<WorktreeReconciliationResult> {
+  async reconcile(
+    signal: AbortSignal,
+    options: WorktreeReconciliationOptions = {},
+  ): Promise<WorktreeReconciliationResult> {
     const records = withMappedErrorSync(() => this.registry.list())
       .filter(record => record.lifecycle !== 'removed')
     const groups = new Map<string, WorktreeRecord[]>()
@@ -433,6 +441,7 @@ export class WorktreeManager {
     }
     const recovery = new Map<string, WorktreeRecoveryReason>()
     const completedRemovals = new Map<string, string>()
+    const orphaned = new Set<string>()
     let healthy = 0
 
     for (const [commonDir, group] of groups) {
@@ -523,6 +532,10 @@ export class WorktreeManager {
           }
         }
         healthy += 1
+        if (options.orphanUnboundReady === true && record.executionMode === 'worktree' &&
+          record.lifecycle === 'ready' && record.sessionId === undefined) {
+          orphaned.add(record.id)
+        }
       }
     }
 
@@ -535,12 +548,16 @@ export class WorktreeManager {
         [...recovery].map(([id, reason]) => ({ id, reason })),
       ), true)
     }
+    if (orphaned.size > 0) {
+      withMappedErrorSync(() => this.registry.markOrphanedBatch([...orphaned]), true)
+    }
     const snapshot = this.snapshot()
     return {
       repositories: groups.size,
       inspected: records.length,
       healthy,
       recoveryRequired: snapshot.worktrees.filter(worktree => worktree.lifecycle === 'recovery-required').length,
+      orphaned: snapshot.worktrees.filter(worktree => worktree.lifecycle === 'orphaned').length,
       snapshot,
     }
   }

@@ -563,6 +563,48 @@ export class WorktreeRegistry {
     return results.map(cloneRecord)
   }
 
+  markOrphanedBatch(ids: readonly string[]): WorktreeRecord[] {
+    this.assertAvailable()
+    if (new Set(ids).size !== ids.length || ids.some(id => !isBoundedString(id))) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The orphaned worktree identifiers are invalid.')
+    }
+    const updates = new Map<string, WorktreeRecord>()
+    const results: WorktreeRecord[] = []
+    const now = this.now()
+    for (const id of ids) {
+      const current = this.state.records.find(record => record.id === id)
+      if (current === undefined) {
+        throw new WorktreeRegistryError('NOT_FOUND', 'An orphaned worktree record was not found.')
+      }
+      if (current.lifecycle === 'orphaned' && current.sessionId === undefined) {
+        results.push(cloneRecord(current))
+        continue
+      }
+      if (current.executionMode !== 'worktree' || current.lifecycle !== 'ready' ||
+        current.sessionId !== undefined || current.pendingOperation !== undefined) {
+        throw new WorktreeRegistryError(
+          'CONFLICT',
+          'Only a ready managed checkout without a bound Harness session can become orphaned.',
+        )
+      }
+      const result = cloneRecord(current)
+      result.lifecycle = 'orphaned'
+      result.updatedAt = monotonicUpdatedAt(now, result)
+      updates.set(result.id, result)
+      results.push(result)
+    }
+    if (updates.size > 0) {
+      this.commit(next => {
+        for (const [id, record] of updates) {
+          const index = next.records.findIndex(item => item.id === id)
+          if (index < 0) throw new WorktreeRegistryError('NOT_FOUND', 'An orphaned worktree record was not found.')
+          next.records[index] = record
+        }
+      })
+    }
+    return results.map(cloneRecord)
+  }
+
   resolveRecovery(id: string, resolution: 'ready' | 'orphaned'): WorktreeRecord {
     return this.transition(id, record => {
       if (record.lifecycle !== 'recovery-required') {

@@ -923,7 +923,7 @@ app.whenReady().then(async () => {
     packageRoot: app.getAppPath(),
     productVersion: app.getVersion(),
   })
-  await worktreeManager.reconcile(new AbortController().signal)
+  await worktreeManager.reconcile(new AbortController().signal, { orphanUnboundReady: true })
   publishWorktreeChange()
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,
