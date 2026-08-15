@@ -48,6 +48,10 @@ test('validates the supported worktree recovery actions and explicit confirmatio
     worktreeId,
     action: 'forget-missing',
   }), { worktreeId, action: 'forget-missing' })
+  assert.deepEqual(parseDesktopWorktreeRecoveryPreviewInput({
+    worktreeId,
+    action: 'restore-moved',
+  }), { worktreeId, action: 'restore-moved' })
   assert.equal(parseDesktopWorktreeRecoveryPreviewInput({
     worktreeId,
     action: 'retry-removal',
@@ -134,5 +138,59 @@ test('binds forgetting a missing checkout to exact absent metadata and path evid
   assert.equal(parseWorktreeRecoveryResult({
     ...result,
     worktree: { ...forgottenWorktree, lifecycle: 'orphaned' },
+  }), undefined)
+})
+
+test('binds restoring a moved checkout to both exact paths and preserved Git state', () => {
+  const movedWorktree = {
+    ...worktree,
+    recoveryReason: 'moved' as const,
+  }
+  const movedInspection = {
+    repositoryRoot: movedWorktree.repositoryRoot,
+    registeredPath: movedWorktree.worktreePath,
+    current: {
+      ...inspection,
+      worktreePath: '/managed/moved',
+    },
+    registeredPathAbsent: true as const,
+  }
+  const preview = {
+    previewId,
+    expiresAt: '2026-08-16T12:05:00.000Z',
+    action: 'restore-moved' as const,
+    worktree: movedWorktree,
+    inspection: movedInspection,
+  }
+  assert.deepEqual(parseWorktreeRecoveryPreview(preview), preview)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: { ...movedInspection, registeredPath: '/managed/other' },
+  }), undefined)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: {
+      ...movedInspection,
+      current: { ...movedInspection.current, branch: 'refs/heads/other' },
+    },
+  }), undefined)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: {
+      ...movedInspection,
+      current: { ...movedInspection.current, worktreePath: movedInspection.registeredPath },
+    },
+  }), undefined)
+
+  const { recoveryReason: _recoveryReason, ...recoveredWorktree } = movedWorktree
+  const result = {
+    resolutionId: previewId,
+    action: 'restore-moved' as const,
+    worktree: { ...recoveredWorktree, lifecycle: 'orphaned' as const },
+  }
+  assert.deepEqual(parseWorktreeRecoveryResult(result), result)
+  assert.equal(parseWorktreeRecoveryResult({
+    ...result,
+    worktree: { ...recoveredWorktree, lifecycle: 'recovery-required' },
   }), undefined)
 })

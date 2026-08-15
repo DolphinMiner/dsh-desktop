@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -109,6 +109,8 @@ function cleanupOperations(
     transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
+    moveWorktree: async () => { throw new Error('must not move a worktree') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not inspect a worktree move outcome') },
     ...overrides,
   }
 }
@@ -312,6 +314,8 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
     transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
+    moveWorktree: async () => { throw new Error('must not move a worktree') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not inspect a worktree move outcome') },
   }
   const registry = new WorktreeRegistry(join(root, 'registry.json'))
   const manager = new WorktreeManager(gitOperations, registry, join(root, 'worktrees'), () => undefined)
@@ -357,6 +361,8 @@ test('persists an ambiguous create failure and never replays it', async t => {
     transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
+    moveWorktree: async () => { throw new Error('must not move a worktree') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not inspect a worktree move outcome') },
   }
   const manager = new WorktreeManager(
     operations,
@@ -395,6 +401,8 @@ test('fails before Git when the workspace is not authorized', async t => {
     transferWorktreeHandoff: async () => { throw new Error('must not run') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not run') },
     removeWorktree: async () => { throw new Error('must not run') },
+    moveWorktree: async () => { throw new Error('must not run') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not run') },
   }, new WorktreeRegistry(join(root, 'registry.json')), join(root, 'worktrees'), () => {
     throw new WorktreeManagerError('BAD_MESSAGE', 'Workspace is not active.')
   })
@@ -443,10 +451,91 @@ test('reconciles a registered branch moved to another checkout without mutating 
     transferWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
+    moveWorktree: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not inspect a worktree move outcome') },
   }, registry, '/managed', () => undefined)
 
   const result = await manager.reconcile(new AbortController().signal)
   assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'moved')
+})
+
+test('restores a real moved managed checkout only from freshly inspected Git evidence', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-restore-moved-real-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const repositoryRoot = await repositoryFixture(root)
+  const registry = new WorktreeRegistry(join(root, 'data', 'worktrees.v1.json'))
+  const gitService = new GitService()
+  const manager = new WorktreeManager(
+    gitService,
+    registry,
+    join(root, 'managed-worktrees'),
+    () => undefined,
+  )
+  const created = (await manager.provision(input({
+    operationId: 'provision-restore-moved-real',
+    requestedBySessionId: 'session-restore-moved-real',
+    workspaceRoot: repositoryRoot,
+  }), new AbortController().signal)).record
+  const registeredPath = created.worktreePath!
+  const movedPath = join(await realpath(root), 'externally-moved-worktree')
+  const entry = (await gitService.listWorktrees(repositoryRoot))
+    .find(candidate => candidate.path === registeredPath)!
+  assert.ok(entry.lockReason)
+  await writeFile(join(registeredPath, 'README.md'), 'preserved tracked change\n')
+  await writeFile(join(registeredPath, 'notes.txt'), 'preserved untracked change\n')
+  await git(repositoryRoot, 'worktree', 'unlock', registeredPath)
+  await git(repositoryRoot, 'worktree', 'move', registeredPath, movedPath)
+  await git(repositoryRoot, 'worktree', 'lock', '--reason', entry.lockReason, movedPath)
+
+  const reconciled = await manager.reconcile(new AbortController().signal)
+  assert.equal(reconciled.snapshot.worktrees[0]?.recoveryReason, 'moved')
+  const stale = await manager.inspectMovedWorktree(created.id, new AbortController().signal)
+  assert.equal(stale.inspection.registeredPath, registeredPath)
+  assert.equal(stale.inspection.current.worktreePath, movedPath)
+  assert.deepEqual(stale.inspection.current.changes.map(change => change.path), ['README.md', 'notes.txt'])
+
+  await writeFile(join(movedPath, 'later.txt'), 'changed after preview\n')
+  let dispatches = 0
+  await assert.rejects(manager.restoreMovedWorktree(
+    created.id,
+    stale.inspection,
+    new AbortController().signal,
+    () => { dispatches += 1 },
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && !error.ambiguous)
+  assert.equal(dispatches, 0)
+  await access(movedPath)
+  await assert.rejects(access(registeredPath), (error: NodeJS.ErrnoException) => error.code === 'ENOENT')
+
+  const reviewed = await manager.inspectMovedWorktree(created.id, new AbortController().signal)
+  const restored = await manager.restoreMovedWorktree(
+    created.id,
+    reviewed.inspection,
+    new AbortController().signal,
+    record => {
+      assert.equal(record.lifecycle, 'recovery-required')
+      assert.equal(record.recoveryReason, 'moved')
+      dispatches += 1
+    },
+  )
+  assert.equal(dispatches, 1)
+  assert.equal(restored.lifecycle, 'orphaned')
+  assert.equal(restored.recoveryReason, undefined)
+  await access(registeredPath)
+  await assert.rejects(access(movedPath), (error: NodeJS.ErrnoException) => error.code === 'ENOENT')
+  assert.equal(await readFile(join(registeredPath, 'README.md'), 'utf8'), 'preserved tracked change\n')
+  assert.equal(await readFile(join(registeredPath, 'notes.txt'), 'utf8'), 'preserved untracked change\n')
+  assert.equal(await readFile(join(registeredPath, 'later.txt'), 'utf8'), 'changed after preview\n')
+  assert.equal(await manager.inspectMovedWorktreeOutcome(
+    created.id,
+    reviewed.inspection,
+    new AbortController().signal,
+  ), 'completed')
+  const restoredEntry = (await gitService.listWorktrees(repositoryRoot))
+    .find(candidate => candidate.branch === created.branch)
+  assert.equal(restoredEntry?.path, registeredPath)
+  assert.equal(restoredEntry?.locked, true)
+  assert.equal(restoredEntry?.lockReason, entry.lockReason)
+  assert.equal(await git(repositoryRoot, 'rev-parse', created.branch!), created.baseCommit)
 })
 
 test('records an inspection failure without claiming that a checkout is missing', async t => {
@@ -474,6 +563,8 @@ test('records an inspection failure without claiming that a checkout is missing'
     transferWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
+    moveWorktree: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeMoveOutcome: async () => { throw new Error('must not inspect a worktree move outcome') },
   }, registry, '/managed', () => undefined)
 
   const result = await manager.reconcile(new AbortController().signal)

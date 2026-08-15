@@ -571,6 +571,83 @@ test('refuses cleanup when ignored content would otherwise be discarded', async 
   assert.equal(await readFile(join(target, 'private.local'), 'utf8'), 'must survive\n')
 })
 
+test('restores an exact moved worktree while preserving dirty and ignored files', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-worktree-move-test-'))
+  const canonicalParent = await realpath(parent)
+  const registeredPath = join(canonicalParent, 'registered worktree')
+  const movedPath = join(canonicalParent, 'moved worktree')
+  const lockReason = 'DSH moved recovery test'
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  await writeFile(join(root, '.gitignore'), '*.local\n')
+  await git(root, 'add', '.gitignore')
+  await git(root, 'commit', '-m', 'ignore local state')
+  await git(root, 'worktree', 'add', '--lock', '--reason', lockReason, '-b', 'moved-topic', registeredPath, 'HEAD')
+  await writeFile(join(registeredPath, 'README.md'), 'dirty tracked file\n')
+  await writeFile(join(registeredPath, 'notes.txt'), 'untracked file\n')
+  await writeFile(join(registeredPath, 'private.local'), 'ignored file\n')
+  await git(root, 'worktree', 'unlock', registeredPath)
+  await git(root, 'worktree', 'move', registeredPath, movedPath)
+  await git(root, 'worktree', 'lock', '--reason', lockReason, movedPath)
+
+  const service = new GitService()
+  const repositoryRoot = await realpath(root)
+  const repository = await service.discoverRepository(repositoryRoot)
+  const canonicalMovedPath = await realpath(movedPath)
+  const inspection = await service.inspectWorktreeForRemoval({
+    repositoryRoot,
+    worktreePath: canonicalMovedPath,
+    branch: 'refs/heads/moved-topic',
+    lockReason,
+  })
+  const request = {
+    repository,
+    source: inspection,
+    destinationPath: registeredPath,
+    lockReason,
+  }
+  assert.equal(await service.inspectWorktreeMoveOutcome(request), 'not-applied')
+  assert.deepEqual(inspection.changes.map(change => [change.kind, change.path]), [
+    ['ordinary', 'README.md'],
+    ['untracked', 'notes.txt'],
+    ['ignored', 'private.local'],
+  ])
+
+  let dispatches = 0
+  const replacedRepository = {
+    ...request,
+    repository: { ...request.repository, commonDir: join(canonicalParent, 'other.git') },
+  }
+  assert.equal(await service.inspectWorktreeMoveOutcome(replacedRepository), 'ambiguous')
+  await assert.rejects(service.moveWorktree(replacedRepository, undefined, () => { dispatches += 1 }),
+    (error: GitServiceError) => error.code === 'GIT_FAILED' && /repository identity changed/.test(error.message))
+  assert.equal(dispatches, 0)
+
+  await mkdir(registeredPath)
+  await assert.rejects(service.moveWorktree(request, undefined, () => { dispatches += 1 }),
+    (error: GitServiceError) => error.code === 'GIT_FAILED' && /no longer absent/.test(error.message))
+  assert.equal(dispatches, 0)
+  await rm(registeredPath, { recursive: true })
+
+  await service.moveWorktree(request, undefined, () => { dispatches += 1 })
+  assert.equal(dispatches, 1)
+  await access(registeredPath)
+  await assert.rejects(access(movedPath), (error: NodeJS.ErrnoException) => error.code === 'ENOENT')
+  assert.equal(await readFile(join(registeredPath, 'README.md'), 'utf8'), 'dirty tracked file\n')
+  assert.equal(await readFile(join(registeredPath, 'notes.txt'), 'utf8'), 'untracked file\n')
+  assert.equal(await readFile(join(registeredPath, 'private.local'), 'utf8'), 'ignored file\n')
+  const restored = (await service.listWorktrees(repositoryRoot))
+    .find(entry => entry.branch === 'refs/heads/moved-topic')
+  assert.equal(restored?.path, await realpath(registeredPath))
+  assert.equal(restored?.locked, true)
+  assert.equal(restored?.lockReason, lockReason)
+  assert.equal(await service.inspectWorktreeMoveOutcome(request), 'completed')
+
+  await writeFile(join(registeredPath, 'changed-after-recovery.txt'), 'new status evidence\n')
+  assert.equal(await service.inspectWorktreeMoveOutcome(request), 'ambiguous')
+})
+
 test('preflights local changes into an exact clean managed worktree', async t => {
   const root = await repositoryFixture()
   const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-local-test-'))

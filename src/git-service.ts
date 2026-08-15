@@ -74,6 +74,15 @@ export interface GitRemoveWorktreeInput {
 
 export type GitInspectWorktreeInput = Omit<GitRemoveWorktreeInput, 'head'>
 
+export interface GitMoveWorktreeInput {
+  repository: GitRepositoryIdentity
+  source: WorktreeCleanupInspection
+  destinationPath: string
+  lockReason: string
+}
+
+export type GitWorktreeMoveOutcome = 'completed' | 'not-applied' | 'ambiguous'
+
 export interface GitInspectWorktreeHandoffInput extends GitInspectWorktreeInput {
   baseCommit: string
   direction: WorktreeHandoffDirection
@@ -142,6 +151,35 @@ interface GitRunOptions {
 
 function isRecordWithCode(value: unknown): value is { code: string } {
   return typeof value === 'object' && value !== null && 'code' in value && typeof value.code === 'string'
+}
+
+async function pathState(path: string): Promise<'absent' | 'present' | 'unknown'> {
+  try {
+    await lstat(path)
+    return 'present'
+  } catch (error) {
+    return isRecordWithCode(error) && error.code === 'ENOENT' ? 'absent' : 'unknown'
+  }
+}
+
+function sameStatusEntry(left: GitStatusEntry, right: GitStatusEntry): boolean {
+  return left.kind === right.kind && left.path === right.path && left.originalPath === right.originalPath &&
+    left.indexStatus === right.indexStatus && left.worktreeStatus === right.worktreeStatus
+}
+
+function sameWorktreeState(
+  actual: WorktreeCleanupInspection,
+  expected: WorktreeCleanupInspection,
+  path: string,
+): boolean {
+  return actual.worktreePath === path && actual.head === expected.head && actual.branch === expected.branch &&
+    actual.clean === expected.clean && actual.locked === expected.locked &&
+    actual.changes.length === expected.changes.length &&
+    actual.changes.every((entry, index) => sameStatusEntry(entry, expected.changes[index]!))
+}
+
+function sameRepositoryIdentity(left: GitRepositoryIdentity, right: GitRepositoryIdentity): boolean {
+  return left.root === right.root && left.gitDir === right.gitDir && left.commonDir === right.commonDir
 }
 
 function gitEnvironment(indexFile?: string): NodeJS.ProcessEnv {
@@ -1728,6 +1766,167 @@ export class GitService {
       if (!isRecordWithCode(error) || error.code !== 'ENOENT') {
         throw new GitServiceError('BAD_OUTPUT', 'The cleaned worktree path could not be verified safely.')
       }
+    }
+  }
+
+  async moveWorktree(
+    input: GitMoveWorktreeInput,
+    signal?: AbortSignal,
+    beforeDispatch?: () => void,
+  ): Promise<void> {
+    const deadline = Date.now() + this.timeoutMs
+    if (!input.source.locked || input.source.worktreePath === input.destinationPath) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree move request is invalid.')
+    }
+    const inspected = await this.inspectWorktreeForRemovalBefore({
+      repositoryRoot: input.repository.root,
+      worktreePath: input.source.worktreePath,
+      branch: input.source.branch,
+      lockReason: input.lockReason,
+    }, signal, deadline)
+    if (!sameRepositoryIdentity(inspected.repository, input.repository)) {
+      throw new GitServiceError('GIT_FAILED', 'The repository identity changed before the worktree move.')
+    }
+    if (!sameWorktreeState(inspected.inspection, input.source, input.source.worktreePath)) {
+      throw new GitServiceError('GIT_FAILED', 'The moved worktree changed before it could be restored.')
+    }
+    const destination = await this.absentWorktreePathBefore(
+      inspected.repository,
+      input.destinationPath,
+    )
+    beforeDispatch?.()
+
+    let unlockAttempted = false
+    try {
+      unlockAttempted = true
+      await this.run([
+        '--no-optional-locks', '-C', inspected.repository.root,
+        'worktree', 'unlock', inspected.target,
+      ], signal, deadline)
+      await this.run([
+        '--no-optional-locks', '-C', inspected.repository.root,
+        'worktree', 'move', '--', inspected.target, destination,
+      ], signal, deadline)
+      await this.run([
+        '--no-optional-locks', '-C', inspected.repository.root,
+        'worktree', 'lock', '--reason', inspected.lockReason, destination,
+      ], signal, deadline)
+    } catch (error) {
+      if (unlockAttempted) {
+        await this.bestEffortRelockMovedWorktree(input, inspected.repository.root, inspected.target, destination)
+      }
+      throw error
+    }
+
+    const outcome = await this.inspectWorktreeMoveOutcomeBefore(input, signal, deadline)
+    if (outcome !== 'completed') {
+      throw new GitServiceError('BAD_OUTPUT', 'Git did not produce the exact approved worktree move result.')
+    }
+  }
+
+  async inspectWorktreeMoveOutcome(
+    input: GitMoveWorktreeInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeMoveOutcome> {
+    const deadline = Date.now() + this.timeoutMs
+    return this.inspectWorktreeMoveOutcomeBefore(input, signal, deadline)
+  }
+
+  private async inspectWorktreeMoveOutcomeBefore(
+    input: GitMoveWorktreeInput,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitWorktreeMoveOutcome> {
+    if (!input.source.locked || input.source.worktreePath === input.destinationPath) return 'ambiguous'
+    let repository: GitRepositoryIdentity
+    try {
+      const requestedRoot = await this.canonicalDirectory(boundedInput(input.repository.root, 'Repository root'))
+      repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+      if (repository.root !== requestedRoot || !sameRepositoryIdentity(repository, input.repository)) return 'ambiguous'
+    } catch (error) {
+      if (error instanceof GitServiceError && error.code === 'CANCELLED') throw error
+      return 'ambiguous'
+    }
+    const sourcePath = input.source.worktreePath
+    const destinationPath = input.destinationPath
+    if (!isAbsolute(sourcePath) || normalize(sourcePath) !== sourcePath ||
+      !isAbsolute(destinationPath) || normalize(destinationPath) !== destinationPath ||
+      sourcePath === repository.root || destinationPath === repository.root) return 'ambiguous'
+    const entries = await this.listWorktreesBefore(repository.root, signal, deadline).catch(error => {
+      if (error instanceof GitServiceError && error.code === 'CANCELLED') throw error
+      return undefined
+    })
+    if (entries === undefined) return 'ambiguous'
+    const branchEntries = entries.filter(entry => entry.branch === input.source.branch)
+    if (branchEntries.length !== 1) return 'ambiguous'
+    const entry = branchEntries[0]!
+    const expectedAt = entry.path === sourcePath
+      ? { path: sourcePath, other: destinationPath, outcome: 'not-applied' as const }
+      : entry.path === destinationPath
+        ? { path: destinationPath, other: sourcePath, outcome: 'completed' as const }
+        : undefined
+    if (expectedAt === undefined || entry.bare || entry.detached || entry.prunable || !entry.locked ||
+      entry.lockReason !== input.lockReason || entry.head !== input.source.head) return 'ambiguous'
+    if (await pathState(expectedAt.other) !== 'absent') return 'ambiguous'
+    try {
+      const inspected = await this.inspectWorktreeForRemovalBefore({
+        repositoryRoot: repository.root,
+        worktreePath: expectedAt.path,
+        branch: input.source.branch,
+        lockReason: input.lockReason,
+      }, signal, deadline)
+      return sameWorktreeState(inspected.inspection, input.source, expectedAt.path)
+        ? expectedAt.outcome
+        : 'ambiguous'
+    } catch (error) {
+      if (error instanceof GitServiceError && error.code === 'CANCELLED') throw error
+      return 'ambiguous'
+    }
+  }
+
+  private async absentWorktreePathBefore(
+    repository: GitRepositoryIdentity,
+    value: string,
+  ): Promise<string> {
+    const target = boundedInput(value, 'Worktree destination')
+    if (!isAbsolute(target) || normalize(target) !== target || target === repository.root) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree destination is invalid.')
+    }
+    const parent = await this.canonicalDirectory(dirname(target))
+    if (join(parent, basename(target)) !== target) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree destination parent changed during validation.')
+    }
+    const state = await pathState(target)
+    if (state === 'unknown') {
+      throw new GitServiceError('UNAVAILABLE', 'The registered worktree path could not be inspected safely.')
+    }
+    if (state !== 'absent') {
+      throw new GitServiceError('GIT_FAILED', 'The registered worktree path is no longer absent.')
+    }
+    return target
+  }
+
+  private async bestEffortRelockMovedWorktree(
+    input: GitMoveWorktreeInput,
+    repositoryRoot: string,
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<void> {
+    try {
+      const cleanupDeadline = Date.now() + this.timeoutMs
+      const repository = await this.discoverRepositoryBefore(repositoryRoot, undefined, cleanupDeadline)
+      if (!sameRepositoryIdentity(repository, input.repository)) return
+      const entry = (await this.listWorktreesBefore(repositoryRoot, undefined, cleanupDeadline))
+        .find(candidate => candidate.branch === input.source.branch && candidate.head === input.source.head &&
+          (candidate.path === sourcePath || candidate.path === destinationPath))
+      if (entry !== undefined && !entry.locked) {
+        await this.run([
+          '--no-optional-locks', '-C', repositoryRoot,
+          'worktree', 'lock', '--reason', input.lockReason, entry.path,
+        ], undefined, cleanupDeadline)
+      }
+    } catch {
+      // The durable caller reconciles both exact paths after every post-dispatch failure.
     }
   }
 

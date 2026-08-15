@@ -6,6 +6,7 @@ import type {
   DesktopProtocolError,
   GitRepositoryIdentity,
   MissingWorktreeRecoveryInspection,
+  MovedWorktreeRecoveryInspection,
   WorktreeCleanupInspection,
   WorktreeHandoffDirection,
   WorktreeHandoffPreflight,
@@ -17,12 +18,14 @@ import {
   GitCreateWorktreeInput,
   GitInspectWorktreeInput,
   GitInspectWorktreeHandoffInput,
+  GitMoveWorktreeInput,
   GitRemoveWorktreeInput,
   GitServiceError,
   GitTransferWorktreeHandoffInput,
   GitWorktreeHandoffOutcome,
   GitWorktreeHandoffInspection,
   GitWorktreeHandoffTransferResult,
+  GitWorktreeMoveOutcome,
   GitWorktreeEntry,
 } from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
@@ -60,6 +63,15 @@ export interface WorktreeGitOperations {
     signal?: AbortSignal,
   ): Promise<GitWorktreeHandoffOutcome>
   removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void>
+  moveWorktree(
+    input: GitMoveWorktreeInput,
+    signal?: AbortSignal,
+    beforeDispatch?: () => void,
+  ): Promise<void>
+  inspectWorktreeMoveOutcome(
+    input: GitMoveWorktreeInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeMoveOutcome>
 }
 
 export interface ProvisionWorktreeInput {
@@ -105,6 +117,11 @@ export interface InterruptedRemovalRecoveryState extends WorktreeCleanupState {
 export interface MissingWorktreeRecoveryState {
   record: WorktreeRecord
   inspection: MissingWorktreeRecoveryInspection
+}
+
+export interface MovedWorktreeRecoveryState {
+  record: WorktreeRecord
+  inspection: MovedWorktreeRecoveryInspection
 }
 
 export interface ManagedWorktreeHandoffExpectation {
@@ -240,6 +257,15 @@ function sameMissingWorktreeInspection(
     left.checkoutPathAbsent === right.checkoutPathAbsent
 }
 
+function sameMovedWorktreeInspection(
+  left: MovedWorktreeRecoveryInspection,
+  right: MovedWorktreeRecoveryInspection,
+): boolean {
+  return left.repositoryRoot === right.repositoryRoot && left.registeredPath === right.registeredPath &&
+    left.registeredPathAbsent === right.registeredPathAbsent &&
+    sameCleanupInspection(left.current, right.current)
+}
+
 function assertCleanupRecord(record: WorktreeRecord, action = 'cleanup'): asserts record is WorktreeRecord & {
   executionMode: 'worktree'
   worktreePath: string
@@ -281,6 +307,13 @@ export class WorktreeManager {
       throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree operation identifier is invalid.')
     }
     return withMappedErrorSync(() => this.registry.getByOperation(operationId))
+  }
+
+  get(id: string): WorktreeRecord | undefined {
+    if (!isBoundedString(id, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree identifier is invalid.')
+    }
+    return withMappedErrorSync(() => this.registry.get(id))
   }
 
   async inspectCleanup(id: string, signal: AbortSignal): Promise<WorktreeCleanupState> {
@@ -441,6 +474,145 @@ export class WorktreeManager {
     beforeCommit?.(current.record)
     return withMappedErrorSync(() =>
       this.registry.forgetMissingWorktree(id, resolutionOperationId), true)
+  }
+
+  async inspectMovedWorktree(
+    id: string,
+    signal: AbortSignal,
+  ): Promise<MovedWorktreeRecoveryState> {
+    const record = this.get(id)
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    if (record.executionMode !== 'worktree' || record.worktreePath === undefined || record.branch === undefined ||
+      record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'moved' ||
+      record.pendingOperation !== undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'This worktree does not have a moved checkout to restore.')
+    }
+    const repository = await withMappedError(() => this.git.discoverRepository(record.repository.root, signal), true)
+    if (repository.root !== record.repository.root || repository.gitDir !== record.repository.gitDir ||
+      repository.commonDir !== record.repository.commonDir) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The original repository identity changed. Recheck the worktree before restoring it.',
+        true,
+      )
+    }
+    const entries = await withMappedError(() => this.git.listWorktrees(repository.root, signal), true)
+    const branchEntries = entries.filter(entry => entry.branch === record.branch)
+    if (branchEntries.length !== 1 || branchEntries[0]!.path === record.worktreePath ||
+      entries.some(entry => entry.path === record.worktreePath)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'Git no longer reports one exact moved checkout for the managed branch.',
+        true,
+      )
+    }
+    const pathStatus = await checkoutPathState(record.worktreePath)
+    if (pathStatus === 'present') {
+      throw new WorktreeManagerError('CONFLICT', 'The registered worktree path is no longer empty.', true)
+    }
+    if (pathStatus === 'unknown') {
+      throw new WorktreeManagerError(
+        'DESKTOP_UNAVAILABLE',
+        'The registered worktree path could not be verified as absent.',
+        true,
+      )
+    }
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree lock identity is invalid.', true)
+    }
+    const current = await withMappedError(() => this.git.inspectWorktreeForRemoval({
+      repositoryRoot: repository.root,
+      worktreePath: branchEntries[0]!.path,
+      branch: record.branch!,
+      lockReason,
+    }, signal), true)
+    return {
+      record,
+      inspection: {
+        repositoryRoot: repository.root,
+        registeredPath: record.worktreePath,
+        current,
+        registeredPathAbsent: true,
+      },
+    }
+  }
+
+  async restoreMovedWorktree(
+    id: string,
+    expected: MovedWorktreeRecoveryInspection,
+    signal: AbortSignal,
+    beforeDispatch?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    const current = await this.inspectMovedWorktree(id, signal)
+    if (!sameMovedWorktreeInspection(current.inspection, expected)) {
+      throw new WorktreeManagerError('CONFLICT', 'The moved checkout changed after approval. Inspect it again.')
+    }
+    const lockReason = expectedLockReason(current.record)!
+    let dispatched = false
+    let dispatchBoundaryError: unknown
+    try {
+      await this.git.moveWorktree({
+        repository: current.record.repository,
+        source: current.inspection.current,
+        destinationPath: current.inspection.registeredPath,
+        lockReason,
+      }, signal, () => {
+        try {
+          beforeDispatch?.(current.record)
+        } catch (error) {
+          dispatchBoundaryError = error
+          throw error
+        }
+        dispatched = true
+      })
+    } catch (error) {
+      if (dispatchBoundaryError !== undefined) throw dispatchBoundaryError
+      mapError(error, dispatched)
+    }
+    return withMappedErrorSync(() =>
+      this.registry.resolveRecovery(id, current.record.sessionId === undefined ? 'orphaned' : 'ready'), true)
+  }
+
+  async inspectMovedWorktreeOutcome(
+    id: string,
+    expected: MovedWorktreeRecoveryInspection,
+    signal: AbortSignal,
+  ): Promise<GitWorktreeMoveOutcome> {
+    const record = this.get(id)
+    if (record === undefined || record.executionMode !== 'worktree' || record.worktreePath === undefined ||
+      record.branch === undefined || record.repository.root !== expected.repositoryRoot ||
+      record.worktreePath !== expected.registeredPath || record.branch !== expected.current.branch) {
+      return 'ambiguous'
+    }
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) return 'ambiguous'
+    return withMappedError(() => this.git.inspectWorktreeMoveOutcome({
+      repository: record.repository,
+      source: expected.current,
+      destinationPath: expected.registeredPath,
+      lockReason,
+    }, signal), true)
+  }
+
+  async completeMovedWorktreeRecovery(
+    id: string,
+    expected: MovedWorktreeRecoveryInspection,
+    signal: AbortSignal,
+  ): Promise<WorktreeRecord> {
+    const outcome = await this.inspectMovedWorktreeOutcome(id, expected, signal)
+    if (outcome !== 'completed') {
+      throw new WorktreeManagerError('CONFLICT', 'The moved checkout has not reached its exact registered path.')
+    }
+    const record = this.get(id)
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    if (record.lifecycle === 'ready' || record.lifecycle === 'orphaned') return record
+    if (record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'moved' ||
+      record.pendingOperation !== undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The moved worktree recovery state changed before completion.')
+    }
+    return withMappedErrorSync(() =>
+      this.registry.resolveRecovery(id, record.sessionId === undefined ? 'orphaned' : 'ready'), true)
   }
 
   async inspectHandoff(

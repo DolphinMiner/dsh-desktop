@@ -77,6 +77,7 @@ import { WorktreeHandoffController } from './worktree-handoff-controller'
 import { WorktreeHandoffJournal } from './worktree-handoff-journal'
 import { WorktreeManager } from './worktree-manager'
 import { WorktreeRecoveryController } from './worktree-recovery-controller'
+import { WorktreeRelocationJournal } from './worktree-relocation-journal'
 import { summarizeWorktreeRecord, WorktreeRegistry } from './worktree-registry'
 
 app.setName('DSH Desktop')
@@ -548,9 +549,17 @@ function installIpcHandlers(
   })
   ipcMain.handle('desktop:worktrees:reconcile', async event => {
     assertTrustedSender(event)
-    const result = await worktrees.reconcile(new AbortController().signal)
-    publishWorktreeReconciliation(result.snapshot)
-    return result.snapshot
+    const signal = new AbortController().signal
+    await worktrees.reconcile(signal)
+    try {
+      await worktreeRecovery.reconcileRelocations(signal)
+    } catch (error) {
+      publishWorktreeReconciliation(worktrees.snapshot())
+      throw error
+    }
+    const snapshot = worktrees.snapshot()
+    publishWorktreeReconciliation(snapshot)
+    return snapshot
   })
   ipcMain.handle('desktop:worktrees:cleanup:preview', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -864,6 +873,8 @@ app.whenReady().then(async () => {
     },
   })
   const worktreeRecovery = new WorktreeRecoveryController(worktreeManager, {
+    relocationJournal: new WorktreeRelocationJournal(join(desktopDataPath, 'worktree-relocations.v1.json')),
+    mutationQueue: gitMutationQueue,
     isSessionRunning: sessionId => activityTracker.isRunning(sessionId),
     approve: async details => {
       if (mainWindow === undefined || mainWindow.isDestroyed()) return false
@@ -879,6 +890,23 @@ app.whenReady().then(async () => {
             'Git no longer lists this worktree and its checkout path is absent. ' +
             'This removes only the stale DSH Desktop record; it does not delete files or the Git branch.',
           buttons: ['Cancel', 'Forget Record'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      }
+      if (details.action === 'restore-moved') {
+        const count = details.changeCount
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Restore moved worktree?',
+          message: `Move the checkout for ${branch} back to its registered path?`,
+          detail: `Current: ${details.currentPath}\nRegistered: ${details.registeredPath}\n\n` +
+            `Repository: ${details.repositoryRoot}\nCommit: ${details.head}\n` +
+            `Checkout changes: ${String(count)}\n\n` +
+            'The checkout directory moves back to its registered path. The branch, commit, and checkout files are kept.',
+          buttons: ['Cancel', 'Restore Path'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
@@ -1001,7 +1029,13 @@ app.whenReady().then(async () => {
     packageRoot: app.getAppPath(),
     productVersion: app.getVersion(),
   })
-  await worktreeManager.reconcile(new AbortController().signal, { orphanUnboundReady: true })
+  const startupWorktreeSignal = new AbortController().signal
+  await worktreeManager.reconcile(startupWorktreeSignal, { orphanUnboundReady: true })
+  try {
+    await worktreeRecovery.reconcileRelocations(startupWorktreeSignal)
+  } catch (error) {
+    console.error('Could not reconcile interrupted worktree relocations.', error)
+  }
   publishWorktreeChange()
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,

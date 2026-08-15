@@ -5,7 +5,7 @@ import { parseWorktreeCleanupInspection } from './worktree-cleanup.js'
 
 export interface DesktopWorktreeRecoveryPreviewInput {
   worktreeId: string
-  action: 'keep-interrupted-removal' | 'forget-missing'
+  action: 'keep-interrupted-removal' | 'forget-missing' | 'restore-moved'
 }
 
 export interface MissingWorktreeRecoveryInspection {
@@ -14,6 +14,13 @@ export interface MissingWorktreeRecoveryInspection {
   branch: string
   worktreeMetadataAbsent: true
   checkoutPathAbsent: true
+}
+
+export interface MovedWorktreeRecoveryInspection {
+  repositoryRoot: string
+  registeredPath: string
+  current: WorktreeCleanupInspection
+  registeredPathAbsent: true
 }
 
 export interface KeepInterruptedRemovalPreview {
@@ -32,7 +39,18 @@ export interface ForgetMissingWorktreePreview {
   inspection: MissingWorktreeRecoveryInspection
 }
 
-export type WorktreeRecoveryPreview = KeepInterruptedRemovalPreview | ForgetMissingWorktreePreview
+export interface RestoreMovedWorktreePreview {
+  previewId: string
+  expiresAt: string
+  action: 'restore-moved'
+  worktree: WorktreeSummary
+  inspection: MovedWorktreeRecoveryInspection
+}
+
+export type WorktreeRecoveryPreview =
+  | KeepInterruptedRemovalPreview
+  | ForgetMissingWorktreePreview
+  | RestoreMovedWorktreePreview
 
 export interface DesktopWorktreeRecoveryConfirmInput {
   previewId: string
@@ -51,7 +69,16 @@ export interface ForgetMissingWorktreeResult {
   worktree: WorktreeSummary
 }
 
-export type WorktreeRecoveryResult = KeepInterruptedRemovalResult | ForgetMissingWorktreeResult
+export interface RestoreMovedWorktreeResult {
+  resolutionId: string
+  action: 'restore-moved'
+  worktree: WorktreeSummary
+}
+
+export type WorktreeRecoveryResult =
+  | KeepInterruptedRemovalResult
+  | ForgetMissingWorktreeResult
+  | RestoreMovedWorktreeResult
 
 const MAX_PATH_LENGTH = 4_096
 const MAX_REF_LENGTH = 1_024
@@ -95,11 +122,29 @@ export function parseMissingWorktreeRecoveryInspection(
   }
 }
 
+export function parseMovedWorktreeRecoveryInspection(
+  value: unknown,
+): MovedWorktreeRecoveryInspection | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'repositoryRoot', 'registeredPath', 'current', 'registeredPathAbsent',
+  ]) || !isBoundedString(value.repositoryRoot, MAX_PATH_LENGTH) ||
+    !isBoundedString(value.registeredPath, MAX_PATH_LENGTH) || value.registeredPathAbsent !== true) return undefined
+  const current = parseWorktreeCleanupInspection(value.current)
+  if (current === undefined || current.worktreePath === value.registeredPath) return undefined
+  return {
+    repositoryRoot: value.repositoryRoot,
+    registeredPath: value.registeredPath,
+    current,
+    registeredPathAbsent: true,
+  }
+}
+
 export function parseDesktopWorktreeRecoveryPreviewInput(
   value: unknown,
 ): DesktopWorktreeRecoveryPreviewInput | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, ['worktreeId', 'action']) || !isUuid(value.worktreeId) ||
-    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing')) return undefined
+    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing' &&
+      value.action !== 'restore-moved')) return undefined
   return { worktreeId: value.worktreeId, action: value.action }
 }
 
@@ -107,7 +152,8 @@ export function parseWorktreeRecoveryPreview(value: unknown): WorktreeRecoveryPr
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'previewId', 'expiresAt', 'action', 'worktree', 'inspection',
   ]) || !isUuid(value.previewId) || !isIsoDate(value.expiresAt) ||
-    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing')) return undefined
+    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing' &&
+      value.action !== 'restore-moved')) return undefined
   const worktree = parseWorktreeSummary(value.worktree)
   if (worktree === undefined || worktree.executionMode !== 'worktree' ||
     worktree.lifecycle !== 'recovery-required') return undefined
@@ -123,17 +169,24 @@ export function parseWorktreeRecoveryPreview(value: unknown): WorktreeRecoveryPr
       inspection,
     }
   }
-  const inspection = parseMissingWorktreeRecoveryInspection(value.inspection)
-  if (inspection === undefined || worktree.recoveryReason !== 'missing' ||
-    worktree.repositoryRoot !== inspection.repositoryRoot ||
-    worktree.worktreePath !== inspection.worktreePath || worktree.branch !== inspection.branch) return undefined
-  return {
-    previewId: value.previewId,
-    expiresAt: value.expiresAt,
-    action: value.action,
-    worktree,
-    inspection,
+  if (value.action === 'forget-missing') {
+    const inspection = parseMissingWorktreeRecoveryInspection(value.inspection)
+    if (inspection === undefined || worktree.recoveryReason !== 'missing' ||
+      worktree.repositoryRoot !== inspection.repositoryRoot ||
+      worktree.worktreePath !== inspection.worktreePath || worktree.branch !== inspection.branch) return undefined
+    return {
+      previewId: value.previewId,
+      expiresAt: value.expiresAt,
+      action: value.action,
+      worktree,
+      inspection,
+    }
   }
+  const inspection = parseMovedWorktreeRecoveryInspection(value.inspection)
+  if (inspection === undefined || worktree.recoveryReason !== 'moved' ||
+    worktree.repositoryRoot !== inspection.repositoryRoot || worktree.worktreePath !== inspection.registeredPath ||
+    worktree.branch !== inspection.current.branch) return undefined
+  return { previewId: value.previewId, expiresAt: value.expiresAt, action: value.action, worktree, inspection }
 }
 
 export function parseDesktopWorktreeRecoveryConfirmInput(
@@ -147,10 +200,11 @@ export function parseDesktopWorktreeRecoveryConfirmInput(
 export function parseWorktreeRecoveryResult(value: unknown): WorktreeRecoveryResult | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, ['resolutionId', 'action', 'worktree']) ||
     !isUuid(value.resolutionId) ||
-    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing')) return undefined
+    (value.action !== 'keep-interrupted-removal' && value.action !== 'forget-missing' &&
+      value.action !== 'restore-moved')) return undefined
   const worktree = parseWorktreeSummary(value.worktree)
   if (worktree === undefined || worktree.executionMode !== 'worktree') return undefined
-  if (value.action === 'keep-interrupted-removal' &&
+  if ((value.action === 'keep-interrupted-removal' || value.action === 'restore-moved') &&
     worktree.lifecycle !== 'ready' && worktree.lifecycle !== 'orphaned') return undefined
   if (value.action === 'forget-missing' && worktree.lifecycle !== 'removed') return undefined
   return {
