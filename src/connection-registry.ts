@@ -204,7 +204,6 @@ export class ConnectionRegistry {
     const connection: StoredConnection = {
       ...document.connections[index],
       lastStatus: status,
-      updatedAt: now,
       ...(enabledTools === undefined ? {} : { enabledTools: [...enabledTools] }),
       ...(status === 'connected' ? { lastConnectedAt: now } : {}),
     }

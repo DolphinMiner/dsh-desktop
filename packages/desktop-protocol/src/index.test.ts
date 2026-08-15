@@ -9,6 +9,7 @@ import {
   parseCapabilityResult,
   parseConnectApiKeyInput,
   parseDesktopProtocolMessage,
+  isLikelyReadOnlyMcpTool,
 } from './index'
 
 test('round-trips a valid capability request', () => {
@@ -42,6 +43,8 @@ test('validates connection inputs, snapshots, and desktop events', () => {
   }), undefined)
   const event = createEvent('connections.changed', { revision: 4 })
   assert.deepEqual(parseDesktopProtocolMessage(event), event)
+  assert.equal(isLikelyReadOnlyMcpTool('list_issues'), true)
+  assert.equal(isLikelyReadOnlyMcpTool('create_issue'), false)
 })
 
 test('rejects malformed envelopes and capability payloads', () => {

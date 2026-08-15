@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-session'
 import {
+  ConnectionRuntimeStatusParams,
   DESKTOP_PROTOCOL_VERSION,
   DesktopCapabilityMethod,
   DesktopCapabilityParams,
@@ -14,8 +15,11 @@ import {
   DesktopCapabilityClient,
   processIpcTransport,
 } from './bridge.js'
+import { CordisMcpMountFactory } from './cordis-mcp.js'
+import { DesktopConnectionClient, McpConnectionSupervisor } from './mcp-supervisor.js'
 
 export * from './bridge.js'
+export * from './mcp-supervisor.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -50,11 +54,35 @@ export class DesktopBridgeService extends Service {
   }
 }
 
-export const inject = ['sessions']
+export const inject = ['sessions', 'tools']
 
-export function apply(ctx: Context): void {
+export async function apply(ctx: Context): Promise<void> {
   const bridge = new DesktopBridgeService(ctx)
   ctx.effect(() => () => bridge.dispose(), 'dsh-desktop: capability bridge')
+
+  const connections: DesktopConnectionClient = {
+    list: () => bridge.call('connections.list', {}),
+    resolveMcpTransport: connectionId => bridge.call('connections.resolveMcpTransport', { connectionId }),
+    reportStatus: (params: ConnectionRuntimeStatusParams) =>
+      bridge.call('connections.reportStatus', params),
+  }
+  const supervisor = new McpConnectionSupervisor(connections, new CordisMcpMountFactory(ctx))
+  ctx.effect(() => () => supervisor.dispose(), 'dsh-desktop: MCP connection supervisor')
+
+  bridge.on('connections.changed', () => {
+    void supervisor.reconcile().catch(() => undefined)
+  })
+  ctx.on('tools/change', () => {
+    void supervisor.refreshTools().catch(() => undefined)
+  })
+  ctx.on('tools/pre-execute', async (execution, next) => {
+    const downstream = await next()
+    if (downstream.kind !== 'allow' || !supervisor.requiresApproval(execution.name)) return downstream
+    return {
+      kind: 'ask',
+      reason: 'This Linear tool may change external data. Approve this operation once to continue.',
+    }
+  })
 
   void bridge.call('desktop.ping', {
     nonce: `host-${DESKTOP_PROTOCOL_VERSION}`,
@@ -64,6 +92,8 @@ export function apply(ctx: Context): void {
     const message = error instanceof Error ? error.message : String(error)
     ctx.logger('dsh-desktop').warn('desktop capability bridge unavailable: %s', message)
   })
+
+  await supervisor.reconcile()
 
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return

@@ -104,6 +104,19 @@ export interface ConnectionCredential {
   scopes: string[]
 }
 
+export type McpTransportDescriptor = {
+  transport: 'streamable-http'
+  serverName: string
+  url: string
+} | {
+  transport: 'stdio'
+  serverName: string
+  command: string
+  args: string[]
+  env: Record<string, string>
+  cwd: string
+}
+
 export interface ConnectionRuntimeStatusParams {
   connectionId: string
   status: Extract<ConnectionStatus, 'connecting' | 'connected' | 'expired' | 'error'>
@@ -124,9 +137,9 @@ export interface DesktopCapabilityMap {
     params: Record<string, never>
     result: ConnectionSnapshot
   }
-  'connections.resolveCredential': {
+  'connections.resolveMcpTransport': {
     params: { connectionId: string }
-    result: { connection: ConnectionSummary; credential: ConnectionCredential }
+    result: { connection: ConnectionSummary; transport: McpTransportDescriptor }
   }
   'connections.reportStatus': {
     params: ConnectionRuntimeStatusParams
@@ -303,17 +316,30 @@ function parseConnectionSnapshot(value: unknown): ConnectionSnapshot | undefined
   }
 }
 
-function parseCredential(value: unknown): ConnectionCredential | undefined {
-  if (!isRecord(value) || (value.kind !== 'api-key' && value.kind !== 'oauth') ||
-    !isBoundedString(value.accessToken, MAX_TOKEN_LENGTH) || !isStringList(value.scopes)) return undefined
-  if (value.refreshToken !== undefined && !isBoundedString(value.refreshToken, MAX_TOKEN_LENGTH)) return undefined
-  if (value.expiresAt !== undefined && !isIsoDate(value.expiresAt)) return undefined
+function parseMcpTransport(value: unknown): McpTransportDescriptor | undefined {
+  if (!isRecord(value) || !isBoundedString(value.serverName, 32) ||
+    !/^[A-Za-z0-9_-]{1,32}$/.test(value.serverName)) return undefined
+  if (value.transport === 'streamable-http') {
+    if (!isBoundedString(value.url, 2_048)) return undefined
+    try {
+      const url = new URL(value.url)
+      if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') return undefined
+    } catch {
+      return undefined
+    }
+    return { transport: 'streamable-http', serverName: value.serverName, url: value.url }
+  }
+  if (value.transport !== 'stdio' || !isBoundedString(value.command, 1_024) ||
+    !isStringList(value.args, 4_096) || !isRecord(value.env) ||
+    !Object.values(value.env).every(item => typeof item === 'string') ||
+    !isBoundedString(value.cwd, 4_096, true)) return undefined
   return {
-    kind: value.kind,
-    accessToken: value.accessToken,
-    ...(value.refreshToken === undefined ? {} : { refreshToken: value.refreshToken }),
-    ...(value.expiresAt === undefined ? {} : { expiresAt: value.expiresAt }),
-    scopes: [...value.scopes],
+    transport: 'stdio',
+    serverName: value.serverName,
+    command: value.command,
+    args: [...value.args],
+    env: { ...value.env } as Record<string, string>,
+    cwd: value.cwd,
   }
 }
 
@@ -436,7 +462,7 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
-  if (method === 'connections.resolveCredential') {
+  if (method === 'connections.resolveMcpTransport') {
     return isBoundedString(value.connectionId, MAX_ID_LENGTH)
       ? { connectionId: value.connectionId } as DesktopCapabilityParams<M>
       : undefined
@@ -479,12 +505,12 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
-  if (method === 'connections.resolveCredential') {
+  if (method === 'connections.resolveMcpTransport') {
     const connection = parseConnectionSummary(value.connection)
-    const credential = parseCredential(value.credential)
-    return connection === undefined || credential === undefined
+    const transport = parseMcpTransport(value.transport)
+    return connection === undefined || transport === undefined
       ? undefined
-      : { connection, credential } as DesktopCapabilityResult<M>
+      : { connection, transport } as DesktopCapabilityResult<M>
   }
   if (method === 'connections.reportStatus') {
     if (typeof value.accepted !== 'boolean' || !Number.isSafeInteger(value.revision) ||
@@ -558,5 +584,22 @@ export function createEvent<E extends DesktopEventName>(
 }
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
-  return method === 'connections.resolveCredential'
+  return method === 'connections.resolveMcpTransport'
+}
+
+const READ_ONLY_MCP_TOOL_PREFIXES = [
+  'get_',
+  'list_',
+  'search_',
+  'find_',
+  'query_',
+  'read_',
+  'lookup_',
+  'fetch_',
+  'view_',
+] as const
+
+export function isLikelyReadOnlyMcpTool(name: string): boolean {
+  const normalized = name.toLowerCase()
+  return READ_ONLY_MCP_TOOL_PREFIXES.some(prefix => normalized.startsWith(prefix))
 }

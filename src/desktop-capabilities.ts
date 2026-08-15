@@ -3,7 +3,7 @@ import {
   ConnectionRuntimeStatusParams,
   ConnectionSnapshot,
   ConnectionSummary,
-  ConnectionCredential,
+  McpTransportDescriptor,
   DesktopNotificationParams,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -19,9 +19,9 @@ export interface DesktopCapabilityDependencies {
   notifications: DesktopNotificationAdapter
   connections: {
     snapshot(): ConnectionSnapshot
-    resolveCredential(connectionId: string, signal?: AbortSignal): Promise<{
+    resolveMcpTransport(connectionId: string, signal?: AbortSignal): Promise<{
       connection: ConnectionSummary
-      credential: ConnectionCredential
+      transport: McpTransportDescriptor
     }>
     reportStatus(params: ConnectionRuntimeStatusParams): { accepted: boolean; revision: number }
   }
@@ -44,8 +44,8 @@ export function createDesktopCapabilityHandlers(
       return { delivered: true }
     },
     'connections.list': () => dependencies.connections.snapshot(),
-    'connections.resolveCredential': (params, context) =>
-      dependencies.connections.resolveCredential(params.connectionId, context.signal),
+    'connections.resolveMcpTransport': (params, context) =>
+      dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),
     'connections.reportStatus': params => dependencies.connections.reportStatus(params),
   }
 }

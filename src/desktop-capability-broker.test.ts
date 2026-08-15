@@ -25,7 +25,7 @@ function testHandlers() {
         oauth: { linear: { available: false } },
         connections: [],
       }),
-      resolveCredential: () => Promise.reject(new Error('not configured')),
+      resolveMcpTransport: () => Promise.reject(new Error('not configured')),
       reportStatus: () => ({ accepted: false, revision: 0 }),
     },
   })

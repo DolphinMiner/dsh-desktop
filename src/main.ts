@@ -27,6 +27,7 @@ import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
+import { McpCredentialProxy } from './mcp-credential-proxy'
 import { UnavailableOAuthProvider } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
@@ -40,6 +41,7 @@ if (!isPrimaryInstance) app.quit()
 
 let mainWindow: BrowserWindow | undefined
 let harness: HarnessService | undefined
+let mcpProxy: McpCredentialProxy | undefined
 let harnessOrigin: string | undefined
 let shuttingDown = false
 let shutdownComplete = false
@@ -275,6 +277,8 @@ app.whenReady().then(async () => {
     }),
     new UnavailableOAuthProvider(),
   )
+  mcpProxy = new McpCredentialProxy(connections)
+  await mcpProxy.start()
 
   installMenu()
   installIpcHandlers(connections)
@@ -304,9 +308,17 @@ app.whenReady().then(async () => {
         notification.show()
       },
     },
-    connections,
+    connections: {
+      snapshot: () => connections.snapshot(),
+      resolveMcpTransport: (connectionId, signal) =>
+        mcpProxy!.resolveMcpTransport(connectionId, signal),
+      reportStatus: params => connections.reportStatus(params),
+    },
   }))
   connections.onChange(snapshot => {
+    for (const connection of snapshot.connections) {
+      if (connection.status === 'disconnected') mcpProxy?.revoke(connection.id)
+    }
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('desktop:connections-changed', snapshot)
     }
@@ -341,8 +353,11 @@ app.on('before-quit', event => {
   if (shuttingDown) return
 
   shuttingDown = true
-  const stopHarness = harness?.stop() ?? Promise.resolve()
-  void stopHarness
+  const stopServices = Promise.all([
+    harness?.stop() ?? Promise.resolve(),
+    mcpProxy?.stop() ?? Promise.resolve(),
+  ])
+  void stopServices
     .catch(error => {
       console.error('Could not stop Harness cleanly.', error)
     })
