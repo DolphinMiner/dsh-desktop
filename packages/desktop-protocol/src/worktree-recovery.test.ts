@@ -39,11 +39,15 @@ const inspection = {
   }],
 }
 
-test('validates the one supported worktree recovery action and explicit confirmation', () => {
+test('validates the supported worktree recovery actions and explicit confirmation', () => {
   assert.deepEqual(parseDesktopWorktreeRecoveryPreviewInput({
     worktreeId,
     action: 'keep-interrupted-removal',
   }), { worktreeId, action: 'keep-interrupted-removal' })
+  assert.deepEqual(parseDesktopWorktreeRecoveryPreviewInput({
+    worktreeId,
+    action: 'forget-missing',
+  }), { worktreeId, action: 'forget-missing' })
   assert.equal(parseDesktopWorktreeRecoveryPreviewInput({
     worktreeId,
     action: 'retry-removal',
@@ -88,5 +92,47 @@ test('accepts only a recovered ready or orphaned worktree result', () => {
   assert.equal(parseWorktreeRecoveryResult({
     ...result,
     worktree,
+  }), undefined)
+})
+
+test('binds forgetting a missing checkout to exact absent metadata and path evidence', () => {
+  const missingWorktree = {
+    ...worktree,
+    recoveryReason: 'missing' as const,
+  }
+  const missingInspection = {
+    repositoryRoot: missingWorktree.repositoryRoot,
+    worktreePath: missingWorktree.worktreePath,
+    branch: missingWorktree.branch,
+    worktreeMetadataAbsent: true as const,
+    checkoutPathAbsent: true as const,
+  }
+  const preview = {
+    previewId,
+    expiresAt: '2026-08-16T12:05:00.000Z',
+    action: 'forget-missing' as const,
+    worktree: missingWorktree,
+    inspection: missingInspection,
+  }
+  assert.deepEqual(parseWorktreeRecoveryPreview(preview), preview)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: { ...missingInspection, checkoutPathAbsent: false },
+  }), undefined)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: { ...missingInspection, branch: 'refs/heads/other' },
+  }), undefined)
+
+  const { recoveryReason: _recoveryReason, ...forgottenWorktree } = missingWorktree
+  const result = {
+    resolutionId: previewId,
+    action: 'forget-missing' as const,
+    worktree: { ...forgottenWorktree, lifecycle: 'removed' as const },
+  }
+  assert.deepEqual(parseWorktreeRecoveryResult(result), result)
+  assert.equal(parseWorktreeRecoveryResult({
+    ...result,
+    worktree: { ...forgottenWorktree, lifecycle: 'orphaned' },
   }), undefined)
 })

@@ -863,6 +863,21 @@ app.whenReady().then(async () => {
       const branch = details.branch.startsWith('refs/heads/')
         ? details.branch.slice('refs/heads/'.length)
         : details.branch
+      if (details.action === 'forget-missing') {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Forget missing worktree?',
+          message: `Forget the missing checkout for ${branch}?`,
+          detail: `${details.worktreePath}\n\nRepository: ${details.repositoryRoot}\n\n` +
+            'Git no longer lists this worktree and its checkout path is absent. ' +
+            'This removes only the stale DSH Desktop record; it does not delete files or the Git branch.',
+          buttons: ['Cancel', 'Forget Record'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      }
       const count = details.changeCount
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'warning',

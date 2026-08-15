@@ -686,6 +686,133 @@ test('keeps an exact interrupted cleanup without mutating Git or checkout files'
   assert.equal(interrupted.get(second.id)?.recoveryReason, 'interrupted-remove')
 })
 
+test('forgets a missing checkout only while Git metadata and its path remain absent', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-forget-missing-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'forget-missing', join(root, 'missing-checkout'))
+  registry.requireRecovery(record.id, 'missing')
+  let mutationCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    listWorktrees: async () => [],
+    createWorktree: async () => {
+      mutationCalls += 1
+      throw new Error('must not create a worktree')
+    },
+    removeWorktree: async () => { mutationCalls += 1 },
+  }), registry, join(root, 'managed'), () => undefined)
+
+  const preview = await manager.inspectMissingWorktree(record.id, new AbortController().signal)
+  assert.deepEqual(preview.inspection, {
+    repositoryRoot: record.repository.root,
+    worktreePath: record.worktreePath,
+    branch: record.branch,
+    worktreeMetadataAbsent: true,
+    checkoutPathAbsent: true,
+  })
+  const forgotten = await manager.forgetMissingWorktree(
+    record.id,
+    'forget-missing-operation',
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(forgotten.lifecycle, 'removed')
+  assert.deepEqual(manager.snapshot().worktrees, [])
+  assert.equal(manager.getByOperation('forget-missing-operation'), undefined)
+  assert.equal(mutationCalls, 0)
+
+  const driftRegistry = new WorktreeRegistry(join(root, 'drift-registry.json'))
+  const drifted = readyWorktree(driftRegistry, 'forget-missing-drift', join(root, 'drift-checkout'))
+  driftRegistry.requireRecovery(drifted.id, 'missing')
+  let entries: Awaited<ReturnType<WorktreeGitOperations['listWorktrees']>> = []
+  let observedRepository = drifted.repository
+  const driftManager = new WorktreeManager(cleanupOperations(drifted, {
+    discoverRepository: async () => observedRepository,
+    listWorktrees: async () => entries,
+  }), driftRegistry, join(root, 'managed'), () => undefined)
+  const stale = await driftManager.inspectMissingWorktree(drifted.id, new AbortController().signal)
+  entries = [{
+    path: drifted.worktreePath!,
+    head: drifted.baseCommit,
+    branch: drifted.branch,
+    detached: false,
+    bare: false,
+    locked: true,
+    lockReason: 'DSH Desktop session 123456789012',
+    prunable: false,
+  }]
+  await assert.rejects(driftManager.forgetMissingWorktree(
+    drifted.id,
+    'forget-missing-drift-operation',
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT')
+  assert.equal(driftRegistry.get(drifted.id)?.recoveryReason, 'missing')
+
+  entries = [{ ...entries[0]!, path: join(root, 'moved-checkout') }]
+  await assert.rejects(driftManager.forgetMissingWorktree(
+    drifted.id,
+    'forget-missing-moved-operation',
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && /another path/i.test(error.message))
+
+  entries = []
+  observedRepository = { ...drifted.repository, commonDir: '/other/.git' }
+  await assert.rejects(driftManager.forgetMissingWorktree(
+    drifted.id,
+    'forget-missing-identity-operation',
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && error.ambiguous)
+
+  observedRepository = drifted.repository
+  await mkdir(drifted.worktreePath!)
+  await assert.rejects(driftManager.forgetMissingWorktree(
+    drifted.id,
+    'forget-missing-path-operation',
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && error.ambiguous)
+  assert.equal(driftRegistry.get(drifted.id)?.recoveryReason, 'missing')
+})
+
+test('forgets an externally removed real Git worktree while preserving its branch', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-forget-missing-real-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const repositoryRoot = await repositoryFixture(root)
+  const registry = new WorktreeRegistry(join(root, 'data', 'worktrees.v1.json'))
+  const manager = new WorktreeManager(
+    new GitService(),
+    registry,
+    join(root, 'managed-worktrees'),
+    () => undefined,
+  )
+  const created = (await manager.provision(input({
+    operationId: 'provision-forget-missing-real',
+    requestedBySessionId: 'session-forget-missing-real',
+    workspaceRoot: repositoryRoot,
+  }), new AbortController().signal)).record
+
+  await git(repositoryRoot, 'worktree', 'unlock', created.worktreePath!)
+  await git(repositoryRoot, 'worktree', 'remove', created.worktreePath!)
+  await assert.rejects(access(created.worktreePath!))
+  const reconciled = await manager.reconcile(new AbortController().signal)
+  assert.equal(reconciled.snapshot.worktrees[0]?.recoveryReason, 'missing')
+
+  const preview = await manager.inspectMissingWorktree(created.id, new AbortController().signal)
+  const forgotten = await manager.forgetMissingWorktree(
+    created.id,
+    'forget-missing-real-operation',
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(forgotten.lifecycle, 'removed')
+  assert.equal(await git(repositoryRoot, 'rev-parse', created.branch!), created.baseCommit)
+  await assert.rejects(access(created.worktreePath!))
+  assert.deepEqual(manager.snapshot().worktrees, [])
+})
+
 test('does not claim an interrupted cleanup completed when a non-repository path remains', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-replaced-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

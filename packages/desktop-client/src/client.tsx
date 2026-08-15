@@ -931,16 +931,18 @@ function WorktreesSection(): React.JSX.Element {
     void inspectHandoff(worktreeId, 'worktree-to-local')
   }
 
-  const inspectRecovery = async (worktreeId: string): Promise<void> => {
+  const inspectRecovery = async (
+    worktreeId: string,
+    action: DesktopWorktreeRecoveryPreviewInput['action'],
+  ): Promise<void> => {
     if (bridge === undefined) return
     setRecoveryPreviewingId(worktreeId)
     setError(undefined)
     setNotice(undefined)
     try {
-      setRecoveryPreview(await bridge.previewRecovery({
-        worktreeId,
-        action: 'keep-interrupted-removal',
-      }))
+      const preview = await bridge.previewRecovery({ worktreeId, action })
+      if (preview.action !== action) throw new Error('The desktop returned a different worktree recovery action.')
+      setRecoveryPreview(preview)
       setRecoveryAcknowledged(false)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -957,16 +959,20 @@ function WorktreesSection(): React.JSX.Element {
 
   const confirmRecovery = async (): Promise<void> => {
     if (bridge === undefined || recoveryPreview === undefined || !recoveryAcknowledged) return
+    const action = recoveryPreview.action
     setRecovering(true)
     setError(undefined)
     setNotice(undefined)
     try {
       const result = await bridge.confirmRecovery({ previewId: recoveryPreview.previewId, confirmed: true })
+      if (result.action !== action) throw new Error('The desktop returned a different worktree recovery result.')
       setRecoveryPreview(undefined)
       setRecoveryAcknowledged(false)
-      setNotice(result.worktree.lifecycle === 'orphaned'
-        ? 'The interrupted cleanup was cancelled. The unchanged checkout is now orphaned.'
-        : 'The interrupted cleanup was cancelled. The unchanged checkout is ready.')
+      setNotice(action === 'forget-missing'
+        ? 'The stale missing-worktree record was forgotten. No files or Git branches were changed.'
+        : result.worktree.lifecycle === 'orphaned'
+          ? 'The interrupted cleanup was cancelled. The unchanged checkout is now orphaned.'
+          : 'The interrupted cleanup was cancelled. The unchanged checkout is ready.')
       applySnapshot(await bridge.list())
     } catch (cause) {
       setRecoveryPreview(undefined)
@@ -1065,6 +1071,8 @@ function WorktreesSection(): React.JSX.Element {
           const handoffAvailable = cleanupAvailable
           const keepInterruptedRemoval = worktree.lifecycle === 'recovery-required' &&
             worktree.recoveryReason === 'interrupted-remove'
+          const forgetMissing = worktree.lifecycle === 'recovery-required' &&
+            worktree.recoveryReason === 'missing'
           const operationsBusy = cleanupPreviewingId !== undefined || recoveryPreviewingId !== undefined ||
             handoffPreviewingKey !== undefined || cleaning || recovering || transferring
           return (
@@ -1103,9 +1111,20 @@ function WorktreesSection(): React.JSX.Element {
                       variant="outline"
                       icon={<IconCheckOutline16 />}
                       disabled={operationsBusy}
-                      onClick={() => void inspectRecovery(worktree.id)}
+                      onClick={() => void inspectRecovery(worktree.id, 'keep-interrupted-removal')}
                     >
                       Keep checkout
+                    </Button>
+                  )}
+                  {forgetMissing && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconTrashOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectRecovery(worktree.id, 'forget-missing')}
+                    >
+                      Forget record
                     </Button>
                   )}
                   {handoffAvailable && (
@@ -1237,19 +1256,25 @@ function WorktreesSection(): React.JSX.Element {
       <Modal
         open={recoveryPreview !== undefined}
         onClose={closeRecoveryPreview}
-        title="Keep interrupted worktree"
+        title={recoveryPreview?.action === 'forget-missing'
+          ? 'Forget missing worktree'
+          : 'Keep interrupted worktree'}
         closeLabel="Close recovery preview"
-        description="Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged."
+        description={recoveryPreview?.action === 'forget-missing'
+          ? 'Remove a stale desktop record only after Git metadata and the checkout path are both absent.'
+          : 'Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged.'}
         footer={(
           <div style={styles.formActions}>
             <Button variant="outline" disabled={recovering} onClick={closeRecoveryPreview}>Cancel</Button>
             <Button
               variant="primary"
-              icon={<IconCheckOutline16 />}
+              icon={recoveryPreview?.action === 'forget-missing'
+                ? <IconTrashOutline16 />
+                : <IconCheckOutline16 />}
               disabled={!recoveryAcknowledged || recovering}
               onClick={() => void confirmRecovery()}
             >
-              Keep checkout
+              {recoveryPreview?.action === 'forget-missing' ? 'Forget record' : 'Keep checkout'}
             </Button>
           </div>
         )}
@@ -1265,20 +1290,35 @@ function WorktreesSection(): React.JSX.Element {
                 <span style={styles.label}>Checkout</span>
                 <span style={styles.metadata}>{recoveryPreview.inspection.worktreePath}</span>
               </div>
-              <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Current commit</span>
-                <span style={styles.metadata}>{recoveryPreview.inspection.head}</span>
-              </div>
-              <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Checkout state</span>
-                <span style={styles.metadata}>
-                  {recoveryPreview.inspection.clean
-                    ? 'Clean'
-                    : `${String(recoveryPreview.inspection.changes.length)} preserved changes`}
-                </span>
-              </div>
+              {recoveryPreview.action === 'keep-interrupted-removal' ? (
+                <>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Current commit</span>
+                    <span style={styles.metadata}>{recoveryPreview.inspection.head}</span>
+                  </div>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Checkout state</span>
+                    <span style={styles.metadata}>
+                      {recoveryPreview.inspection.clean
+                        ? 'Clean'
+                        : `${String(recoveryPreview.inspection.changes.length)} preserved changes`}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Git worktree metadata</span>
+                    <span style={styles.metadata}>Absent</span>
+                  </div>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Checkout path</span>
+                    <span style={styles.metadata}>Absent</span>
+                  </div>
+                </>
+              )}
             </div>
-            {!recoveryPreview.inspection.clean && (
+            {recoveryPreview.action === 'keep-interrupted-removal' && !recoveryPreview.inspection.clean && (
               <div style={styles.field}>
                 <span style={styles.label}>
                   Preserved checkout changes ({recoveryPreview.inspection.changes.length})
@@ -1303,7 +1343,11 @@ function WorktreesSection(): React.JSX.Element {
                 onChange={event => setRecoveryAcknowledged(event.currentTarget.checked)}
                 style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
               />
-              <span>I understand this cancels the interrupted cleanup and does not modify checkout files.</span>
+              <span>
+                {recoveryPreview.action === 'forget-missing'
+                  ? 'I understand this forgets only the stale desktop record and does not delete files or the Git branch.'
+                  : 'I understand this cancels the interrupted cleanup and does not modify checkout files.'}
+              </span>
             </label>
           </div>
         )}

@@ -4,12 +4,13 @@ import type {
   DesktopProtocolError,
   DesktopWorktreeRecoveryConfirmInput,
   DesktopWorktreeRecoveryPreviewInput,
+  MissingWorktreeRecoveryInspection,
   WorktreeCleanupInspection,
   WorktreeRecoveryPreview,
   WorktreeRecoveryResult,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import type { InterruptedRemovalRecoveryState } from './worktree-manager'
+import type { InterruptedRemovalRecoveryState, MissingWorktreeRecoveryState } from './worktree-manager'
 import { summarizeWorktreeRecord, type WorktreeRecord } from './worktree-registry'
 
 const DEFAULT_PREVIEW_TTL_MS = 5 * 60_000
@@ -25,6 +26,14 @@ export interface WorktreeRecoveryOperations {
     signal: AbortSignal,
     beforeCommit?: (record: WorktreeRecord) => void,
   ): Promise<WorktreeRecord>
+  inspectMissingWorktree(id: string, signal: AbortSignal): Promise<MissingWorktreeRecoveryState>
+  forgetMissingWorktree(
+    id: string,
+    resolutionOperationId: string,
+    expected: MissingWorktreeRecoveryInspection,
+    signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord>
 }
 
 export interface WorktreeRecoveryControllerOptions {
@@ -32,24 +41,41 @@ export interface WorktreeRecoveryControllerOptions {
   randomId?: () => string
   previewTtlMs?: number
   approve?: (details: {
+    action: 'keep-interrupted-removal'
     repositoryRoot: string
     worktreePath: string
     branch: string
     head: string
     clean: boolean
     changeCount: number
+  } | {
+    action: 'forget-missing'
+    repositoryRoot: string
+    worktreePath: string
+    branch: string
   }) => Promise<boolean>
   isSessionRunning?: (sessionId: string) => boolean
 }
 
-interface PendingRecoveryPreview {
+interface PendingRecoveryPreviewBase {
   previewId: string
   worktreeId: string
-  removalOperationId: string
   fingerprint: string
-  inspection: WorktreeCleanupInspection
   expiresAt: string
 }
+
+interface PendingInterruptedRemovalPreview extends PendingRecoveryPreviewBase {
+  action: 'keep-interrupted-removal'
+  removalOperationId: string
+  inspection: WorktreeCleanupInspection
+}
+
+interface PendingMissingWorktreePreview extends PendingRecoveryPreviewBase {
+  action: 'forget-missing'
+  inspection: MissingWorktreeRecoveryInspection
+}
+
+type PendingRecoveryPreview = PendingInterruptedRemovalPreview | PendingMissingWorktreePreview
 
 export class WorktreeRecoveryControllerError extends Error {
   constructor(readonly code: DesktopProtocolError['code'], message: string) {
@@ -62,12 +88,21 @@ function isUuid(value: string): boolean {
   return /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)
 }
 
-function recoveryFingerprint(state: InterruptedRemovalRecoveryState): string {
+function interruptedRemovalFingerprint(state: InterruptedRemovalRecoveryState): string {
   return createHash('sha256').update(JSON.stringify({
     worktree: summarizeWorktreeRecord(state.record),
     repository: state.record.repository,
     creationOperationId: state.record.creationOperationId,
     removalOperationId: state.removalOperationId,
+    inspection: state.inspection,
+  })).digest('hex')
+}
+
+function missingWorktreeFingerprint(state: MissingWorktreeRecoveryState): string {
+  return createHash('sha256').update(JSON.stringify({
+    worktree: summarizeWorktreeRecord(state.record),
+    repository: state.record.repository,
+    creationOperationId: state.record.creationOperationId,
     inspection: state.inspection,
   })).digest('hex')
 }
@@ -95,38 +130,38 @@ export class WorktreeRecoveryController {
     input: DesktopWorktreeRecoveryPreviewInput,
     signal: AbortSignal,
   ): Promise<WorktreeRecoveryPreview> {
-    const state = await this.worktrees.inspectInterruptedRemoval(input.worktreeId, signal)
+    if (input.action === 'keep-interrupted-removal') {
+      const state = await this.worktrees.inspectInterruptedRemoval(input.worktreeId, signal)
+      this.assertInactive(state.record)
+      const identity = this.createPreviewIdentity(input.worktreeId)
+      this.previews.set(identity.previewId, {
+        ...identity,
+        worktreeId: input.worktreeId,
+        action: input.action,
+        removalOperationId: state.removalOperationId,
+        fingerprint: interruptedRemovalFingerprint(state),
+        inspection: state.inspection,
+      })
+      return {
+        ...identity,
+        action: input.action,
+        worktree: summarizeWorktreeRecord(state.record),
+        inspection: state.inspection,
+      }
+    }
+    const state = await this.worktrees.inspectMissingWorktree(input.worktreeId, signal)
     this.assertInactive(state.record)
-    const now = this.now()
-    this.pruneExpired(now)
-    for (const [id, pending] of this.previews) {
-      if (pending.worktreeId === input.worktreeId) this.previews.delete(id)
-    }
-    while (this.previews.size >= MAX_PENDING_PREVIEWS) {
-      const oldest = this.previews.keys().next().value as string | undefined
-      if (oldest === undefined) break
-      this.previews.delete(oldest)
-    }
-    const previewId = this.randomId()
-    if (!isUuid(previewId) || this.previews.has(previewId)) {
-      throw new WorktreeRecoveryControllerError(
-        'DESKTOP_UNAVAILABLE',
-        'A secure worktree recovery preview could not be created.',
-      )
-    }
-    const expiresAt = new Date(now.getTime() + this.previewTtlMs).toISOString()
-    this.previews.set(previewId, {
-      previewId,
+    const identity = this.createPreviewIdentity(input.worktreeId)
+    this.previews.set(identity.previewId, {
+      ...identity,
       worktreeId: input.worktreeId,
-      removalOperationId: state.removalOperationId,
-      fingerprint: recoveryFingerprint(state),
+      action: input.action,
+      fingerprint: missingWorktreeFingerprint(state),
       inspection: state.inspection,
-      expiresAt,
     })
     return {
-      previewId,
-      expiresAt,
-      action: 'keep-interrupted-removal',
+      ...identity,
+      action: input.action,
       worktree: summarizeWorktreeRecord(state.record),
       inspection: state.inspection,
     }
@@ -151,15 +186,27 @@ export class WorktreeRecoveryController {
       )
     }
 
+    if (pending.action === 'keep-interrupted-removal') {
+      return this.confirmInterruptedRemoval(input.previewId, pending, signal)
+    }
+    return this.confirmMissingWorktree(input.previewId, pending, signal)
+  }
+
+  private async confirmInterruptedRemoval(
+    resolutionId: string,
+    pending: PendingInterruptedRemovalPreview,
+    signal: AbortSignal,
+  ): Promise<WorktreeRecoveryResult> {
     const beforeApproval = await this.worktrees.inspectInterruptedRemoval(pending.worktreeId, signal)
     this.assertInactive(beforeApproval.record)
-    if (recoveryFingerprint(beforeApproval) !== pending.fingerprint) {
+    if (interruptedRemovalFingerprint(beforeApproval) !== pending.fingerprint) {
       throw new WorktreeRecoveryControllerError(
         'CONFLICT',
         'The interrupted cleanup changed after preview. Inspect it again.',
       )
     }
     const approved = await this.approve({
+      action: pending.action,
       repositoryRoot: beforeApproval.record.repository.root,
       worktreePath: beforeApproval.inspection.worktreePath,
       branch: beforeApproval.inspection.branch,
@@ -170,16 +217,11 @@ export class WorktreeRecoveryController {
     if (!approved) {
       throw new WorktreeRecoveryControllerError('CANCELLED', 'The worktree recovery was cancelled.')
     }
-    if (Date.parse(pending.expiresAt) <= this.now().getTime()) {
-      throw new WorktreeRecoveryControllerError(
-        'CONFLICT',
-        'The worktree recovery preview expired during approval. Inspect it again.',
-      )
-    }
+    this.assertNotExpiredAfterApproval(pending)
 
     const afterApproval = await this.worktrees.inspectInterruptedRemoval(pending.worktreeId, signal)
     this.assertInactive(afterApproval.record)
-    if (recoveryFingerprint(afterApproval) !== pending.fingerprint) {
+    if (interruptedRemovalFingerprint(afterApproval) !== pending.fingerprint) {
       throw new WorktreeRecoveryControllerError(
         'CONFLICT',
         'The interrupted cleanup changed during approval. Inspect it again.',
@@ -193,9 +235,85 @@ export class WorktreeRecoveryController {
       record => this.assertInactive(record),
     )
     return {
-      resolutionId: input.previewId,
-      action: 'keep-interrupted-removal',
+      resolutionId,
+      action: pending.action,
       worktree: summarizeWorktreeRecord(kept),
+    }
+  }
+
+  private async confirmMissingWorktree(
+    resolutionId: string,
+    pending: PendingMissingWorktreePreview,
+    signal: AbortSignal,
+  ): Promise<WorktreeRecoveryResult> {
+    const beforeApproval = await this.worktrees.inspectMissingWorktree(pending.worktreeId, signal)
+    this.assertInactive(beforeApproval.record)
+    if (missingWorktreeFingerprint(beforeApproval) !== pending.fingerprint) {
+      throw new WorktreeRecoveryControllerError(
+        'CONFLICT',
+        'The missing checkout changed after preview. Inspect it again.',
+      )
+    }
+    const approved = await this.approve({
+      action: pending.action,
+      repositoryRoot: beforeApproval.record.repository.root,
+      worktreePath: beforeApproval.inspection.worktreePath,
+      branch: beforeApproval.inspection.branch,
+    })
+    if (!approved) {
+      throw new WorktreeRecoveryControllerError('CANCELLED', 'The missing-worktree recovery was cancelled.')
+    }
+    this.assertNotExpiredAfterApproval(pending)
+
+    const afterApproval = await this.worktrees.inspectMissingWorktree(pending.worktreeId, signal)
+    this.assertInactive(afterApproval.record)
+    if (missingWorktreeFingerprint(afterApproval) !== pending.fingerprint) {
+      throw new WorktreeRecoveryControllerError(
+        'CONFLICT',
+        'The missing checkout changed during approval. Inspect it again.',
+      )
+    }
+    const forgotten = await this.worktrees.forgetMissingWorktree(
+      pending.worktreeId,
+      resolutionId,
+      pending.inspection,
+      signal,
+      record => this.assertInactive(record),
+    )
+    return {
+      resolutionId,
+      action: pending.action,
+      worktree: summarizeWorktreeRecord(forgotten),
+    }
+  }
+
+  private createPreviewIdentity(worktreeId: string): { previewId: string; expiresAt: string } {
+    const now = this.now()
+    this.pruneExpired(now)
+    for (const [id, pending] of this.previews) {
+      if (pending.worktreeId === worktreeId) this.previews.delete(id)
+    }
+    while (this.previews.size >= MAX_PENDING_PREVIEWS) {
+      const oldest = this.previews.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.previews.delete(oldest)
+    }
+    const previewId = this.randomId()
+    if (!isUuid(previewId) || this.previews.has(previewId)) {
+      throw new WorktreeRecoveryControllerError(
+        'DESKTOP_UNAVAILABLE',
+        'A secure worktree recovery preview could not be created.',
+      )
+    }
+    return { previewId, expiresAt: new Date(now.getTime() + this.previewTtlMs).toISOString() }
+  }
+
+  private assertNotExpiredAfterApproval(pending: PendingRecoveryPreview): void {
+    if (Date.parse(pending.expiresAt) <= this.now().getTime()) {
+      throw new WorktreeRecoveryControllerError(
+        'CONFLICT',
+        'The worktree recovery preview expired during approval. Inspect it again.',
+      )
     }
   }
 
@@ -203,7 +321,7 @@ export class WorktreeRecoveryController {
     if (record.sessionId !== undefined && this.isSessionRunning(record.sessionId)) {
       throw new WorktreeRecoveryControllerError(
         'CONFLICT',
-        'Stop the active Harness session before resolving this interrupted cleanup.',
+        'Stop the active Harness session before resolving this worktree recovery.',
       )
     }
   }

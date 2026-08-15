@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { WorktreeCleanupInspection } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  MissingWorktreeRecoveryInspection,
+  WorktreeCleanupInspection,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import {
   WorktreeRecoveryController,
   WorktreeRecoveryControllerError,
   type WorktreeRecoveryOperations,
 } from './worktree-recovery-controller'
-import type { InterruptedRemovalRecoveryState } from './worktree-manager'
+import type { InterruptedRemovalRecoveryState, MissingWorktreeRecoveryState } from './worktree-manager'
 import type { WorktreeRecord } from './worktree-registry'
 
 const previewId = '11111111-1111-4111-8111-111111111111'
@@ -58,7 +61,15 @@ class FakeRecovery implements WorktreeRecoveryOperations {
     }],
   }
   keepCalls = 0
+  forgetCalls = 0
   beforeCommit?: () => void
+  missingInspection: MissingWorktreeRecoveryInspection = {
+    repositoryRoot: '/repo',
+    worktreePath: '/managed/worktree',
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+    worktreeMetadataAbsent: true,
+    checkoutPathAbsent: true,
+  }
 
   async inspectInterruptedRemoval(id: string): Promise<InterruptedRemovalRecoveryState> {
     assert.equal(id, worktreeId)
@@ -90,6 +101,37 @@ class FakeRecovery implements WorktreeRecoveryOperations {
     delete this.current.recoveryReason
     return cloneRecord(this.current)
   }
+
+  async inspectMissingWorktree(id: string): Promise<MissingWorktreeRecoveryState> {
+    assert.equal(id, worktreeId)
+    return {
+      record: cloneRecord(this.current),
+      inspection: { ...this.missingInspection },
+    }
+  }
+
+  async forgetMissingWorktree(
+    id: string,
+    resolutionOperationId: string,
+    expected: MissingWorktreeRecoveryInspection,
+    _signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    assert.equal(id, worktreeId)
+    assert.equal(resolutionOperationId, previewId)
+    assert.deepEqual(expected, this.missingInspection)
+    this.beforeCommit?.()
+    beforeCommit?.(cloneRecord(this.current))
+    this.forgetCalls += 1
+    this.current = {
+      ...this.current,
+      lifecycle: 'removed',
+      removalOperationId: resolutionOperationId,
+    }
+    delete this.current.pendingOperation
+    delete this.current.recoveryReason
+    return cloneRecord(this.current)
+  }
 }
 
 test('keeps an exact interrupted cleanup after renderer and native approval', async () => {
@@ -109,11 +151,13 @@ test('keeps an exact interrupted cleanup after renderer and native approval', as
     action: 'keep-interrupted-removal',
   }, signal)
   assert.equal(preview.expiresAt, '2026-08-16T12:05:00.000Z')
+  if (preview.action !== 'keep-interrupted-removal') assert.fail('Expected an interrupted-removal preview.')
   assert.equal(preview.inspection.clean, false)
   const result = await controller.confirm({ previewId, confirmed: true }, signal)
   assert.equal(result.worktree.lifecycle, 'orphaned')
   assert.equal(worktrees.keepCalls, 1)
   assert.deepEqual(approval, {
+    action: 'keep-interrupted-removal',
     repositoryRoot: '/repo',
     worktreePath: '/managed/worktree',
     branch: 'refs/heads/dsh/session-123456789012345678901234',
@@ -190,4 +234,69 @@ test('expires previews and restores a retained bound checkout to ready', async (
   assert.equal(result.worktree.lifecycle, 'ready')
   assert.equal(result.worktree.sessionState, 'bound')
   assert.equal(bound.keepCalls, 1)
+})
+
+test('forgets only exact missing-checkout evidence after both approvals', async () => {
+  const missing = new FakeRecovery()
+  missing.current.recoveryReason = 'missing'
+  delete missing.current.pendingOperation
+  let approval: object | undefined
+  const controller = new WorktreeRecoveryController(missing, {
+    now: () => new Date('2026-08-16T12:00:00.000Z'),
+    randomId: () => previewId,
+    approve: async details => {
+      approval = details
+      return true
+    },
+  })
+
+  const preview = await controller.preview({ worktreeId, action: 'forget-missing' }, signal)
+  assert.equal(preview.action, 'forget-missing')
+  if (preview.action !== 'forget-missing') assert.fail('Expected a missing-worktree preview.')
+  assert.equal(preview.inspection.worktreeMetadataAbsent, true)
+  assert.equal(preview.inspection.checkoutPathAbsent, true)
+  const result = await controller.confirm({ previewId, confirmed: true }, signal)
+  assert.equal(result.action, 'forget-missing')
+  assert.equal(result.worktree.lifecycle, 'removed')
+  assert.equal(missing.forgetCalls, 1)
+  assert.deepEqual(approval, {
+    action: 'forget-missing',
+    repositoryRoot: '/repo',
+    worktreePath: '/managed/worktree',
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+  })
+  await assert.rejects(controller.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeRecoveryControllerError) => error.code === 'NOT_FOUND')
+  assert.equal(missing.forgetCalls, 1)
+})
+
+test('rejects missing-checkout drift and an active-session race before forgetting', async () => {
+  const drifted = new FakeRecovery()
+  drifted.current.recoveryReason = 'missing'
+  delete drifted.current.pendingOperation
+  const driftController = new WorktreeRecoveryController(drifted, {
+    randomId: () => previewId,
+    approve: async () => true,
+  })
+  await driftController.preview({ worktreeId, action: 'forget-missing' }, signal)
+  drifted.missingInspection = { ...drifted.missingInspection, branch: 'refs/heads/other' }
+  await assert.rejects(driftController.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeRecoveryControllerError) => error.code === 'CONFLICT' && /after preview/i.test(error.message))
+  assert.equal(drifted.forgetCalls, 0)
+
+  const raced = new FakeRecovery()
+  raced.current.recoveryReason = 'missing'
+  delete raced.current.pendingOperation
+  raced.current.sessionId = 'harness-session'
+  let running = false
+  raced.beforeCommit = () => { running = true }
+  const racedController = new WorktreeRecoveryController(raced, {
+    randomId: () => previewId,
+    approve: async () => true,
+    isSessionRunning: sessionId => sessionId === 'harness-session' && running,
+  })
+  await racedController.preview({ worktreeId, action: 'forget-missing' }, signal)
+  await assert.rejects(racedController.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeRecoveryControllerError) => error.code === 'CONFLICT' && /active Harness session/i.test(error.message))
+  assert.equal(raced.forgetCalls, 0)
 })

@@ -50,6 +50,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /Keep worktree/)
   assert.match(bundle, /Keep interrupted worktree/)
   assert.match(bundle, /does not modify checkout files/)
+  assert.match(bundle, /Forget missing worktree/)
+  assert.match(bundle, /does not delete files or the Git branch/)
   assert.match(bundle, /Ignored files stay only in this checkout/)
   assert.match(bundle, /Git review/)
   assert.match(bundle, /Unresolved comments/)

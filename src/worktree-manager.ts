@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   DesktopProtocolError,
   GitRepositoryIdentity,
+  MissingWorktreeRecoveryInspection,
   WorktreeCleanupInspection,
   WorktreeHandoffDirection,
   WorktreeHandoffPreflight,
@@ -99,6 +100,11 @@ export interface WorktreeCleanupState {
 
 export interface InterruptedRemovalRecoveryState extends WorktreeCleanupState {
   removalOperationId: string
+}
+
+export interface MissingWorktreeRecoveryState {
+  record: WorktreeRecord
+  inspection: MissingWorktreeRecoveryInspection
 }
 
 export interface ManagedWorktreeHandoffExpectation {
@@ -225,6 +231,15 @@ function sameCleanupInspection(
     })
 }
 
+function sameMissingWorktreeInspection(
+  left: MissingWorktreeRecoveryInspection,
+  right: MissingWorktreeRecoveryInspection,
+): boolean {
+  return left.repositoryRoot === right.repositoryRoot && left.worktreePath === right.worktreePath &&
+    left.branch === right.branch && left.worktreeMetadataAbsent === right.worktreeMetadataAbsent &&
+    left.checkoutPathAbsent === right.checkoutPathAbsent
+}
+
 function assertCleanupRecord(record: WorktreeRecord, action = 'cleanup'): asserts record is WorktreeRecord & {
   executionMode: 'worktree'
   worktreePath: string
@@ -341,6 +356,91 @@ export class WorktreeManager {
     }
     beforeCommit?.(current.record)
     return withMappedErrorSync(() => this.registry.keepInterruptedRemoval(id, removalOperationId), true)
+  }
+
+  async inspectMissingWorktree(
+    id: string,
+    signal: AbortSignal,
+  ): Promise<MissingWorktreeRecoveryState> {
+    if (!isBoundedString(id, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree identifier is invalid.')
+    }
+    const record = withMappedErrorSync(() => this.registry.get(id))
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    if (record.executionMode !== 'worktree' || record.worktreePath === undefined || record.branch === undefined ||
+      record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'missing' ||
+      record.pendingOperation !== undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'This worktree does not have a missing checkout to forget.')
+    }
+    const repository = await withMappedError(() => this.git.discoverRepository(record.repository.root, signal), true)
+    if (repository.root !== record.repository.root || repository.gitDir !== record.repository.gitDir ||
+      repository.commonDir !== record.repository.commonDir) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The original repository identity changed. Recheck the worktree before resolving it.',
+        true,
+      )
+    }
+    const entries = await withMappedError(() => this.git.listWorktrees(repository.root, signal), true)
+    if (entries.some(entry => entry.path === record.worktreePath)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'Git still lists the missing checkout. Recheck or prune its metadata before forgetting it.',
+      )
+    }
+    if (entries.some(entry => entry.branch === record.branch)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The managed branch is checked out at another path. Recheck the worktree before resolving it.',
+      )
+    }
+    const pathState = await checkoutPathState(record.worktreePath)
+    if (pathState === 'present') {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The checkout path exists and will not be forgotten.',
+        true,
+      )
+    }
+    if (pathState === 'unknown') {
+      throw new WorktreeManagerError(
+        'DESKTOP_UNAVAILABLE',
+        'The checkout path could not be verified as absent.',
+        true,
+      )
+    }
+    return {
+      record,
+      inspection: {
+        repositoryRoot: repository.root,
+        worktreePath: record.worktreePath,
+        branch: record.branch,
+        worktreeMetadataAbsent: true,
+        checkoutPathAbsent: true,
+      },
+    }
+  }
+
+  async forgetMissingWorktree(
+    id: string,
+    resolutionOperationId: string,
+    expected: MissingWorktreeRecoveryInspection,
+    signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    if (!isBoundedString(resolutionOperationId, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The missing-worktree resolution identifier is invalid.')
+    }
+    const current = await this.inspectMissingWorktree(id, signal)
+    if (!sameMissingWorktreeInspection(current.inspection, expected)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The missing checkout changed after approval. Inspect it again.',
+      )
+    }
+    beforeCommit?.(current.record)
+    return withMappedErrorSync(() =>
+      this.registry.forgetMissingWorktree(id, resolutionOperationId), true)
   }
 
   async inspectHandoff(

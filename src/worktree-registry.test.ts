@@ -263,6 +263,38 @@ test('leaves an interrupted removal durable when keeping it cannot be persisted'
   assert.deepEqual(durable?.pendingOperation, { id: 'remove-keep-failure', kind: 'remove' })
 })
 
+test('forgets only an exact missing worktree record and deduplicates its resolution', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-forget-missing-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.json')
+  const registry = new WorktreeRegistry(path)
+  const reserved = registry.reserve(reservation({ operationId: 'create-forget-missing' }))
+  registry.markReady(reserved.id, 'create-forget-missing')
+  registry.requireRecovery(reserved.id, 'missing')
+
+  const forgotten = registry.forgetMissingWorktree(reserved.id, 'forget-missing-operation')
+  assert.equal(forgotten.lifecycle, 'removed')
+  assert.equal(forgotten.removalOperationId, 'forget-missing:forget-missing-operation')
+  assert.equal(forgotten.recoveryReason, undefined)
+  assert.equal(registry.getByOperation('forget-missing-operation'), undefined)
+  assert.equal(registry.getByOperation('forget-missing:forget-missing-operation')?.id, reserved.id)
+  const revision = registry.status().revision
+  assert.equal(registry.forgetMissingWorktree(reserved.id, 'forget-missing-operation').lifecycle, 'removed')
+  assert.equal(registry.status().revision, revision)
+  assert.equal(new WorktreeRegistry(path).get(reserved.id)?.lifecycle, 'removed')
+
+  const second = registry.reserve(reservation({
+    operationId: 'create-forget-missing-second',
+    requestedBySessionId: 'session-2',
+    worktreePath: '/worktrees/session-2',
+    branch: 'refs/heads/dsh/session-2',
+  }))
+  registry.markReady(second.id, 'create-forget-missing-second')
+  registry.requireRecovery(second.id, 'missing')
+  assert.throws(() => registry.forgetMissingWorktree(second.id, 'forget-missing-operation'),
+    (error: WorktreeRegistryError) => error.code === 'DUPLICATE_REQUEST')
+})
+
 test('keeps persisted timestamps valid when the system clock moves backwards', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-clock-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
