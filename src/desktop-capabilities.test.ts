@@ -128,3 +128,63 @@ test('dispatches workspace file capabilities with caller cancellation', async ()
   })
   assert.deepEqual(operations, ['reveal:README.md', 'open:README.md'])
 })
+
+test('routes only the bounded read-only computer capabilities', async () => {
+  const calls: string[] = []
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    connections,
+    computer: {
+      getPermissions: async signal => {
+        assert.equal(signal.aborted, false)
+        calls.push('permissions')
+        return {
+          supported: true,
+          screenRecording: 'granted',
+          accessibility: 'denied',
+          canObserve: true,
+        }
+      },
+      listApplications: async () => {
+        calls.push('applications')
+        return {
+          permissions: {
+            supported: true,
+            screenRecording: 'granted',
+            accessibility: 'denied',
+            canObserve: true,
+          },
+          applications: [],
+        }
+      },
+      observe: async sessionId => {
+        calls.push(`observe:${sessionId}`)
+        return {
+          version: 1,
+          snapshotId: 'snapshot-1',
+          observedAt: '2026-08-16T12:00:00.000Z',
+          target: { id: 'display:1', kind: 'display', name: 'Main Display' },
+          capture: {
+            bounds: { x: 0, y: 0, width: 800, height: 600 },
+            displayScale: 2,
+            pixelWidth: 1600,
+            pixelHeight: 1200,
+            screenshotCaptured: true,
+          },
+          elements: [],
+          truncated: false,
+          warnings: [],
+        }
+      },
+    },
+  })
+  const context = { requestId: 'computer-1', signal: new AbortController().signal }
+
+  assert.equal((await handlers['computer.getPermissions']({}, context)).canObserve, true)
+  assert.deepEqual((await handlers['computer.listApps']({}, context)).applications, [])
+  assert.equal((await handlers['computer.observe']({ sessionId: 'session-1' }, context)).snapshotId, 'snapshot-1')
+  assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1'])
+})

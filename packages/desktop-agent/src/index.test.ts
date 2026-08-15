@@ -25,12 +25,15 @@ test('registers workspace-bound file tools and asks before opening', async () =>
 
   apply(ctx)
   assert.deepEqual(definitions.map(definition => definition.name), [
+    'computer_get_permissions',
+    'computer_list_apps',
+    'computer_observe',
     'desktop_reveal_file',
     'desktop_open_file',
   ])
 
   const signal = new AbortController().signal
-  await definitions[0]!.execute({ path: 'README.md' }, {
+  await definitions[3]!.execute({ path: 'README.md' }, {
     agent: { id: 'session-1', session: { header: { cwd: '/repo' } } },
     signal,
   } as never)
@@ -61,8 +64,37 @@ test('refuses a desktop file action without an authoritative workspace', async (
   } as unknown as Context
   apply(ctx)
 
-  await assert.rejects(definitions[0]!.execute({ path: 'README.md' }, {
+  await assert.rejects(definitions[3]!.execute({ path: 'README.md' }, {
     agent: { id: 'session-1', session: { header: {} } },
     signal: new AbortController().signal,
   } as never), /requires an agent session with a workspace/)
+})
+
+test('registers read-only computer tools and binds observations to the agent session', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: unknown }> = []
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: unknown) => {
+        calls.push({ method, params })
+        return {}
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+  const execution = {
+    agent: { id: 'session-7', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never
+
+  await definitions[0]!.execute({}, execution)
+  await definitions[1]!.execute({}, execution)
+  await definitions[2]!.execute({}, execution)
+  assert.deepEqual(calls, [
+    { method: 'computer.getPermissions', params: {} },
+    { method: 'computer.listApps', params: {} },
+    { method: 'computer.observe', params: { sessionId: 'session-7' } },
+  ])
 })

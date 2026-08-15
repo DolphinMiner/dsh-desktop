@@ -21,8 +21,10 @@ import {
   parseCancelOAuthInput,
   parseConnectApiKeyInput,
   parseDisconnectConnectionInput,
+  parseSelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
+import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ConnectionManager } from './connection-manager'
 import { ConnectionRegistry } from './connection-registry'
 import { CredentialVault, safeStorageBackend } from './credential-vault'
@@ -34,6 +36,7 @@ import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
 import { McpCredentialProxy } from './mcp-credential-proxy'
+import { NativeComputerHelper } from './native-computer-helper'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
@@ -51,6 +54,7 @@ let mainWindow: BrowserWindow | undefined
 let harness: HarnessService | undefined
 let harnessRecovery: HarnessRecoveryController | undefined
 let mcpProxy: McpCredentialProxy | undefined
+let computerObserver: ComputerObserver | undefined
 let windowStateStore: WindowStateStore | undefined
 let harnessOrigin: string | undefined
 let oauthCoordinator: LinearOAuthCoordinator | undefined
@@ -175,6 +179,15 @@ function resolveDshBin(): string {
   const bin = join(dirname(packageJson), 'lib', 'bin.js')
   if (!existsSync(bin)) throw new Error(`The bundled Harness executable is missing: ${bin}`)
   return bin
+}
+
+function resolveComputerHelper(): string {
+  if (process.platform !== 'darwin') {
+    throw new Error('Computer observation is only available on macOS.')
+  }
+  return app.isPackaged
+    ? join(process.resourcesPath, 'helpers', 'DSHComputerHelper')
+    : join(app.getAppPath(), 'build', 'native', 'DSHComputerHelper')
 }
 
 function loadingPagePath(): string {
@@ -358,7 +371,7 @@ function publishRecoveryExhausted(maxAttempts: number): void {
   })
 }
 
-function installIpcHandlers(connections: ConnectionManager): void {
+function installIpcHandlers(connections: ConnectionManager, computer: ComputerObserver): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
     const loadingPageUrl = pathToFileURL(loadingPagePath()).href
@@ -393,6 +406,32 @@ function installIpcHandlers(connections: ConnectionManager): void {
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('desktop:computer:get-state', event => {
+    assertTrustedSender(event)
+    return computer.snapshot()
+  })
+  ipcMain.handle('desktop:computer:refresh', async event => {
+    assertTrustedSender(event)
+    return computer.refresh()
+  })
+  ipcMain.handle('desktop:computer:select-target', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = parseSelectComputerTargetInput(value)
+    if (input === undefined) throw new Error('The computer target request is invalid.')
+    return computer.selectTarget(input.targetId)
+  })
+  ipcMain.handle('desktop:computer:stop', async event => {
+    assertTrustedSender(event)
+    return computer.stop()
+  })
+  ipcMain.handle('desktop:computer:open-permission-settings', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    if (value !== 'screen-recording' && value !== 'accessibility') {
+      throw new Error('The computer permission request is invalid.')
+    }
+    const pane = value === 'screen-recording' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'
+    await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
   })
   ipcMain.handle('desktop:connections:list', event => {
     assertTrustedSender(event)
@@ -550,8 +589,21 @@ app.whenReady().then(async () => {
   mcpProxy = new McpCredentialProxy(connections)
   await mcpProxy.start()
 
+  computerObserver = new ComputerObserver(
+    new NativeComputerHelper(resolveComputerHelper()),
+    new ComputerCaptureStore(join(app.getPath('temp'), 'com.dolphinminer.dsh-desktop', 'computer-captures')),
+    {
+      onChange: snapshot => {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('desktop:computer-changed', snapshot)
+        }
+      },
+    },
+  )
+  await computerObserver.stop()
+
   installMenu()
-  installIpcHandlers(connections)
+  installIpcHandlers(connections, computerObserver)
 
   windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {
     onError: error => console.error('Could not persist the desktop window state.', error),
@@ -603,13 +655,18 @@ app.whenReady().then(async () => {
         return { opened: true, path }
       },
     },
+    computer: {
+      getPermissions: signal => computerObserver!.getPermissions(signal),
+      listApplications: signal => computerObserver!.listApplications(signal),
+      observe: (sessionId, signal) => computerObserver!.observe(sessionId, signal),
+    },
     connections: {
       snapshot: () => connections.snapshot(),
       resolveMcpTransport: (connectionId, signal) =>
         mcpProxy!.resolveMcpTransport(connectionId, signal),
       reportStatus: params => connections.reportStatus(params),
     },
-  }))
+  }), { requestTimeoutMs: 30_000 })
   connections.onChange(snapshot => {
     for (const connection of snapshot.connections) {
       if (connection.status === 'disconnected') mcpProxy?.revoke(connection.id)
@@ -635,6 +692,7 @@ app.whenReady().then(async () => {
     onDisconnect: () => {
       activityTracker.clear()
       connections.hostDisconnected()
+      void computerObserver?.stop().catch(() => undefined)
     },
     onUnexpectedFailure: () => harnessRecovery?.handleUnexpectedFailure(),
     onState: publishState,
@@ -676,6 +734,7 @@ app.on('before-quit', event => {
   const stopServices = Promise.all([
     harness?.stop() ?? Promise.resolve(),
     mcpProxy?.stop() ?? Promise.resolve(),
+    computerObserver?.dispose() ?? Promise.resolve(),
     windowStateStore?.flush() ?? Promise.resolve(),
   ])
   void stopServices

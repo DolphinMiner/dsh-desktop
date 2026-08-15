@@ -12,6 +12,8 @@ const OUTPUT_SCHEMA = {
   },
 } as const
 
+const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
+
 function agentWorkspace(exec: { agent?: { id: string; session: { header: { cwd?: string } } } }): {
   sessionId: string
   workspaceRoot: string
@@ -27,6 +29,63 @@ function agentWorkspace(exec: { agent?: { id: string; session: { header: { cwd?:
 export const inject = ['desktopBridge', 'tools']
 
 export function apply(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'computer_get_permissions',
+    description: 'Check whether this Mac allows read-only screen observation and accessibility inspection.',
+    parameters: {},
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Check computer permissions', kind: 'read' }),
+    async execute(_args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call(
+        'computer.getPermissions',
+        {},
+        { signal: exec.signal },
+      )))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_list_apps',
+    description: 'List running Mac applications and report which user-selected target may be observed.',
+    parameters: {},
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'List running applications', kind: 'read' }),
+    async execute(_args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call(
+        'computer.listApps',
+        {},
+        { signal: exec.signal },
+      )))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_observe',
+    description: 'Observe the application, window, or display explicitly selected in Desktop settings. Read only.',
+    parameters: {},
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Observe selected computer target', kind: 'read' }),
+    timeoutMs: 30_000,
+    async execute(_args, exec) {
+      const sessionId = exec.agent?.id
+      if (sessionId === undefined) throw new Error('Computer observation requires an agent session.')
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call(
+        'computer.observe',
+        { sessionId },
+        { signal: exec.signal, timeoutMs: 30_000 },
+      )))
+    },
+  }))
+
   ctx.tools.register(defineTool({
     name: 'desktop_reveal_file',
     description: 'Reveal an existing file or directory inside the current workspace in Finder.',

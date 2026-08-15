@@ -24,6 +24,14 @@ export interface DesktopBridge {
   pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+  computer: {
+    getState(): Promise<ComputerControlSnapshot>
+    refresh(): Promise<ComputerControlSnapshot>
+    selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
+    stop(): Promise<ComputerControlSnapshot>
+    openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
+    onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
+  }
   connections: {
     list(): Promise<ConnectionSnapshot>
     connectApiKey(input: ConnectApiKeyInput): Promise<ConnectionSnapshot>
@@ -40,6 +48,8 @@ import type {
   CancelOAuthInput,
   ConnectApiKeyInput,
   ConnectionSnapshot,
+  ComputerControlSnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  SelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'

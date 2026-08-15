@@ -29,6 +29,20 @@ const bridge: DesktopBridge = {
     for (const command of pendingCommands.splice(0)) listener(command)
     return () => { commandListeners.delete(listener) }
   },
+  computer: {
+    getState: () => ipcRenderer.invoke('desktop:computer:get-state'),
+    refresh: () => ipcRenderer.invoke('desktop:computer:refresh'),
+    selectTarget: input => ipcRenderer.invoke('desktop:computer:select-target', input),
+    stop: () => ipcRenderer.invoke('desktop:computer:stop'),
+    openPermissionSettings: kind => ipcRenderer.invoke('desktop:computer:open-permission-settings', kind),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
+        listener(snapshot)
+      }
+      ipcRenderer.on('desktop:computer-changed', handler)
+      return () => ipcRenderer.removeListener('desktop:computer-changed', handler)
+    },
+  },
   connections: {
     list: () => ipcRenderer.invoke('desktop:connections:list'),
     connectApiKey: input => ipcRenderer.invoke('desktop:connections:connect-api-key', input),

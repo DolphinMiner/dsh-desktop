@@ -13,6 +13,7 @@ import {
   isLikelyReadOnlyMcpTool,
   parseComputerObservation,
   parseComputerPermissions,
+  parseSelectComputerTargetInput,
 } from './index'
 
 test('round-trips a valid capability request', () => {
@@ -165,4 +166,6 @@ test('validates bounded computer permissions and observations', () => {
     sessionId: 'session-1',
   })
   assert.deepEqual(parseCapabilityResult('computer.observe', observation), observation)
+  assert.deepEqual(parseSelectComputerTargetInput({ targetId: 'window:7' }), { targetId: 'window:7' })
+  assert.equal(parseSelectComputerTargetInput({ targetId: 'window:7', path: '/tmp' }), undefined)
 })
