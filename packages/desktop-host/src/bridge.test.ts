@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   createFailureResponse,
   createSuccessResponse,
+  DESKTOP_PROTOCOL_VERSION,
   DesktopProtocolMessage,
   parseDesktopProtocolMessage,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -47,10 +48,13 @@ test('resolves a validated response', async () => {
   const client = new DesktopCapabilityClient(transport)
   const pending = client.call('desktop.ping', { nonce: 'hello' })
   const request = transport.sent[0]
-  assert.equal(request?.kind, 'request')
-  transport.receive(createSuccessResponse(request.id, { nonce: 'hello', protocolVersion: 1 }))
+  if (request?.kind !== 'request') throw new Error('expected a request')
+  transport.receive(createSuccessResponse(request.id, {
+    nonce: 'hello',
+    protocolVersion: DESKTOP_PROTOCOL_VERSION,
+  }))
 
-  assert.deepEqual(await pending, { nonce: 'hello', protocolVersion: 1 })
+  assert.deepEqual(await pending, { nonce: 'hello', protocolVersion: DESKTOP_PROTOCOL_VERSION })
   client.dispose()
 })
 
@@ -59,6 +63,7 @@ test('rejects structured failures and invalid responses', async () => {
   const client = new DesktopCapabilityClient(transport)
   const failed = client.call('desktop.ping', { nonce: 'failure' })
   const first = transport.sent[0]
+  if (first?.kind !== 'request') throw new Error('expected a request')
   transport.receive(createFailureResponse(first.id, {
     code: 'METHOD_NOT_FOUND',
     message: 'missing',
@@ -69,6 +74,7 @@ test('rejects structured failures and invalid responses', async () => {
 
   const malformed = client.call('desktop.ping', { nonce: 'bad-result' })
   const second = transport.sent[1]
+  if (second?.kind !== 'request') throw new Error('expected a request')
   transport.receive(createSuccessResponse(second.id, { nope: true }))
   await assert.rejects(malformed, (error: unknown) => {
     return error instanceof DesktopCapabilityError && error.code === 'BAD_MESSAGE'

@@ -6,6 +6,8 @@ import {
   DesktopCapabilityResult,
   DesktopProtocolError,
   DesktopResponse,
+  isDesktopProtocolErrorCode,
+  isSensitiveCapabilityMethod,
   parseCapabilityParams,
   parseDesktopProtocolMessage,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -37,6 +39,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 const DEFAULT_RESPONSE_CACHE_SIZE = 256
 
 function internalError(error: unknown): DesktopProtocolError {
+  if (typeof error === 'object' && error !== null && 'code' in error &&
+    isDesktopProtocolErrorCode(error.code) && 'message' in error &&
+    typeof error.message === 'string') {
+    return { code: error.code, message: error.message }
+  }
   return {
     code: 'INTERNAL_ERROR',
     message: error instanceof Error && error.name === 'AbortError'
@@ -62,7 +69,7 @@ export class DesktopCapabilityBroker {
 
   receive(value: unknown, reply: (response: DesktopResponse) => void): void {
     const message = parseDesktopProtocolMessage(value)
-    if (message === undefined || message.kind === 'response') return
+    if (message === undefined || message.kind === 'response' || message.kind === 'event') return
 
     if (message.kind === 'cancel') {
       this.inFlight.get(message.id)?.controller.abort()
@@ -81,7 +88,7 @@ export class DesktopCapabilityBroker {
       this.complete(message.id, createFailureResponse(message.id, {
         code: 'METHOD_NOT_FOUND',
         message: `Desktop capability ${String(method)} is not available.`,
-      }), reply)
+      }), reply, true)
       return
     }
     const params = parseCapabilityParams(method, message.params)
@@ -89,7 +96,7 @@ export class DesktopCapabilityBroker {
       this.complete(message.id, createFailureResponse(message.id, {
         code: 'BAD_MESSAGE',
         message: `Desktop capability ${String(method)} received invalid parameters.`,
-      }), reply)
+      }), reply, true)
       return
     }
 
@@ -103,7 +110,7 @@ export class DesktopCapabilityBroker {
           code: 'TIMEOUT',
           message: `Desktop capability ${String(method)} timed out.`,
           ambiguous: true,
-        }), reply)
+        }), reply, !isSensitiveCapabilityMethod(method))
       }, this.requestTimeoutMs),
     }
     this.inFlight.set(message.id, inFlight)
@@ -114,7 +121,12 @@ export class DesktopCapabilityBroker {
     ) => unknown | Promise<unknown>
     void Promise.resolve(handler(params, { requestId: message.id, signal: controller.signal }))
       .then(result => {
-        this.settle(message.id, createSuccessResponse(message.id, result), reply)
+        this.settle(
+          message.id,
+          createSuccessResponse(message.id, result),
+          reply,
+          !isSensitiveCapabilityMethod(method),
+        )
       })
       .catch(error => {
         const failure = controller.signal.aborted
@@ -124,7 +136,12 @@ export class DesktopCapabilityBroker {
               ambiguous: true,
             }
           : internalError(error)
-        this.settle(message.id, createFailureResponse(message.id, failure), reply)
+        this.settle(
+          message.id,
+          createFailureResponse(message.id, failure),
+          reply,
+          !isSensitiveCapabilityMethod(method),
+        )
       })
   }
 
@@ -138,21 +155,33 @@ export class DesktopCapabilityBroker {
     this.completed.clear()
   }
 
-  private settle(id: string, response: DesktopResponse, reply: (response: DesktopResponse) => void): void {
+  private settle(
+    id: string,
+    response: DesktopResponse,
+    reply: (response: DesktopResponse) => void,
+    cache: boolean,
+  ): void {
     const request = this.inFlight.get(id)
     if (request === undefined || request.settled) return
     request.settled = true
     clearTimeout(request.timeout)
     this.inFlight.delete(id)
-    this.complete(id, response, reply)
+    this.complete(id, response, reply, cache)
   }
 
-  private complete(id: string, response: DesktopResponse, reply: (response: DesktopResponse) => void): void {
-    this.completed.set(id, response)
-    while (this.completed.size > this.responseCacheSize) {
-      const oldest = this.completed.keys().next().value as string | undefined
-      if (oldest === undefined) break
-      this.completed.delete(oldest)
+  private complete(
+    id: string,
+    response: DesktopResponse,
+    reply: (response: DesktopResponse) => void,
+    cache: boolean,
+  ): void {
+    if (cache) {
+      this.completed.set(id, response)
+      while (this.completed.size > this.responseCacheSize) {
+        const oldest = this.completed.keys().next().value as string | undefined
+        if (oldest === undefined) break
+        this.completed.delete(oldest)
+      }
     }
     reply(response)
   }

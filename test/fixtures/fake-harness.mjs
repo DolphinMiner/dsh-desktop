@@ -29,7 +29,7 @@ if (mode === 'ready' || mode === 'capability') {
       if (typeof process.send !== 'function') process.exit(3)
       process.send({
         channel: 'dsh-desktop',
-        version: 1,
+        version: 2,
         kind: 'request',
         id: 'fixture-ping',
         method: 'desktop.ping',

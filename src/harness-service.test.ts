@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import { DESKTOP_PROTOCOL_VERSION } from '@dolphinminer/dsh-desktop-protocol'
+
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { HarnessService } from './harness-service'
@@ -120,10 +122,20 @@ test('routes a child-process capability request through the desktop broker', asy
   const handlers = createDesktopCapabilityHandlers({
     isAppFocused: () => false,
     notifications: { isSupported: () => false, show: () => undefined },
+    connections: {
+      snapshot: () => ({
+        revision: 0,
+        vault: { available: true },
+        oauth: { linear: { available: false } },
+        connections: [],
+      }),
+      resolveCredential: () => Promise.reject(new Error('not configured')),
+      reportStatus: () => ({ accepted: false, revision: 0 }),
+    },
   })
   handlers['desktop.ping'] = params => {
     resolvePing(params.nonce)
-    return { nonce: params.nonce, protocolVersion: 1 }
+    return { nonce: params.nonce, protocolVersion: DESKTOP_PROTOCOL_VERSION }
   }
   const service = new HarnessService({
     dshBin: FIXTURE_PATH,

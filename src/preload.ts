@@ -11,6 +11,20 @@ const bridge: DesktopBridge = {
     ipcRenderer.on('desktop:harness-state', handler)
     return () => ipcRenderer.removeListener('desktop:harness-state', handler)
   },
+  connections: {
+    list: () => ipcRenderer.invoke('desktop:connections:list'),
+    connectApiKey: input => ipcRenderer.invoke('desktop:connections:connect-api-key', input),
+    disconnect: input => ipcRenderer.invoke('desktop:connections:disconnect', input),
+    beginOAuth: input => ipcRenderer.invoke('desktop:connections:begin-oauth', input),
+    cancelOAuth: input => ipcRenderer.invoke('desktop:connections:cancel-oauth', input),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
+        listener(snapshot)
+      }
+      ipcRenderer.on('desktop:connections-changed', handler)
+      return () => ipcRenderer.removeListener('desktop:connections-changed', handler)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('dshDesktop', bridge)

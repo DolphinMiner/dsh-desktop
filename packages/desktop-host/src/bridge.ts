@@ -6,6 +6,8 @@ import {
   DesktopCapabilityMethod,
   DesktopCapabilityParams,
   DesktopCapabilityResult,
+  DesktopEventData,
+  DesktopEventName,
   DesktopProtocolError,
   parseCapabilityResult,
   parseDesktopProtocolMessage,
@@ -44,6 +46,7 @@ export interface DesktopCallOptions {
 
 export class DesktopCapabilityClient {
   private readonly pending = new Map<string, PendingRequest>()
+  private readonly eventListeners = new Map<DesktopEventName, Set<(data: unknown) => void>>()
   private readonly removeMessageListener: () => void
   private readonly removeDisconnectListener: () => void
   private disposed = false
@@ -126,6 +129,7 @@ export class DesktopCapabilityClient {
     this.disposed = true
     this.removeMessageListener()
     this.removeDisconnectListener()
+    this.eventListeners.clear()
     this.rejectAll(new DesktopCapabilityError(
       'DESKTOP_UNAVAILABLE',
       'The desktop bridge was disposed.',
@@ -133,8 +137,25 @@ export class DesktopCapabilityClient {
     ))
   }
 
+  on<E extends DesktopEventName>(
+    event: E,
+    listener: (data: DesktopEventData<E>) => void,
+  ): () => void {
+    const listeners = this.eventListeners.get(event) ?? new Set<(data: unknown) => void>()
+    listeners.add(listener as (data: unknown) => void)
+    this.eventListeners.set(event, listeners)
+    return () => {
+      listeners.delete(listener as (data: unknown) => void)
+      if (listeners.size === 0) this.eventListeners.delete(event)
+    }
+  }
+
   private receive(value: unknown): void {
     const message = parseDesktopProtocolMessage(value)
+    if (message?.kind === 'event') {
+      for (const listener of this.eventListeners.get(message.event) ?? []) listener(message.data)
+      return
+    }
     if (message?.kind !== 'response') return
     const pending = this.take(message.id)
     if (pending === undefined) return

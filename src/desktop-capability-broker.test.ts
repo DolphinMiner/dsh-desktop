@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   createCancel,
   createRequest,
+  DESKTOP_PROTOCOL_VERSION,
   DesktopResponse,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -17,6 +18,16 @@ function testHandlers() {
       isSupported: () => true,
       show: () => undefined,
     },
+    connections: {
+      snapshot: () => ({
+        revision: 0,
+        vault: { available: true, backend: 'test' },
+        oauth: { linear: { available: false } },
+        connections: [],
+      }),
+      resolveCredential: () => Promise.reject(new Error('not configured')),
+      reportStatus: () => ({ accepted: false, revision: 0 }),
+    },
   })
 }
 
@@ -28,16 +39,16 @@ test('dispatches allowlisted methods and validates parameters', async () => {
 
   assert.deepEqual(replies, [{
     channel: 'dsh-desktop',
-    version: 1,
+    version: DESKTOP_PROTOCOL_VERSION,
     kind: 'response',
     id: 'ping-1',
     ok: true,
-    result: { nonce: 'hello', protocolVersion: 1 },
+    result: { nonce: 'hello', protocolVersion: DESKTOP_PROTOCOL_VERSION },
   }])
 
   broker.receive({
     channel: 'dsh-desktop',
-    version: 1,
+    version: DESKTOP_PROTOCOL_VERSION,
     kind: 'request',
     id: 'bad-1',
     method: 'desktop.notify',
@@ -52,7 +63,7 @@ test('rejects unknown methods and replays one cached result for duplicate IDs', 
   const handlers = testHandlers()
   handlers['desktop.ping'] = params => {
     calls += 1
-    return { nonce: params.nonce, protocolVersion: 1 }
+    return { nonce: params.nonce, protocolVersion: DESKTOP_PROTOCOL_VERSION }
   }
   const broker = new DesktopCapabilityBroker(handlers)
   const replies: DesktopResponse[] = []
@@ -67,7 +78,7 @@ test('rejects unknown methods and replays one cached result for duplicate IDs', 
 
   broker.receive({
     channel: 'dsh-desktop',
-    version: 1,
+    version: DESKTOP_PROTOCOL_VERSION,
     kind: 'request',
     id: 'unknown-1',
     method: 'desktop.nope',

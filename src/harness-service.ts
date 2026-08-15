@@ -1,4 +1,4 @@
-import { ChildProcess, spawn } from 'node:child_process'
+import { ChildProcess, Serializable, spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync, WriteStream } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable } from 'node:stream'
@@ -17,6 +17,7 @@ interface HarnessServiceOptions {
   profileName?: string
   startupTimeoutMs?: number
   capabilityBroker?: DesktopCapabilityBroker
+  onDisconnect?: () => void
   onState: (state: HarnessState) => void
 }
 
@@ -122,7 +123,10 @@ export class HarnessService {
     })
 
     child.once('disconnect', () => {
-      if (this.child === child) this.options.capabilityBroker?.disconnect()
+      if (this.child === child) {
+        this.options.capabilityBroker?.disconnect()
+        this.options.onDisconnect?.()
+      }
     })
 
     child.once('exit', (code, signal) => {
@@ -133,6 +137,7 @@ export class HarnessService {
 
       if (this.child === child) this.child = undefined
       this.options.capabilityBroker?.disconnect()
+      this.options.onDisconnect?.()
       this.clearStartupTimer()
 
       if (runId === this.runId && !this.stopping) {
@@ -183,6 +188,16 @@ export class HarnessService {
     })
 
     await this.closeLog()
+  }
+
+  send(message: Serializable): boolean {
+    const child = this.child
+    if (child === undefined || !child.connected || this.stopping) return false
+    try {
+      return child.send(message)
+    } catch {
+      return false
+    }
   }
 
   private inspectLine(line: string, runId: number): void {

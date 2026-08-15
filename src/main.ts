@@ -3,12 +3,31 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { app, BrowserWindow, ipcMain, Menu, Notification, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  Notification,
+  safeStorage,
+  shell,
+} from 'electron'
+import {
+  createEvent,
+  parseBeginOAuthInput,
+  parseCancelOAuthInput,
+  parseConnectApiKeyInput,
+  parseDisconnectConnectionInput,
+} from '@dolphinminer/dsh-desktop-protocol'
 
+import { ConnectionManager } from './connection-manager'
+import { ConnectionRegistry } from './connection-registry'
+import { CredentialVault } from './credential-vault'
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
+import { UnavailableOAuthProvider } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 
@@ -153,13 +172,18 @@ async function startHarness(): Promise<void> {
   await harness?.start()
 }
 
-function installIpcHandlers(): void {
+function installIpcHandlers(connections: ConnectionManager): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
     const loadingPageUrl = pathToFileURL(loadingPagePath()).href
-    if (!isTrustedDesktopBridgeSender(senderUrl, loadingPageUrl)) {
+    if (!isTrustedDesktopBridgeSender(senderUrl, loadingPageUrl, harnessOrigin)) {
       throw new Error('Desktop bridge access was denied for this page.')
     }
+  }
+
+  const validInput = <T>(value: T | undefined): T => {
+    if (value === undefined) throw new Error('The desktop connection request is invalid.')
+    return value
   }
 
   ipcMain.handle('desktop:get-harness-state', event => {
@@ -173,6 +197,26 @@ function installIpcHandlers(): void {
   ipcMain.handle('desktop:show-harness-log', event => {
     assertTrustedSender(event)
     if (state.logPath !== '') shell.showItemInFolder(state.logPath)
+  })
+  ipcMain.handle('desktop:connections:list', event => {
+    assertTrustedSender(event)
+    return connections.snapshot()
+  })
+  ipcMain.handle('desktop:connections:connect-api-key', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return connections.connectApiKey(validInput(parseConnectApiKeyInput(value)))
+  })
+  ipcMain.handle('desktop:connections:disconnect', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return connections.disconnect(validInput(parseDisconnectConnectionInput(value)))
+  })
+  ipcMain.handle('desktop:connections:begin-oauth', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return connections.beginOAuth(validInput(parseBeginOAuthInput(value)))
+  })
+  ipcMain.handle('desktop:connections:cancel-oauth', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return connections.cancelOAuth(validInput(parseCancelOAuthInput(value)))
   })
 }
 
@@ -220,8 +264,20 @@ function installMenu(): void {
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return
 
+  const desktopDataPath = join(app.getPath('userData'), 'desktop')
+  const connections = new ConnectionManager(
+    new ConnectionRegistry(join(desktopDataPath, 'connections.v1.json')),
+    new CredentialVault(join(desktopDataPath, 'credentials.v1.json'), {
+      isAvailable: () => safeStorage.isEncryptionAvailable(),
+      backend: () => safeStorage.getSelectedStorageBackend(),
+      encrypt: plaintext => safeStorage.encryptString(plaintext),
+      decrypt: ciphertext => safeStorage.decryptString(ciphertext),
+    }),
+    new UnavailableOAuthProvider(),
+  )
+
   installMenu()
-  installIpcHandlers()
+  installIpcHandlers(connections)
 
   mainWindow = createWindow()
   await showLoadingPage()
@@ -248,7 +304,14 @@ app.whenReady().then(async () => {
         notification.show()
       },
     },
+    connections,
   }))
+  connections.onChange(snapshot => {
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('desktop:connections-changed', snapshot)
+    }
+    harness?.send(createEvent('connections.changed', { revision: snapshot.revision }))
+  })
   harness = new HarnessService({
     dshBin: resolveDshBin(),
     dshHome,
@@ -257,6 +320,7 @@ app.whenReady().then(async () => {
     nodeExecutable: process.execPath,
     profileName: 'desktop',
     capabilityBroker,
+    onDisconnect: () => connections.hostDisconnected(),
     onState: publishState,
   })
 

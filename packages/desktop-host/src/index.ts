@@ -5,6 +5,8 @@ import {
   DesktopCapabilityMethod,
   DesktopCapabilityParams,
   DesktopCapabilityResult,
+  DesktopEventData,
+  DesktopEventName,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import {
@@ -34,6 +36,13 @@ export class DesktopBridgeService extends Service {
     options?: DesktopCallOptions,
   ): Promise<DesktopCapabilityResult<M>> {
     return this.client.call(method, params, options)
+  }
+
+  on<E extends DesktopEventName>(
+    event: E,
+    listener: (data: DesktopEventData<E>) => void,
+  ): () => void {
+    return this.client.on(event, listener)
   }
 
   dispose(): void {

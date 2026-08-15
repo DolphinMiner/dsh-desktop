@@ -1,5 +1,9 @@
 import {
   DESKTOP_PROTOCOL_VERSION,
+  ConnectionRuntimeStatusParams,
+  ConnectionSnapshot,
+  ConnectionSummary,
+  ConnectionCredential,
   DesktopNotificationParams,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -13,6 +17,14 @@ export interface DesktopNotificationAdapter {
 export interface DesktopCapabilityDependencies {
   isAppFocused(): boolean
   notifications: DesktopNotificationAdapter
+  connections: {
+    snapshot(): ConnectionSnapshot
+    resolveCredential(connectionId: string, signal?: AbortSignal): Promise<{
+      connection: ConnectionSummary
+      credential: ConnectionCredential
+    }>
+    reportStatus(params: ConnectionRuntimeStatusParams): { accepted: boolean; revision: number }
+  }
 }
 
 export function createDesktopCapabilityHandlers(
@@ -31,5 +43,9 @@ export function createDesktopCapabilityHandlers(
       dependencies.notifications.show(params)
       return { delivered: true }
     },
+    'connections.list': () => dependencies.connections.snapshot(),
+    'connections.resolveCredential': (params, context) =>
+      dependencies.connections.resolveCredential(params.connectionId, context.signal),
+    'connections.reportStatus': params => dependencies.connections.reportStatus(params),
   }
 }
