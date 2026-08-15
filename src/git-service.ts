@@ -44,6 +44,18 @@ export interface GitCreateWorktreeInput {
   lockReason: string
 }
 
+export interface GitWorktreeEntry {
+  path: string
+  head?: string
+  branch?: string
+  detached: boolean
+  bare: boolean
+  locked: boolean
+  lockReason?: string
+  prunable: boolean
+  pruneReason?: string
+}
+
 interface GitCommandResult {
   stdout: Buffer
   stderr: Buffer
@@ -236,6 +248,84 @@ export function parseGitStatus(
   }
 }
 
+export function parseGitWorktreeList(output: Buffer): GitWorktreeEntry[] {
+  const encoded = output.toString('utf8')
+  if (!encoded.endsWith('\0')) {
+    throw new GitServiceError('BAD_OUTPUT', 'Git returned an unterminated worktree list.')
+  }
+  const fields = encoded.split('\0')
+  fields.pop()
+  const groups: string[][] = []
+  let group: string[] = []
+  for (const field of fields) {
+    if (field !== '') {
+      group.push(field)
+      continue
+    }
+    if (group.length === 0) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an empty worktree record.')
+    }
+    groups.push(group)
+    group = []
+  }
+  if (group.length !== 0 || groups.length === 0) {
+    throw new GitServiceError('BAD_OUTPUT', 'Git returned an incomplete worktree list.')
+  }
+
+  const entries = groups.map(record => {
+    const values = new Map<string, string | true>()
+    for (const field of record) {
+      const separator = field.indexOf(' ')
+      const key = separator < 0 ? field : field.slice(0, separator)
+      const value = separator < 0 ? true : field.slice(separator + 1)
+      if (!['worktree', 'HEAD', 'branch', 'detached', 'bare', 'locked', 'prunable'].includes(key) ||
+        values.has(key) || value === '') {
+        throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid worktree attribute.')
+      }
+      values.set(key, value)
+    }
+    const path = values.get('worktree')
+    const head = values.get('HEAD')
+    const branch = values.get('branch')
+    const detached = values.get('detached') === true
+    const bare = values.get('bare') === true
+    const locked = values.has('locked')
+    const lockReason = values.get('locked')
+    const prunable = values.has('prunable')
+    const pruneReason = values.get('prunable')
+    if (typeof path !== 'string' || path.length > 4_096 || !isAbsolute(path) || normalize(path) !== path ||
+      (head !== undefined && (typeof head !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head))) ||
+      (branch !== undefined && (typeof branch !== 'string' || branch.length > 1_024 ||
+        !branch.startsWith('refs/heads/') || /[\r\n]/.test(branch))) ||
+      (typeof lockReason === 'string' && lockReason.length > 256) ||
+      (typeof pruneReason === 'string' && pruneReason.length > MAX_ERROR_MESSAGE_LENGTH)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid worktree identity data.')
+    }
+    if (bare) {
+      if (head !== undefined || branch !== undefined || detached) {
+        throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid bare worktree data.')
+      }
+    } else if (typeof head !== 'string' || (typeof branch === 'string') === detached) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned incomplete worktree checkout data.')
+    }
+    return {
+      path,
+      ...(head === undefined ? {} : { head }),
+      ...(branch === undefined ? {} : { branch }),
+      detached,
+      bare,
+      locked,
+      ...(typeof lockReason === 'string' ? { lockReason } : {}),
+      prunable,
+      ...(typeof pruneReason === 'string' ? { pruneReason } : {}),
+    }
+  })
+  if (new Set(entries.map(entry => entry.path)).size !== entries.length) {
+    throw new GitServiceError('BAD_OUTPUT', 'Git returned duplicate worktree paths.')
+  }
+  return entries
+}
+
 export class GitService {
   private readonly executable: string
   private readonly timeoutMs: number
@@ -348,6 +438,27 @@ export class GitService {
       throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid commit identity.')
     }
     return commit
+  }
+
+  async listWorktrees(repositoryRoot: string, signal?: AbortSignal): Promise<GitWorktreeEntry[]> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const result = await this.run([
+      '--no-optional-locks',
+      '-C', repository.root,
+      'worktree',
+      'list',
+      '--porcelain',
+      '-z',
+    ], signal, deadline)
+    return parseGitWorktreeList(result.stdout)
   }
 
   async createWorktree(

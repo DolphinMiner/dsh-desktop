@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import { GitService, GitServiceError, parseGitStatus } from './git-service'
+import { GitService, GitServiceError, parseGitStatus, parseGitWorktreeList } from './git-service'
 
 const execFileAsync = promisify(execFile)
 
@@ -103,6 +103,65 @@ test('rejects incomplete or malformed porcelain status', () => {
     ].join('\0'))),
     (error: GitServiceError) => error.code === 'BAD_OUTPUT',
   )
+})
+
+test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {
+  const entries = parseGitWorktreeList(Buffer.from([
+    'worktree /repo',
+    `HEAD ${'a'.repeat(40)}`,
+    'branch refs/heads/main',
+    '',
+    'worktree /worktrees/line\nbreak',
+    `HEAD ${'b'.repeat(40)}`,
+    'detached',
+    'locked DSH Desktop session one',
+    'prunable gitdir file points to non-existent location',
+    '',
+    '',
+  ].join('\0')))
+
+  assert.deepEqual(entries, [{
+    path: '/repo',
+    head: 'a'.repeat(40),
+    branch: 'refs/heads/main',
+    detached: false,
+    bare: false,
+    locked: false,
+    prunable: false,
+  }, {
+    path: '/worktrees/line\nbreak',
+    head: 'b'.repeat(40),
+    detached: true,
+    bare: false,
+    locked: true,
+    lockReason: 'DSH Desktop session one',
+    prunable: true,
+    pruneReason: 'gitdir file points to non-existent location',
+  }])
+  assert.throws(() => parseGitWorktreeList(Buffer.from([
+    'worktree /repo',
+    `HEAD ${'a'.repeat(40)}`,
+    'branch refs/heads/main',
+    'detached',
+    '',
+    '',
+  ].join('\0'))), (error: GitServiceError) => error.code === 'BAD_OUTPUT')
+})
+
+test('lists real locked worktrees without resolving a missing checkout path', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-worktree-list-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH test lock', '-b', 'topic', target, 'HEAD')
+
+  const entries = await new GitService().listWorktrees(await realpath(root))
+  const canonicalTarget = await realpath(target)
+  const linked = entries.find(entry => entry.path === canonicalTarget)
+  assert.equal(linked?.branch, 'refs/heads/topic')
+  assert.equal(linked?.locked, true)
+  assert.equal(linked?.lockReason, 'DSH test lock')
 })
 
 test('requires the exact discovered root and rejects non-repositories', async t => {

@@ -5,10 +5,11 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   DesktopProtocolError,
   GitRepositoryIdentity,
+  WorktreeRecoveryReason,
   WorktreeSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import { GitCreateWorktreeInput, GitServiceError } from './git-service'
+import { GitCreateWorktreeInput, GitServiceError, GitWorktreeEntry } from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
 import {
   summarizeWorktreeRecord,
@@ -24,6 +25,7 @@ const MAX_REF_LENGTH = 1_024
 export interface WorktreeGitOperations {
   discoverRepository(path: string, signal?: AbortSignal): Promise<GitRepositoryIdentity>
   resolveCommit(repositoryRoot: string, ref: string, signal?: AbortSignal): Promise<string>
+  listWorktrees(repositoryRoot: string, signal?: AbortSignal): Promise<GitWorktreeEntry[]>
   createWorktree(input: GitCreateWorktreeInput, signal?: AbortSignal): Promise<GitRepositoryIdentity>
 }
 
@@ -42,6 +44,14 @@ export interface ProvisionWorktreeResult {
 export interface WorktreeSessionBindingInput {
   sessionId: string
   workspacePath: string
+}
+
+export interface WorktreeReconciliationResult {
+  repositories: number
+  inspected: number
+  healthy: number
+  recoveryRequired: number
+  snapshot: WorktreeSnapshot
 }
 
 export class WorktreeManagerError extends Error {
@@ -107,6 +117,24 @@ function withMappedErrorSync<T>(operation: () => T, ambiguous = false): T {
   }
 }
 
+function isUnavailableCheckout(error: unknown): boolean {
+  return error instanceof GitServiceError &&
+    (error.code === 'INVALID_INPUT' || error.code === 'NOT_REPOSITORY')
+}
+
+function throwIfCancelled(error: unknown): void {
+  if (error instanceof GitServiceError && error.code === 'CANCELLED') {
+    throw new DOMException(error.message, 'AbortError')
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') throw error
+}
+
+function expectedLockReason(record: WorktreeRecord): string | undefined {
+  const prefix = 'refs/heads/dsh/session-'
+  if (record.branch?.startsWith(prefix) !== true) return undefined
+  return `DSH Desktop session ${record.branch.slice(prefix.length, prefix.length + 12)}`
+}
+
 export class WorktreeManager {
   constructor(
     private readonly git: WorktreeGitOperations,
@@ -125,6 +153,115 @@ export class WorktreeManager {
       worktrees: this.registry.list()
         .filter(record => record.lifecycle !== 'removed')
         .map(summarizeWorktreeRecord),
+    }
+  }
+
+  async reconcile(signal: AbortSignal): Promise<WorktreeReconciliationResult> {
+    const records = withMappedErrorSync(() => this.registry.list())
+      .filter(record => record.lifecycle !== 'removed')
+    const groups = new Map<string, WorktreeRecord[]>()
+    for (const record of records) {
+      const group = groups.get(record.repository.commonDir) ?? []
+      group.push(record)
+      groups.set(record.repository.commonDir, group)
+    }
+    const recovery = new Map<string, WorktreeRecoveryReason>()
+    let healthy = 0
+
+    for (const [commonDir, group] of groups) {
+      if (signal.aborted) throw new DOMException('Worktree reconciliation was cancelled.', 'AbortError')
+      const candidates = [...new Set(group.flatMap(record => [
+        record.repository.root,
+        ...(record.worktreePath === undefined ? [] : [record.worktreePath]),
+      ]))]
+      let entries: GitWorktreeEntry[] | undefined
+      let inspectionFailed = false
+      const mismatchedCandidates = new Set<string>()
+      for (const candidate of candidates) {
+        try {
+          const repository = await this.git.discoverRepository(candidate, signal)
+          if (repository.commonDir !== commonDir) {
+            mismatchedCandidates.add(candidate)
+            continue
+          }
+          entries = await this.git.listWorktrees(repository.root, signal)
+          break
+        } catch (error) {
+          throwIfCancelled(error)
+          if (!isUnavailableCheckout(error)) inspectionFailed = true
+        }
+      }
+      if (entries === undefined) {
+        for (const record of group) {
+          const checkout = record.executionMode === 'local' ? record.repository.root : record.worktreePath!
+          recovery.set(record.id, mismatchedCandidates.has(checkout)
+            ? 'external-change'
+            : inspectionFailed ? 'inspection-failed' : 'missing')
+        }
+        continue
+      }
+
+      const byPath = new Map(entries.map(entry => [entry.path, entry]))
+      for (const record of group) {
+        const checkout = record.executionMode === 'local' ? record.repository.root : record.worktreePath!
+        let repository: GitRepositoryIdentity | undefined
+        try {
+          repository = await this.git.discoverRepository(checkout, signal)
+        } catch (error) {
+          throwIfCancelled(error)
+          if (!isUnavailableCheckout(error)) {
+            recovery.set(record.id, 'inspection-failed')
+            continue
+          }
+        }
+        if (repository !== undefined &&
+          (repository.root !== checkout || repository.commonDir !== record.repository.commonDir)) {
+          recovery.set(record.id, 'external-change')
+          continue
+        }
+        const entry = byPath.get(checkout)
+        if (repository === undefined) {
+          const moved = record.branch === undefined
+            ? undefined
+            : entries.find(candidate => candidate.branch === record.branch && candidate.path !== checkout)
+          recovery.set(record.id, moved === undefined ? 'missing' : 'moved')
+          continue
+        }
+        if (entry === undefined) {
+          recovery.set(record.id, 'external-change')
+          continue
+        }
+        if (entry.prunable) {
+          recovery.set(record.id, 'missing')
+          continue
+        }
+        if (record.executionMode === 'worktree') {
+          if (entry.bare || entry.detached || entry.branch !== record.branch) {
+            recovery.set(record.id, 'external-change')
+            continue
+          }
+          const lockReason = expectedLockReason(record)
+          if (!entry.locked || lockReason === undefined || entry.lockReason !== lockReason) {
+            recovery.set(record.id, 'locked')
+            continue
+          }
+        }
+        healthy += 1
+      }
+    }
+
+    if (recovery.size > 0) {
+      withMappedErrorSync(() => this.registry.requireRecoveryBatch(
+        [...recovery].map(([id, reason]) => ({ id, reason })),
+      ), true)
+    }
+    const snapshot = this.snapshot()
+    return {
+      repositories: groups.size,
+      inspected: records.length,
+      healthy,
+      recoveryRequired: snapshot.worktrees.filter(worktree => worktree.lifecycle === 'recovery-required').length,
+      snapshot,
     }
   }
 

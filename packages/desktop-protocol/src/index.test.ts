@@ -213,6 +213,11 @@ test('validates worktree provisioning without exposing operation internals', () 
     lifecycle: 'recovery-required',
     recoveryReason: 'create-ambiguous',
   })
+  assert.equal(parseCapabilityResult('worktrees.provision', {
+    ...summary,
+    lifecycle: 'recovery-required',
+    recoveryReason: 'inspection-failed',
+  })?.recoveryReason, 'inspection-failed')
   assert.deepEqual(parseCapabilityParams('desktop.reportSessionBinding', {
     sessionId: 'session-created',
     workspacePath: '/worktrees/session-1',

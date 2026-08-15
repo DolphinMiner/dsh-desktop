@@ -82,6 +82,10 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
     sessionId: 'session-local',
     workspacePath: repositoryRoot,
   }, new AbortController().signal), undefined)
+  const healthy = await manager.reconcile(new AbortController().signal)
+  assert.equal(healthy.inspected, 1)
+  assert.equal(healthy.healthy, 1)
+  assert.equal(healthy.recoveryRequired, 0)
 
   await writeFile(join(first.worktreePath!, 'README.md'), 'session one\n')
   const duplicate = await manager.provision(firstInput, new AbortController().signal)
@@ -97,6 +101,12 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   assert.notEqual(second.worktreePath, first.worktreePath)
   assert.equal(await readFile(join(second.worktreePath!, 'README.md'), 'utf8'), 'base\n')
   assert.equal(await readFile(join(repositoryRoot, 'README.md'), 'utf8'), 'base\n')
+
+  await git(repositoryRoot, 'worktree', 'unlock', first.worktreePath!)
+  const drifted = await manager.reconcile(new AbortController().signal)
+  const firstAfterDrift = drifted.snapshot.worktrees.find(worktree => worktree.id === first.id)
+  assert.equal(firstAfterDrift?.lifecycle, 'recovery-required')
+  assert.equal(firstAfterDrift?.recoveryReason, 'locked')
 })
 
 test('does not dispatch a concurrent duplicate while creation is in flight', async t => {
@@ -112,6 +122,7 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
       ? repository
       : { root: path, gitDir: `${path}/.git`, commonDir: '/repo/.git' },
     resolveCommit: async () => 'a'.repeat(40),
+    listWorktrees: async () => [],
     createWorktree: async request => {
       createCalls += 1
       signalStarted?.()
@@ -151,6 +162,7 @@ test('persists an ambiguous create failure and never replays it', async t => {
   const operations: WorktreeGitOperations = {
     discoverRepository: async () => repository,
     resolveCommit: async () => 'a'.repeat(40),
+    listWorktrees: async () => [],
     createWorktree: async (_request: GitCreateWorktreeInput) => {
       createCalls += 1
       throw new GitServiceError('TIMEOUT', 'Git worktree creation timed out.')
@@ -186,6 +198,7 @@ test('fails before Git when the workspace is not authorized', async t => {
       throw new Error('must not run')
     },
     resolveCommit: async () => 'a'.repeat(40),
+    listWorktrees: async () => [],
     createWorktree: async () => ({ root: '/worktree', gitDir: '/worktree/.git', commonDir: '/repo/.git' }),
   }, new WorktreeRegistry(join(root, 'registry.json')), join(root, 'worktrees'), () => {
     throw new WorktreeManagerError('BAD_MESSAGE', 'Workspace is not active.')
@@ -194,4 +207,70 @@ test('fails before Git when the workspace is not authorized', async t => {
   await assert.rejects(manager.provision(input(), new AbortController().signal),
     (error: WorktreeManagerError) => error.code === 'BAD_MESSAGE')
   assert.equal(gitCalls, 0)
+})
+
+test('reconciles a registered branch moved to another checkout without mutating Git', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-moved-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const reserved = registry.reserve({
+    operationId: 'create-moved',
+    repository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    requestedBySessionId: 'session-source',
+    executionMode: 'worktree',
+    worktreePath: '/managed/original',
+    baseRef: 'refs/heads/main',
+    baseCommit: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+  })
+  registry.markReady(reserved.id, 'create-moved')
+  const manager = new WorktreeManager({
+    discoverRepository: async path => {
+      if (path === '/managed/original') {
+        throw new GitServiceError('INVALID_INPUT', 'The checkout is missing.')
+      }
+      return { root: path, gitDir: `${path}/.git`, commonDir: '/repo/.git' }
+    },
+    resolveCommit: async () => 'a'.repeat(40),
+    listWorktrees: async () => [{
+      path: '/managed/moved',
+      head: 'a'.repeat(40),
+      branch: 'refs/heads/dsh/session-123456789012345678901234',
+      detached: false,
+      bare: false,
+      locked: true,
+      lockReason: 'DSH Desktop session 123456789012',
+      prunable: false,
+    }],
+    createWorktree: async () => { throw new Error('must not mutate Git') },
+  }, registry, '/managed', () => undefined)
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'moved')
+})
+
+test('records an inspection failure without claiming that a checkout is missing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-inspection-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const reserved = registry.reserve({
+    operationId: 'create-inspection',
+    repository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    requestedBySessionId: 'session-source',
+    executionMode: 'worktree',
+    worktreePath: '/managed/inspection',
+    baseRef: 'refs/heads/main',
+    baseCommit: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+  })
+  registry.markReady(reserved.id, 'create-inspection')
+  const manager = new WorktreeManager({
+    discoverRepository: async path => ({ root: path, gitDir: `${path}/.git`, commonDir: '/repo/.git' }),
+    resolveCommit: async () => 'a'.repeat(40),
+    listWorktrees: async () => { throw new GitServiceError('TIMEOUT', 'Inspection timed out.') },
+    createWorktree: async () => { throw new Error('must not mutate Git') },
+  }, registry, '/managed', () => undefined)
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'inspection-failed')
 })

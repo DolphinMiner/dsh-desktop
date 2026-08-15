@@ -117,6 +117,34 @@ test('binds an official Harness session once without confusing it with the reque
     (error: WorktreeRegistryError) => error.code === 'CONFLICT')
 })
 
+test('persists a recovery inspection batch atomically in one revision', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-recovery-batch-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'worktrees.v1.json'))
+  const first = registry.reserve(reservation())
+  registry.markReady(first.id, 'create-1')
+  const second = registry.reserve(reservation({
+    operationId: 'create-2',
+    requestedBySessionId: 'session-2',
+    worktreePath: '/worktrees/session-2',
+    branch: 'refs/heads/dsh/session-2',
+  }))
+  registry.markReady(second.id, 'create-2')
+  const revision = registry.status().revision
+
+  const reconciled = registry.requireRecoveryBatch([
+    { id: first.id, reason: 'missing' },
+    { id: second.id, reason: 'locked' },
+  ])
+  assert.deepEqual(reconciled.map(record => record.recoveryReason), ['missing', 'locked'])
+  assert.equal(registry.status().revision, revision + 1)
+  assert.throws(() => registry.requireRecoveryBatch([
+    { id: first.id, reason: 'moved' },
+    { id: 'missing-record', reason: 'missing' },
+  ]), (error: WorktreeRegistryError) => error.code === 'NOT_FOUND')
+  assert.equal(registry.get(first.id)?.recoveryReason, 'missing')
+})
+
 test('recovers interrupted create and remove operations without replaying them', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-recovery-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -129,6 +157,12 @@ test('recovers interrupted create and remove operations without replaying them',
   assert.equal(createRecovery.lifecycle, 'recovery-required')
   assert.equal(createRecovery.recoveryReason, 'interrupted-create')
   assert.deepEqual(createRecovery.pendingOperation, { id: 'create-1', kind: 'create' })
+  const revisionBeforeInspection = afterCreateCrash.status().revision
+  assert.equal(afterCreateCrash.requireRecoveryBatch([{
+    id: reserved.id,
+    reason: 'inspection-failed',
+  }])[0]?.recoveryReason, 'interrupted-create')
+  assert.equal(afterCreateCrash.status().revision, revisionBeforeInspection)
 
   afterCreateCrash.resolveRecovery(reserved.id, 'ready')
   const removing = afterCreateCrash.beginRemoval(reserved.id, 'remove-1')

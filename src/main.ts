@@ -662,6 +662,7 @@ app.whenReady().then(async () => {
     join(desktopDataPath, 'worktrees'),
     assertActiveWorkspace,
   )
+  await worktreeManager.reconcile(new AbortController().signal)
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,
     notifications: {

@@ -65,6 +65,11 @@ export interface WorktreeRegistryOptions {
   maxRecords?: number
 }
 
+export interface WorktreeRecoveryRequirement {
+  id: string
+  reason: WorktreeRecoveryReason
+}
+
 export class WorktreeRegistryError extends Error {
   constructor(
     readonly code: 'BAD_MESSAGE' | 'CONFLICT' | 'DESKTOP_UNAVAILABLE' | 'DUPLICATE_REQUEST' | 'NOT_FOUND',
@@ -115,7 +120,8 @@ function isLifecycle(value: unknown): value is WorktreeLifecycle {
 
 function isRecoveryReason(value: unknown): value is WorktreeRecoveryReason {
   return value === 'create-ambiguous' || value === 'interrupted-create' || value === 'interrupted-remove' ||
-    value === 'external-change' || value === 'locked' || value === 'missing' || value === 'moved'
+    value === 'inspection-failed' || value === 'external-change' || value === 'locked' ||
+    value === 'missing' || value === 'moved'
 }
 
 function parseRepository(value: unknown): GitRepositoryIdentity | undefined {
@@ -503,6 +509,49 @@ export class WorktreeRegistry {
       record.recoveryReason = reason
       return true
     })
+  }
+
+  requireRecoveryBatch(requirements: readonly WorktreeRecoveryRequirement[]): WorktreeRecord[] {
+    this.assertAvailable()
+    if (new Set(requirements.map(requirement => requirement.id)).size !== requirements.length ||
+      requirements.some(requirement => !isBoundedString(requirement.id) || !isRecoveryReason(requirement.reason))) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The worktree recovery requirements are invalid.')
+    }
+    const updates = new Map<string, WorktreeRecord>()
+    const results: WorktreeRecord[] = []
+    const now = this.now().toISOString()
+    for (const requirement of requirements) {
+      const current = this.state.records.find(record => record.id === requirement.id)
+      if (current === undefined) {
+        throw new WorktreeRegistryError('NOT_FOUND', 'A worktree recovery record was not found.')
+      }
+      if (current.lifecycle === 'removed') {
+        throw new WorktreeRegistryError('CONFLICT', 'A removed worktree cannot require recovery.')
+      }
+      const result = cloneRecord(current)
+      const preserveOperationReason = requirement.reason === 'inspection-failed' &&
+        result.lifecycle === 'recovery-required' &&
+        (result.recoveryReason === 'create-ambiguous' || result.recoveryReason === 'interrupted-create' ||
+          result.recoveryReason === 'interrupted-remove')
+      if (!preserveOperationReason &&
+        (result.lifecycle !== 'recovery-required' || result.recoveryReason !== requirement.reason)) {
+        result.lifecycle = 'recovery-required'
+        result.recoveryReason = requirement.reason
+        result.updatedAt = now
+        updates.set(result.id, result)
+      }
+      results.push(result)
+    }
+    if (updates.size > 0) {
+      this.commit(next => {
+        for (const [id, record] of updates) {
+          const index = next.records.findIndex(item => item.id === id)
+          if (index < 0) throw new WorktreeRegistryError('NOT_FOUND', 'A worktree recovery record was not found.')
+          next.records[index] = record
+        }
+      })
+    }
+    return results.map(cloneRecord)
   }
 
   resolveRecovery(id: string, resolution: 'ready' | 'orphaned'): WorktreeRecord {
