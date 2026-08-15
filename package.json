@@ -30,15 +30,16 @@
   ],
   "scripts": {
     "build": "npm run build:packages && tsc -p tsconfig.json",
+    "build:native": "bash scripts/build-macos-helper.sh",
     "build:packages": "npm run build -w @dolphinminer/dsh-desktop-protocol && npm run build -w @dolphinminer/dsh-desktop-host && npm run build -w @dolphinminer/dsh-desktop-agent && npm run build -w @dolphinminer/dsh-desktop-client",
     "check": "npm run typecheck && npm test",
     "typecheck": "npm run build:packages && tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/*.test.js packages/*/lib/*.test.js",
-    "start": "npm run build && electron .",
+    "start": "npm run build:native && npm run build && electron .",
     "dev": "npm run start",
     "prepare:electron-licenses": "node -e \"require('electron')\"",
-    "package:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dir --arm64",
-    "dist:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dmg zip --arm64"
+    "package:mac": "npm run build:native && npm run build && npm run prepare:electron-licenses && electron-builder --mac dir --arm64",
+    "dist:mac": "npm run build:native && npm run build && npm run prepare:electron-licenses && electron-builder --mac dmg zip --arm64"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.6",
@@ -87,6 +88,10 @@
       {
         "from": "licenses/LGPL-3.0.txt",
         "to": "THIRD_PARTY/LGPL-3.0.txt"
+      },
+      {
+        "from": "build/native/DSHComputerHelper",
+        "to": "helpers/DSHComputerHelper"
       }
     ],
     "mac": {

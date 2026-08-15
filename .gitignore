@@ -3,6 +3,7 @@ dist/
 packages/*/lib/
 release/
 coverage/
+/build/native/
 .idea/
 .env
 .env.*
