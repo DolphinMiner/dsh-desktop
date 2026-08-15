@@ -40,6 +40,18 @@ async function repositoryFixture(): Promise<string> {
   return root
 }
 
+async function pushFixture(): Promise<{ root: string; remote: string }> {
+  const root = await repositoryFixture()
+  const remote = await mkdtemp(join(tmpdir(), 'dsh-git-push-remote-test-'))
+  await git(remote, 'init', '--bare')
+  await git(root, 'remote', 'add', 'origin', remote)
+  await git(root, 'push', '--set-upstream', 'origin', 'main')
+  await writeFile(join(root, 'README.md'), 'ready to push\n')
+  await git(root, 'add', 'README.md')
+  await git(root, 'commit', '-m', 'push candidate')
+  return { root, remote }
+}
+
 test('discovers a canonical repository and parses structured status', async t => {
   const root = await repositoryFixture()
   const canonicalRoot = await realpath(root)
@@ -349,6 +361,61 @@ test('creates an initial commit from a reviewed index tree', async t => {
   const result = await service.commit(canonicalRoot, 'feat: initial', undefined, expectedTree)
   assert.equal(result.status.head, result.commit)
   assert.equal((await gitOutput(root, 'rev-list', '--parents', '--max-count=1', result.commit)).split(' ').length, 1)
+})
+
+test('discovers the live upstream and pushes exactly the approved commit without force', async t => {
+  const { root, remote } = await pushFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(remote, { recursive: true, force: true }))
+  const service = new GitService()
+
+  const target = await service.pushTarget(canonicalRoot)
+  assert.equal(target.remote, 'origin')
+  assert.equal(target.remoteUrl, remote)
+  assert.match(target.remoteUrlFingerprint, /^[a-f0-9]{64}$/)
+  assert.equal(target.localRef, 'refs/heads/main')
+  assert.equal(target.remoteRef, 'refs/heads/main')
+  assert.equal(target.trackingRef, 'refs/remotes/origin/main')
+  assert.equal(target.ahead, 1)
+  assert.equal(target.behind, 0)
+
+  const result = await service.push(canonicalRoot, target)
+  assert.deepEqual(result, { remote: 'origin', remoteRef: 'refs/heads/main', head: target.head })
+  assert.equal(await gitOutput(remote, 'rev-parse', 'refs/heads/main'), target.head)
+  assert.equal((await service.pushTarget(canonicalRoot)).ahead, 0)
+})
+
+test('runs pre-push hooks and leaves the remote unchanged when a hook rejects', async t => {
+  const { root, remote } = await pushFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(remote, { recursive: true, force: true }))
+  const service = new GitService()
+  const target = await service.pushTarget(canonicalRoot)
+  const hook = join(root, '.git', 'hooks', 'pre-push')
+  await writeFile(hook, '#!/bin/sh\necho "push hook rejected" >&2\nexit 1\n')
+  await chmod(hook, 0o755)
+
+  await assert.rejects(service.push(canonicalRoot, target),
+    (error: GitServiceError) => error.code === 'GIT_FAILED' && /push hook rejected/.test(error.message))
+  assert.equal(await gitOutput(remote, 'rev-parse', 'refs/heads/main'), target.upstreamHead)
+})
+
+test('refuses a push when the approved local or remote state has changed', async t => {
+  const { root, remote } = await pushFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(remote, { recursive: true, force: true }))
+  const service = new GitService()
+  const target = await service.pushTarget(canonicalRoot)
+  await writeFile(join(root, 'later.txt'), 'not reviewed\n')
+  await git(root, 'add', 'later.txt')
+  await git(root, 'commit', '-m', 'later local commit')
+
+  await assert.rejects(service.push(canonicalRoot, target),
+    (error: GitServiceError) => error.code === 'GIT_FAILED' && /changed after approval/.test(error.message))
+  assert.equal(await gitOutput(remote, 'rev-parse', 'refs/heads/main'), target.upstreamHead)
 })
 
 test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {

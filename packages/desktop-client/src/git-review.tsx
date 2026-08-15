@@ -23,6 +23,8 @@ import type {
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DesktopGitIndexMutationInput,
+  DesktopGitPushConfirmInput,
+  DesktopGitPushPreviewInput,
   DesktopGitRevertConfirmInput,
   DesktopGitRevertPreviewInput,
   DeleteGitReviewCommentInput,
@@ -36,6 +38,8 @@ import type {
   GitCommitPreview,
   GitCommitResult,
   GitIndexMutationResult,
+  GitPushPreview,
+  GitPushResult,
   GitRevertPreview,
   GitRevertResult,
   ReviewDiffLine,
@@ -57,6 +61,8 @@ export interface DesktopGitBridge {
   confirmCommit(input: DesktopGitCommitConfirmInput): Promise<GitCommitResult>
   previewRevert(input: DesktopGitRevertPreviewInput): Promise<GitRevertPreview>
   confirmRevert(input: DesktopGitRevertConfirmInput): Promise<GitRevertResult>
+  previewPush(input: DesktopGitPushPreviewInput): Promise<GitPushPreview>
+  confirmPush(input: DesktopGitPushConfirmInput): Promise<GitPushResult>
   comments: {
     list(input: DesktopGitReviewCommentsInput): Promise<GitReviewCommentSnapshot>
     add(input: AddGitReviewCommentInput): Promise<GitReviewCommentSnapshot>
@@ -288,6 +294,27 @@ const styles: Record<string, CSSProperties> = {
     padding: '8px 10px',
     resize: 'vertical',
     width: '100%',
+  },
+  pushDetails: {
+    display: 'grid',
+    gap: 8,
+    margin: 0,
+  },
+  pushDetailRow: {
+    display: 'grid',
+    gap: 10,
+    gridTemplateColumns: '88px minmax(0, 1fr)',
+  },
+  pushDetailLabel: {
+    color: 'var(--dsw-alias-label-secondary, #5f6268)',
+    fontSize: 12,
+  },
+  pushDetailValue: {
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 12,
+    margin: 0,
+    minWidth: 0,
+    overflowWrap: 'anywhere',
   },
   lineNumber: {
     borderRight: '1px solid var(--dsw-alias-border-l2, #deded9)',
@@ -628,6 +655,80 @@ function CommitConfirmation({
   )
 }
 
+function PushConfirmation({
+  preview,
+  acknowledged,
+  disabled,
+  onAcknowledgedChange,
+  onCancel,
+  onConfirm,
+}: {
+  preview?: GitPushPreview
+  acknowledged: boolean
+  disabled: boolean
+  onAcknowledgedChange: (value: boolean) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element | null {
+  if (preview === undefined) return null
+  const { target } = preview
+  return (
+    <ReviewConfirmationDialog
+      title={`Push ${String(target.ahead)} ${target.ahead === 1 ? 'commit' : 'commits'}?`}
+      descriptionId="git-push-description"
+      closeLabel="Close Push confirmation"
+      disabled={disabled}
+      onCancel={onCancel}
+      actions={(
+        <>
+          <Button size="sm" variant="outline" disabled={disabled} onClick={onCancel}>Cancel</Button>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<IconSendOutline16 />}
+            disabled={disabled || !acknowledged}
+            onClick={onConfirm}
+          >
+            Push
+          </Button>
+        </>
+      )}
+    >
+      <div id="git-push-description" style={styles.confirmationWarning}>
+        <IconWarningOutline16 />
+        <span>
+          This sends the reviewed branch head to its configured upstream without force. The approval expires at{' '}
+          {new Date(preview.expiresAt).toLocaleTimeString()}.
+        </span>
+      </div>
+      <dl style={styles.pushDetails}>
+        <div style={styles.pushDetailRow}>
+          <dt style={styles.pushDetailLabel}>Destination</dt>
+          <dd style={styles.pushDetailValue} title={target.remoteUrl}>{target.remoteUrl}</dd>
+        </div>
+        <div style={styles.pushDetailRow}>
+          <dt style={styles.pushDetailLabel}>Ref</dt>
+          <dd style={styles.pushDetailValue}>{target.remoteRef}</dd>
+        </div>
+        <div style={styles.pushDetailRow}>
+          <dt style={styles.pushDetailLabel}>Commit</dt>
+          <dd style={styles.pushDetailValue}>{target.head}</dd>
+        </div>
+      </dl>
+      <label style={styles.confirmationAcknowledge}>
+        <input
+          autoFocus
+          type="checkbox"
+          checked={acknowledged}
+          disabled={disabled}
+          onChange={event => onAcknowledgedChange(event.currentTarget.checked)}
+        />
+        <span>I reviewed this destination and understand that a Push cannot be recalled.</span>
+      </label>
+    </ReviewConfirmationDialog>
+  )
+}
+
 function CommentDeleteButton({
   commentId,
   pending,
@@ -740,6 +841,9 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   const [revertPreview, setRevertPreview] = useState<GitRevertPreview>()
   const [revertAcknowledged, setRevertAcknowledged] = useState(false)
   const [pendingRevert, setPendingRevert] = useState<'preview' | 'confirm'>()
+  const [pushPreview, setPushPreview] = useState<GitPushPreview>()
+  const [pushAcknowledged, setPushAcknowledged] = useState(false)
+  const [pendingPush, setPendingPush] = useState<'preview' | 'confirm'>()
 
   useEffect(() => {
     let current = true
@@ -848,6 +952,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     setCommitMessage('')
     setRevertPreview(undefined)
     setRevertAcknowledged(false)
+    setPushPreview(undefined)
+    setPushAcknowledged(false)
     setRequestedScope({ ...scope })
   }
 
@@ -958,6 +1064,43 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     }).finally(() => setPendingRevert(undefined))
   }
 
+  const previewCurrentPush = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined) return
+    setPendingPush('preview')
+    setMutationError(undefined)
+    setMutationNotice(undefined)
+    void bridge.previewPush({ sessionId, workspaceRoot }).then(preview => {
+      setPushPreview(preview)
+      setPushAcknowledged(false)
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+    }).finally(() => setPendingPush(undefined))
+  }
+
+  const confirmCurrentPush = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || pushPreview === undefined ||
+      !pushAcknowledged) return
+    setPendingPush('confirm')
+    setMutationError(undefined)
+    setMutationNotice(undefined)
+    void bridge.confirmPush({
+      sessionId,
+      workspaceRoot,
+      previewId: pushPreview.previewId,
+      confirmed: true,
+    }).then(result => {
+      setMutationNotice(`Pushed ${result.head.slice(0, 12)} to ${result.remote}/${result.remoteRef}.`)
+      setPushPreview(undefined)
+      setPushAcknowledged(false)
+      setRequestedScope(previous => ({ ...previous }))
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setPushPreview(undefined)
+      setPushAcknowledged(false)
+      setRequestedScope(previous => ({ ...previous }))
+    }).finally(() => setPendingPush(undefined))
+  }
+
   const beginComment = (anchor: GitReviewCommentAnchor): void => {
     setCommentDraft({ requestId: crypto.randomUUID(), anchor })
     setCommentBody('')
@@ -1007,7 +1150,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           style={styles.scopeSelect}
           aria-label="Review scope"
           value={scopeKind}
-          disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
+          disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined ||
+            pendingPush !== undefined}
           onChange={event => setScopeKind(event.currentTarget.value as ReviewScopeKind)}
         >
           <option value="unstaged">Unstaged</option>
@@ -1021,7 +1165,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
             style={styles.refInput}
             value={commitRef}
             maxLength={1024}
-            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
+            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined ||
+              pendingPush !== undefined}
             spellCheck={false}
             onChange={event => setCommitRef(event.currentTarget.value)}
           />
@@ -1032,7 +1177,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
             style={styles.refInput}
             value={baseRef}
             maxLength={1024}
-            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
+            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined ||
+              pendingPush !== undefined}
             spellCheck={false}
             onChange={event => setBaseRef(event.currentTarget.value)}
           />
@@ -1042,10 +1188,22 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           variant="toolbar"
           icon={<IconRefreshOutline16 />}
           disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
-            pendingRevert !== undefined}
+            pendingRevert !== undefined || pendingPush !== undefined}
           onClick={requestReview}
         >
           Refresh
+        </Button>
+        <Button
+          size="sm"
+          variant="toolbar"
+          icon={<IconSendOutline16 />}
+          disabled={loading || bridge === undefined || workspaceRoot === undefined ||
+            pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined ||
+            pendingPush !== undefined}
+          title="Preview Push to the configured upstream"
+          onClick={previewCurrentPush}
+        >
+          Push
         </Button>
         <span style={styles.repository} title={snapshot?.repository.root ?? workspaceRoot}>
           {snapshot?.repository.root ?? workspaceRoot}
@@ -1104,7 +1262,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     variant="primary"
                     icon={<IconCheckOutline16 />}
                     disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
-                      pendingRevert !== undefined}
+                      pendingRevert !== undefined || pendingPush !== undefined}
                     title="Preview and commit all staged files"
                     onClick={previewStagedCommit}
                   >
@@ -1117,7 +1275,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     variant="toolbar"
                     icon={<IconBranchOutline16 />}
                     disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
-                      pendingRevert !== undefined}
+                      pendingRevert !== undefined || pendingPush !== undefined}
                     title={snapshot.scope.kind === 'unstaged' ? 'Stage selected file' : 'Unstage selected file'}
                     onClick={mutateSelected}
                   >
@@ -1130,7 +1288,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     variant="toolbar"
                     icon={<IconTrashOutline16 />}
                     disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
-                      pendingRevert !== undefined}
+                      pendingRevert !== undefined || pendingPush !== undefined}
                     title="Preview reverting the selected file"
                     onClick={previewSelectedRevert}
                   >
@@ -1266,6 +1424,18 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           setRevertAcknowledged(false)
         }}
         onConfirm={confirmSelectedRevert}
+      />
+      <PushConfirmation
+        preview={pushPreview}
+        acknowledged={pushAcknowledged}
+        disabled={pendingPush === 'confirm'}
+        onAcknowledgedChange={setPushAcknowledged}
+        onCancel={() => {
+          if (pendingPush === 'confirm') return
+          setPushPreview(undefined)
+          setPushAcknowledged(false)
+        }}
+        onConfirm={confirmCurrentPush}
       />
     </section>
   )

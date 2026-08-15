@@ -1,10 +1,14 @@
 import { isAbsolute, normalize } from 'node:path'
 
-import type { GitIndexMutationKind } from '@dolphinminer/dsh-desktop-protocol'
+import {
+  parseGitPushState,
+  type GitIndexMutationKind,
+  type GitPushState,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { readJsonFile, writeJsonAtomically } from './atomic-json'
 
-export const GIT_MUTATION_JOURNAL_SCHEMA_VERSION = 3 as const
+export const GIT_MUTATION_JOURNAL_SCHEMA_VERSION = 4 as const
 const MAX_OPERATIONS = 10_000
 const MAX_PATH_LENGTH = 4_096
 const MAX_PATHS = 256
@@ -12,7 +16,7 @@ const MAX_TOTAL_PATH_LENGTH = 65_536
 const MAX_COMMIT_MESSAGE_LENGTH = 8_192
 
 export type GitMutationPhase = 'intent' | 'dispatch' | 'succeeded' | 'failed' | 'cancelled' | 'ambiguous'
-export type GitMutationKind = GitIndexMutationKind | 'revert' | 'commit'
+export type GitMutationKind = GitIndexMutationKind | 'revert' | 'commit' | 'push'
 export type GitMutationReason =
   | 'completed'
   | 'git-rejected'
@@ -38,6 +42,8 @@ export interface GitCommitMutation {
   stagedFingerprint: string
 }
 
+export type GitPushMutation = GitPushState
+
 export interface GitMutationRecord {
   operationId: string
   sessionId: string
@@ -49,6 +55,7 @@ export interface GitMutationRecord {
   paths: string[]
   approval?: GitMutationApproval
   commit?: GitCommitMutation
+  push?: GitPushMutation
   resultCommit?: string
   events: GitMutationEvent[]
 }
@@ -64,6 +71,7 @@ export interface BeginGitMutationInput {
   paths: string[]
   approval?: GitMutationApproval
   commit?: GitCommitMutation
+  push?: GitPushMutation
 }
 
 interface GitMutationJournalDocument {
@@ -119,7 +127,7 @@ function isCanonicalAbsolutePath(value: unknown): value is string {
 }
 
 function isKind(value: unknown): value is GitMutationKind {
-  return value === 'stage' || value === 'unstage' || value === 'revert' || value === 'commit'
+  return value === 'stage' || value === 'unstage' || value === 'revert' || value === 'commit' || value === 'push'
 }
 
 function parseApproval(value: unknown): GitMutationApproval | undefined {
@@ -147,6 +155,11 @@ function parseCommit(value: unknown): GitCommitMutation | undefined {
     expectedTree: value.expectedTree,
     stagedFingerprint: value.stagedFingerprint,
   }
+}
+
+function parsePush(value: unknown): GitPushMutation | undefined {
+  const push = parseGitPushState(value)
+  return push === undefined ? undefined : { ...push }
 }
 
 function isPhase(value: unknown): value is GitMutationPhase {
@@ -202,7 +215,7 @@ function parsePaths(value: unknown): string[] | undefined {
 function parseRecord(value: unknown): GitMutationRecord | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'operationId', 'sessionId', 'workspaceRoot', 'repositoryRoot', 'repositoryCommonDir', 'kind', 'requestedPaths',
-    'paths', 'approval', 'commit', 'resultCommit', 'events',
+    'paths', 'approval', 'commit', 'push', 'resultCommit', 'events',
   ]) || !isUuid(value.operationId) || !isBoundedString(value.sessionId) ||
     !isBoundedString(value.workspaceRoot, MAX_PATH_LENGTH) || !isCanonicalAbsolutePath(value.repositoryRoot) ||
     !isCanonicalAbsolutePath(value.repositoryCommonDir) || !isKind(value.kind) ||
@@ -211,10 +224,14 @@ function parseRecord(value: unknown): GitMutationRecord | undefined {
   const paths = parsePaths(value.paths)
   const approval = value.approval === undefined ? undefined : parseApproval(value.approval)
   const commit = value.commit === undefined ? undefined : parseCommit(value.commit)
+  const push = value.push === undefined ? undefined : parsePush(value.push)
   const events = value.events.map(parseEvent)
   if (requestedPaths === undefined || paths === undefined || events.some(event => event === undefined) ||
-    (value.kind === 'revert' ? approval === undefined || approval.id !== value.operationId : approval !== undefined) ||
+    (value.kind === 'revert' || value.kind === 'push'
+      ? approval === undefined || approval.id !== value.operationId
+      : approval !== undefined) ||
     (value.kind === 'commit' ? commit === undefined : commit !== undefined) ||
+    (value.kind === 'push' ? push === undefined : push !== undefined) ||
     (value.resultCommit !== undefined && !isObjectId(value.resultCommit))) {
     return undefined
   }
@@ -239,6 +256,7 @@ function parseRecord(value: unknown): GitMutationRecord | undefined {
     paths,
     ...(approval === undefined ? {} : { approval }),
     ...(commit === undefined ? {} : { commit }),
+    ...(push === undefined ? {} : { push }),
     ...(value.resultCommit === undefined ? {} : { resultCommit: value.resultCommit }),
     events: parsedEvents,
   }
@@ -251,7 +269,7 @@ function emptyDocument(): GitMutationJournalDocument {
 function parseDocument(value: unknown): ParsedGitMutationJournalDocument {
   if (value === undefined) return { document: emptyDocument(), migrated: false }
   if (!isRecord(value) || !hasOnlyKeys(value, ['schemaVersion', 'revision', 'operations']) ||
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2 &&
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3 &&
       value.schemaVersion !== GIT_MUTATION_JOURNAL_SCHEMA_VERSION) ||
     !Number.isSafeInteger(value.revision) ||
     Number(value.revision) < 0 || !Array.isArray(value.operations) || value.operations.length > MAX_OPERATIONS) {
@@ -266,13 +284,18 @@ function parseDocument(value: unknown): ParsedGitMutationJournalDocument {
     throw new Error('The Git mutation journal contains duplicate operation identifiers.')
   }
   if (value.schemaVersion === 1 && parsed.some(operation => operation.kind === 'revert' ||
-    operation.kind === 'commit' || operation.approval !== undefined || operation.commit !== undefined ||
-    operation.resultCommit !== undefined)) {
+    operation.kind === 'commit' || operation.kind === 'push' || operation.approval !== undefined ||
+    operation.commit !== undefined || operation.push !== undefined || operation.resultCommit !== undefined)) {
     throw new Error('The legacy Git mutation journal contains unsupported operation data.')
   }
   if (value.schemaVersion === 2 && parsed.some(operation => operation.kind === 'commit' ||
-    operation.commit !== undefined || operation.resultCommit !== undefined)) {
+    operation.kind === 'push' || operation.commit !== undefined || operation.push !== undefined ||
+    operation.resultCommit !== undefined)) {
     throw new Error('The v2 Git mutation journal contains unsupported operation data.')
+  }
+  if (value.schemaVersion === 3 && parsed.some(operation => operation.kind === 'push' ||
+    operation.push !== undefined)) {
+    throw new Error('The v3 Git mutation journal contains unsupported operation data.')
   }
   const migrated = value.schemaVersion !== GIT_MUTATION_JOURNAL_SCHEMA_VERSION
   if (migrated && Number(value.revision) === Number.MAX_SAFE_INTEGER) {
@@ -295,6 +318,7 @@ function cloneRecord(record: GitMutationRecord): GitMutationRecord {
     paths: [...record.paths],
     ...(record.approval === undefined ? {} : { approval: { ...record.approval } }),
     ...(record.commit === undefined ? {} : { commit: { ...record.commit } }),
+    ...(record.push === undefined ? {} : { push: { ...record.push } }),
     ...(record.resultCommit === undefined ? {} : { resultCommit: record.resultCommit }),
     events: record.events.map(event => ({ ...event })),
   }
@@ -320,7 +344,15 @@ function matches(record: GitMutationRecord, input: BeginGitMutationInput): boole
     (record.commit === undefined || (record.commit.message === input.commit?.message &&
       record.commit.expectedHead === input.commit.expectedHead &&
       record.commit.expectedTree === input.commit.expectedTree &&
-      record.commit.stagedFingerprint === input.commit.stagedFingerprint))
+      record.commit.stagedFingerprint === input.commit.stagedFingerprint)) &&
+    (record.push === undefined) === (input.push === undefined) &&
+    (record.push === undefined || (record.push.remote === input.push?.remote &&
+      record.push.remoteUrl === input.push.remoteUrl &&
+      record.push.remoteUrlFingerprint === input.push.remoteUrlFingerprint &&
+      record.push.localBranch === input.push.localBranch && record.push.localRef === input.push.localRef &&
+      record.push.remoteRef === input.push.remoteRef && record.push.trackingRef === input.push.trackingRef &&
+      record.push.head === input.push.head && record.push.upstreamHead === input.push.upstreamHead &&
+      record.push.ahead === input.push.ahead && record.push.behind === input.push.behind))
 }
 
 export function gitMutationPhase(record: GitMutationRecord): GitMutationPhase {

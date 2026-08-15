@@ -36,6 +36,8 @@ const bridge: DesktopBridge = {
     confirmCommit: input => ipcRenderer.invoke('desktop:git:commit:confirm', input),
     previewRevert: input => ipcRenderer.invoke('desktop:git:revert:preview', input),
     confirmRevert: input => ipcRenderer.invoke('desktop:git:revert:confirm', input),
+    previewPush: input => ipcRenderer.invoke('desktop:git:push:preview', input),
+    confirmPush: input => ipcRenderer.invoke('desktop:git:push:confirm', input),
     comments: {
       list: input => ipcRenderer.invoke('desktop:git:comments:list', input),
       add: input => ipcRenderer.invoke('desktop:git:comments:add', input),

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { lstat, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, normalize, posix, win32 } from 'node:path'
 import type { Readable } from 'node:stream'
@@ -6,6 +7,8 @@ import type { Readable } from 'node:stream'
 import type {
   GitCommitResult,
   GitIndexMutationKind,
+  GitPushResult,
+  GitPushState,
   GitRepositoryIdentity,
   GitReviewFile,
   GitReviewScope,
@@ -21,6 +24,9 @@ const MAX_MUTATION_PATHS = 256
 const MAX_MUTATION_PATH_LENGTH = 4_096
 const MAX_MUTATION_TOTAL_PATH_LENGTH = 65_536
 const MAX_COMMIT_MESSAGE_LENGTH = 8_192
+const MAX_GIT_REF_LENGTH = 1_024
+const MAX_REMOTE_NAME_LENGTH = 256
+const MAX_REMOTE_URL_LENGTH = 4_096
 
 export type GitServiceErrorCode =
   | 'BAD_OUTPUT'
@@ -66,6 +72,7 @@ export interface GitWorktreeEntry {
 }
 
 export type GitCommitExecutionResult = Omit<GitCommitResult, 'operationId'>
+export type GitPushExecutionResult = Omit<GitPushResult, 'operationId'>
 
 interface GitCommandResult {
   stdout: Buffer
@@ -110,6 +117,70 @@ function boundedObjectId(value: string | undefined, label: string): string | und
     throw new GitServiceError('INVALID_INPUT', `${label} is invalid.`)
   }
   return value
+}
+
+function boundedRemoteName(value: string): string {
+  if (value.length === 0 || value.length > MAX_REMOTE_NAME_LENGTH ||
+    !/^[a-z0-9][a-z0-9._-]*$/i.test(value)) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git remote name is invalid.')
+  }
+  return value
+}
+
+function boundedHeadRef(value: string, label: string): string {
+  if (value.length === 0 || value.length > MAX_GIT_REF_LENGTH || !value.startsWith('refs/heads/') ||
+    value.includes('\0') || /[\r\n]/.test(value)) {
+    throw new GitServiceError('INVALID_INPUT', `${label} is invalid.`)
+  }
+  return value
+}
+
+function boundedTrackingRef(value: string): string {
+  if (value.length === 0 || value.length > MAX_GIT_REF_LENGTH || !value.startsWith('refs/remotes/') ||
+    value.includes('\0') || /[\r\n]/.test(value)) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git upstream tracking ref is invalid.')
+  }
+  return value
+}
+
+function sanitizeRemoteUrl(value: string): string {
+  if (value.length === 0 || value.length > MAX_REMOTE_URL_LENGTH || value.includes('\0') || /[\r\n]/.test(value) ||
+    value.startsWith('ext::')) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git push URL is not supported.')
+  }
+  if (isAbsolute(value)) return normalize(value)
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw new GitServiceError('INVALID_INPUT', 'The Git push URL is invalid.')
+    }
+    if (!['file:', 'git:', 'http:', 'https:', 'ssh:'].includes(parsed.protocol) ||
+      (parsed.protocol !== 'file:' && parsed.hostname.length === 0)) {
+      throw new GitServiceError('INVALID_INPUT', 'The Git push URL scheme is not supported.')
+    }
+    parsed.username = ''
+    parsed.password = ''
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString()
+  }
+  const scp = /^(?:[^@/:\s]+@)?([^@/:\s]+):([^\r\n]+)$/.exec(value)
+  if (scp !== null && !scp[2]!.startsWith('-')) return `${scp[1]}:${scp[2]}`
+  throw new GitServiceError('INVALID_INPUT', 'The Git push URL is not supported.')
+}
+
+function remoteUrlFingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function samePushState(left: GitPushState, right: GitPushState): boolean {
+  return left.remote === right.remote && left.remoteUrl === right.remoteUrl &&
+    left.remoteUrlFingerprint === right.remoteUrlFingerprint && left.localBranch === right.localBranch &&
+    left.localRef === right.localRef && left.remoteRef === right.remoteRef &&
+    left.trackingRef === right.trackingRef && left.head === right.head &&
+    left.upstreamHead === right.upstreamHead && left.ahead === right.ahead && left.behind === right.behind
 }
 
 function boundedMutationPaths(paths: readonly string[]): string[] {
@@ -636,6 +707,193 @@ export class GitService {
     return { commit, status }
   }
 
+  async pushTarget(repositoryRoot: string, signal?: AbortSignal): Promise<GitPushState> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    return this.pushStateBefore(repository, signal, deadline)
+  }
+
+  async push(
+    repositoryRoot: string,
+    expected: GitPushState,
+    signal?: AbortSignal,
+  ): Promise<GitPushExecutionResult> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const current = await this.pushStateBefore(repository, signal, deadline)
+    if (!samePushState(current, expected)) {
+      throw new GitServiceError('GIT_FAILED', 'The Git push target changed after approval.')
+    }
+    if (current.ahead < 1 || current.behind !== 0) {
+      throw new GitServiceError('GIT_FAILED', 'The current branch is not safe to push without force.')
+    }
+    const rawUrl = await this.pushUrlBefore(repository.root, current.remote, signal, deadline)
+    if (remoteUrlFingerprint(rawUrl) !== current.remoteUrlFingerprint || sanitizeRemoteUrl(rawUrl) !== current.remoteUrl) {
+      throw new GitServiceError('GIT_FAILED', 'The Git push URL changed after approval.')
+    }
+    await this.runRemote([
+      '--no-optional-locks',
+      '-C', repository.root,
+      '-c', 'color.ui=false',
+      '-c', 'core.fsmonitor=false',
+      'push',
+      '--porcelain',
+      '--no-force',
+      rawUrl,
+      `${current.head}:${current.remoteRef}`,
+    ], rawUrl, current.remoteUrl, signal, deadline)
+    const remoteHead = await this.remoteHeadBefore(
+      repository.root,
+      rawUrl,
+      current.remoteUrl,
+      current.remoteRef,
+      signal,
+      deadline,
+    )
+    if (remoteHead !== current.head) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git reported success but the remote ref has an unexpected commit.')
+    }
+    return { remote: current.remote, remoteRef: current.remoteRef, head: current.head }
+  }
+
+  private async pushStateBefore(
+    repository: GitRepositoryIdentity,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitPushState> {
+    const status = await this.statusBefore(repository, signal, deadline)
+    if (status.branch === undefined || status.head === undefined) {
+      throw new GitServiceError('GIT_FAILED', 'Push requires a checked-out branch with at least one commit.')
+    }
+    const localBranch = boundedInput(status.branch, 'Git branch')
+    const localRef = boundedHeadRef(`refs/heads/${localBranch}`, 'The local Git branch ref')
+    const refResult = await this.run([
+      '-C', repository.root,
+      'for-each-ref',
+      '--format=%(refname)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)',
+      localRef,
+    ], signal, deadline)
+    const encodedRef = refResult.stdout.toString('utf8')
+    if (!encodedRef.endsWith('\n') || encodedRef.slice(0, -1).includes('\n')) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid upstream configuration.')
+    }
+    const fields = encodedRef.slice(0, -1).split('\0')
+    if (fields.length !== 5 || fields.some(field => field.length === 0)) {
+      throw new GitServiceError('GIT_FAILED', 'The current branch does not have a supported upstream.')
+    }
+    const [reportedLocalRef, reportedHead, remoteValue, remoteRefValue, trackingRefValue] = fields as [
+      string, string, string, string, string,
+    ]
+    const remote = boundedRemoteName(remoteValue)
+    const remoteRef = boundedHeadRef(remoteRefValue, 'The remote Git branch ref')
+    const trackingRef = boundedTrackingRef(trackingRefValue)
+    if (reportedLocalRef !== localRef || reportedHead !== status.head ||
+      trackingRef !== `refs/remotes/${remote}/${remoteRef.slice('refs/heads/'.length)}`) {
+      throw new GitServiceError('GIT_FAILED', 'The current branch has a non-standard upstream configuration.')
+    }
+    const rawUrl = await this.pushUrlBefore(repository.root, remote, signal, deadline)
+    const remoteUrl = sanitizeRemoteUrl(rawUrl)
+    const upstreamHead = await this.remoteHeadBefore(
+      repository.root,
+      rawUrl,
+      remoteUrl,
+      remoteRef,
+      signal,
+      deadline,
+    )
+    const divergence = await this.run([
+      '-C', repository.root,
+      'rev-list',
+      '--left-right',
+      '--count',
+      `${upstreamHead}...${status.head}`,
+    ], signal, deadline).catch(error => {
+      if (error instanceof GitServiceError && error.code === 'GIT_FAILED') {
+        throw new GitServiceError(
+          'GIT_FAILED',
+          'The live upstream commit is not available locally. Fetch the branch before pushing.',
+        )
+      }
+      throw error
+    })
+    const match = /^(\d+)\s+(\d+)\n$/.exec(divergence.stdout.toString('utf8'))
+    if (match === null) throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid branch divergence data.')
+    const behind = Number(match[1])
+    const ahead = Number(match[2])
+    if (!Number.isSafeInteger(ahead) || !Number.isSafeInteger(behind)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid branch divergence data.')
+    }
+    return {
+      remote,
+      remoteUrl,
+      remoteUrlFingerprint: remoteUrlFingerprint(rawUrl),
+      localBranch,
+      localRef,
+      remoteRef,
+      trackingRef,
+      head: status.head,
+      upstreamHead,
+      ahead,
+      behind,
+    }
+  }
+
+  private async pushUrlBefore(
+    repositoryRoot: string,
+    remote: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const safeRemote = boundedRemoteName(remote)
+    const rawUrl = parseCommandValue(await this.run([
+      '-C', repositoryRoot,
+      'remote',
+      'get-url',
+      '--push',
+      safeRemote,
+    ], signal, deadline), 'push URL')
+    sanitizeRemoteUrl(rawUrl)
+    return rawUrl
+  }
+
+  private async remoteHeadBefore(
+    repositoryRoot: string,
+    rawUrl: string,
+    displayUrl: string,
+    remoteRef: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const safeRef = boundedHeadRef(remoteRef, 'The remote Git branch ref')
+    const result = await this.runRemote([
+      '-C', repositoryRoot,
+      'ls-remote',
+      '--refs',
+      rawUrl,
+      safeRef,
+    ], rawUrl, displayUrl, signal, deadline)
+    const output = result.stdout.toString('utf8')
+    const match = /^([a-f0-9]{40}|[a-f0-9]{64})\t([^\r\n]+)\n$/.exec(output)
+    if (match === null || match[2] !== safeRef) {
+      throw new GitServiceError('GIT_FAILED', 'The configured upstream branch does not exist on the push remote.')
+    }
+    return match[1]!
+  }
+
   private async statusBefore(
     repository: GitRepositoryIdentity,
     signal: AbortSignal | undefined,
@@ -974,6 +1232,22 @@ export class GitService {
       throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid commit identity.')
     }
     return commit
+  }
+
+  private async runRemote(
+    args: readonly string[],
+    rawUrl: string,
+    displayUrl: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitCommandResult> {
+    try {
+      return await this.run(args, signal, deadline)
+    } catch (error) {
+      if (!(error instanceof GitServiceError)) throw error
+      const message = redactError(error.message.split(rawUrl).join(displayUrl))
+      throw new GitServiceError(error.code, message.length === 0 ? 'Git could not reach the push remote.' : message)
+    }
   }
 
   private run(

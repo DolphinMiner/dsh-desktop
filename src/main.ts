@@ -26,6 +26,8 @@ import {
   parseDesktopGitCommitConfirmInput,
   parseDesktopGitCommitPreviewInput,
   parseDesktopGitIndexMutationInput,
+  parseDesktopGitPushConfirmInput,
+  parseDesktopGitPushPreviewInput,
   parseDesktopGitRevertConfirmInput,
   parseDesktopGitRevertPreviewInput,
   parseDesktopGitReviewInput,
@@ -50,6 +52,7 @@ import { GitReviewCommentController } from './git-review-comment-controller'
 import { GitReviewCommentStore } from './git-review-comments'
 import { GitIndexController, GitRepositoryMutationQueue } from './git-index-controller'
 import { GitMutationJournal } from './git-mutation-journal'
+import { GitPushController } from './git-push-controller'
 import { GitRevertController } from './git-revert-controller'
 import { GitService } from './git-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
@@ -422,6 +425,7 @@ function installIpcHandlers(
   gitIndex: GitIndexController,
   gitCommit: GitCommitController,
   gitRevert: GitRevertController,
+  gitPush: GitPushController,
   comments: GitReviewCommentController,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
@@ -490,6 +494,16 @@ function installIpcHandlers(
     assertTrustedSender(event)
     const input = validInput(parseDesktopGitRevertConfirmInput(value))
     return gitRevert.confirm(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:push:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitPushPreviewInput(value))
+    return gitPush.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:push:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitPushConfirmInput(value))
+    return gitPush.confirm(input, new AbortController().signal)
   })
   ipcMain.handle('desktop:git:comments:list', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -752,6 +766,25 @@ app.whenReady().then(async () => {
           detail: `This restores the reviewed file from the Git index in ${details.repositoryRoot}. ` +
             'DSH Desktop cannot recover the discarded unstaged changes.',
           buttons: ['Cancel', 'Revert File'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      },
+    }),
+    new GitPushController(mutationWorkspaceGit, gitMutations, gitMutationQueue, {
+      approve: async details => {
+        if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+        const count = details.target.ahead
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Push reviewed commits?',
+          message: `Push ${String(count)} ${count === 1 ? 'commit' : 'commits'} to ${details.target.remote}?`,
+          detail: `${details.target.localRef} -> ${details.target.remoteRef}\n` +
+            `${details.target.remoteUrl}\n\nCommit: ${details.target.head}\n` +
+            'This is a non-force Push to the configured upstream.',
+          buttons: ['Cancel', 'Push'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,

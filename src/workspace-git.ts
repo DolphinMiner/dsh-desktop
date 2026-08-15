@@ -4,6 +4,9 @@ import type {
   GitCommitResult,
   GitDiscoverParams,
   GitIndexMutationParams,
+  GitPushParams,
+  GitPushResult,
+  GitPushState,
   GitRevertParams,
   GitRepositoryIdentity,
   GitReviewParams,
@@ -34,6 +37,12 @@ export interface GitRepositoryOperations {
     expectedTree: string,
     signal?: AbortSignal,
   ): Promise<Omit<GitCommitResult, 'operationId'>>
+  pushTarget(repositoryRoot: string, signal?: AbortSignal): Promise<GitPushState>
+  push(
+    repositoryRoot: string,
+    expected: GitPushState,
+    signal?: AbortSignal,
+  ): Promise<Omit<GitPushResult, 'operationId'>>
 }
 
 export type WorkspaceGitAuthorizer = (
@@ -223,6 +232,50 @@ export class WorkspaceGitCapabilityService {
       result.status.repository.gitDir !== repository.gitDir ||
       result.status.repository.commonDir !== repository.commonDir || result.status.head !== result.commit) {
       throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during the Git commit.')
+    }
+    return { operationId: params.operationId, ...result }
+  }
+
+  async pushTarget(params: GitStatusParams, signal: AbortSignal): Promise<GitPushState> {
+    const repository = await this.discover(params, signal)
+    if (repository.root !== params.repositoryRoot) {
+      throw new WorkspaceGitError(
+        'BAD_MESSAGE',
+        'The repository root does not match the active workspace repository.',
+      )
+    }
+    let target: GitPushState
+    try {
+      target = await this.git.pushTarget(repository.root, signal)
+    } catch (error) {
+      mapGitError(error)
+    }
+    const current = await this.discover(params, signal)
+    if (current.root !== repository.root || current.gitDir !== repository.gitDir ||
+      current.commonDir !== repository.commonDir) {
+      throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during Push preview.')
+    }
+    return target
+  }
+
+  async push(params: GitPushParams, signal: AbortSignal): Promise<GitPushResult> {
+    const repository = await this.discover(params, signal)
+    if (repository.root !== params.repositoryRoot) {
+      throw new WorkspaceGitError(
+        'BAD_MESSAGE',
+        'The repository root does not match the active workspace repository.',
+      )
+    }
+    let result: Omit<GitPushResult, 'operationId'>
+    try {
+      result = await this.git.push(repository.root, params.target, signal)
+    } catch (error) {
+      mapGitError(error)
+    }
+    const current = await this.discover(params, signal)
+    if (current.root !== repository.root || current.gitDir !== repository.gitDir ||
+      current.commonDir !== repository.commonDir) {
+      throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during Push.')
     }
     return { operationId: params.operationId, ...result }
   }

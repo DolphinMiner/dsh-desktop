@@ -96,7 +96,7 @@ test('migrates the published v1 index journal before accepting destructive opera
   const journal = new GitMutationJournal(path)
   assert.equal(journal.status().available, true)
   assert.equal(journal.status().revision, 8)
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3)
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 4)
   assert.equal(gitMutationPhase(journal.get(operationId)!), 'succeeded')
 
   const revertId = '22222222-2222-4222-8222-222222222222'
@@ -147,7 +147,42 @@ test('migrates the published v2 revert journal without weakening approval eviden
   assert.equal(journal.status().available, true)
   assert.equal(journal.status().revision, 5)
   assert.equal(journal.get(revertId)?.approval?.fingerprint, 'a'.repeat(64))
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3)
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 4)
+})
+
+test('migrates the published v3 commit journal without losing commit outcomes', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const commitId = '33333333-3333-4333-8333-333333333333'
+  const commit = {
+    message: 'feat: preserved commit',
+    expectedHead: 'a'.repeat(40),
+    expectedTree: 'b'.repeat(40),
+    stagedFingerprint: 'c'.repeat(64),
+  }
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 3,
+    revision: 9,
+    operations: [{
+      ...input,
+      operationId: commitId,
+      kind: 'commit',
+      commit,
+      resultCommit: 'd'.repeat(40),
+      events: [
+        { phase: 'intent', at: '2026-08-16T12:00:00.000Z' },
+        { phase: 'dispatch', at: '2026-08-16T12:00:01.000Z' },
+        { phase: 'succeeded', reason: 'completed', at: '2026-08-16T12:00:02.000Z' },
+      ],
+    }],
+  })}\n`)
+
+  const journal = new GitMutationJournal(path)
+  assert.equal(journal.status().available, true)
+  assert.equal(journal.status().revision, 10)
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 4)
+  assert.deepEqual(journal.get(commitId)?.commit, commit)
+  assert.equal(journal.get(commitId)?.resultCommit, 'd'.repeat(40))
 })
 
 test('persists the reviewed commit payload and resulting commit identity', async t => {
@@ -171,7 +206,7 @@ test('persists the reviewed commit payload and resulting commit identity', async
   assert.equal(restored.begin({ ...input, operationId: commitId, kind: 'commit', commit }).created, false)
 })
 
-test('requires immutable approval evidence only for destructive revert intents', async t => {
+test('requires immutable approval evidence for destructive revert and push intents', async t => {
   const { root, path } = await fixture()
   t.after(() => rm(root, { recursive: true, force: true }))
   const journal = new GitMutationJournal(path)
@@ -182,6 +217,30 @@ test('requires immutable approval evidence only for destructive revert intents',
     ...input,
     approval: { id: operationId, fingerprint: 'a'.repeat(64) },
   }), (error: GitMutationJournalError) => error.code === 'BAD_MESSAGE')
+
+  const push = {
+    remote: 'origin',
+    remoteUrl: 'https://github.com/example/repo.git',
+    remoteUrlFingerprint: 'b'.repeat(64),
+    localBranch: 'feature/review',
+    localRef: 'refs/heads/feature/review',
+    remoteRef: 'refs/heads/feature/review',
+    trackingRef: 'refs/remotes/origin/feature/review',
+    head: 'c'.repeat(40),
+    upstreamHead: 'd'.repeat(40),
+    ahead: 2,
+    behind: 0,
+  }
+  assert.throws(() => journal.begin({ ...input, kind: 'push', push }),
+    (error: GitMutationJournalError) => error.code === 'BAD_MESSAGE')
+  assert.equal(journal.begin({
+    ...input,
+    kind: 'push',
+    requestedPaths: [push.localRef],
+    paths: [push.remoteRef],
+    approval: { id: operationId, fingerprint: 'e'.repeat(64) },
+    push,
+  }).record.push?.remoteUrlFingerprint, push.remoteUrlFingerprint)
 })
 
 test('fails closed on corrupt state and persistence failure', async t => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type {
+  GitPushState,
   GitRepositoryIdentity,
   GitReviewSnapshot,
   GitStatusSnapshot,
@@ -19,6 +20,22 @@ const repository: GitRepositoryIdentity = {
   gitDir: '/repo/.git',
   commonDir: '/repo/.git',
 }
+
+const pushTarget: GitPushState = {
+  remote: 'origin',
+  remoteUrl: 'https://github.com/example/repo.git',
+  remoteUrlFingerprint: 'f'.repeat(64),
+  localBranch: 'main',
+  localRef: 'refs/heads/main',
+  remoteRef: 'refs/heads/main',
+  trackingRef: 'refs/remotes/origin/main',
+  head: 'b'.repeat(40),
+  upstreamHead: 'a'.repeat(40),
+  ahead: 1,
+  behind: 0,
+}
+
+const pushResult = { remote: 'origin', remoteRef: 'refs/heads/main', head: 'b'.repeat(40) }
 
 function cleanStatus(identity: GitRepositoryIdentity = repository): GitStatusSnapshot {
   return {
@@ -77,6 +94,8 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
       calls.push(`commit:${root}:${message}:${expectedHead ?? 'initial'}:${expectedTree}`)
       return { commit: 'b'.repeat(40), status: committedStatus() }
     },
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }
   const service = new WorkspaceGitCapabilityService(git, (sessionId, workspaceRoot, signal) => {
     assert.equal(signal.aborted, false)
@@ -153,6 +172,36 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
   ])
 })
 
+test('authorizes and revalidates repository identity around push target reads and writes', async () => {
+  let authorizations = 0
+  let discoveries = 0
+  const service = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => {
+      discoveries += 1
+      return repository
+    },
+    status: async () => cleanStatus(),
+    review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
+    revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
+  }, () => { authorizations += 1 })
+  const params = { sessionId: 'session-1', workspaceRoot: '/repo', repositoryRoot: '/repo' }
+  const signal = new AbortController().signal
+
+  assert.deepEqual(await service.pushTarget(params, signal), pushTarget)
+  assert.deepEqual(await service.push({
+    ...params,
+    operationId: '44444444-4444-4444-8444-444444444444',
+    target: pushTarget,
+  }, signal), { operationId: '44444444-4444-4444-8444-444444444444', ...pushResult })
+  assert.equal(discoveries, 4)
+  assert.equal(authorizations, 8)
+})
+
 test('rejects an unrelated requested root before reading status', async () => {
   let statusCalls = 0
   const service = new WorkspaceGitCapabilityService({
@@ -166,6 +215,8 @@ test('rejects an unrelated requested root before reading status', async () => {
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -185,6 +236,8 @@ test('rejects a repository identity that changes during status', async () => {
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -203,6 +256,8 @@ test('rejects a repository identity that changes during review', async () => {
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
 
   await assert.rejects(service.review({
@@ -222,6 +277,8 @@ test('rejects a repository identity that changes during an index mutation', asyn
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
 
   await assert.rejects(service.mutateIndex({
@@ -243,6 +300,8 @@ test('rejects a repository identity that changes during a worktree revert', asyn
     revertWorktree: async () => cleanStatus({ ...repository, gitDir: '/repo/.git-replaced' }),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
 
   await assert.rejects(service.revertWorktree({
@@ -266,6 +325,8 @@ test('rejects repository identity changes during index-tree reads and commits', 
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
   await assert.rejects(indexService.indexTree({
     sessionId: 'session-1',
@@ -284,6 +345,8 @@ test('rejects repository identity changes during index-tree reads and commits', 
       commit: 'b'.repeat(40),
       status: committedStatus({ ...repository, commonDir: '/repo/.git-replaced' }),
     }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => undefined)
   await assert.rejects(commitService.commit({
     sessionId: 'session-1',
@@ -308,6 +371,8 @@ test('maps bounded Git failures without weakening caller authorization', async (
     revertWorktree: async () => cleanStatus(),
     indexTree: async () => 'c'.repeat(40),
     commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
   }, () => {
     authorized = true
   })
