@@ -14,6 +14,13 @@ if (process.env.DSH_COMPUTER_FIXTURE_MODE === 'hang') {
   setInterval(() => undefined, 1_000)
 } else if (process.env.DSH_COMPUTER_FIXTURE_MODE === 'overflow') {
   process.stdout.write('x'.repeat(8_192))
+} else if (process.env.DSH_COMPUTER_FIXTURE_MODE === 'action-target-changed' && request.method === 'act') {
+  process.stdout.write(JSON.stringify({
+    version: 2,
+    id: request.id,
+    ok: false,
+    error: { code: 'TARGET_CHANGED', message: 'The target changed before dispatch.' },
+  }))
 } else if (request.method === 'permissions') {
   response({
     supported: true,
@@ -68,6 +75,8 @@ if (process.env.DSH_COMPUTER_FIXTURE_MODE === 'hang') {
     truncated: false,
     warnings: ['Accessibility permission is not granted.'],
   })
+} else if (request.method === 'act') {
+  response({ actionId: request.actionId, performedAt: '2026-08-16T12:00:00.500Z' })
 } else {
   process.stdout.write(JSON.stringify({
     version: 2,

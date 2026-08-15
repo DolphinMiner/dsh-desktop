@@ -114,6 +114,42 @@ private struct Request: Decodable {
     let screenshotPath: String?
     let maxDepth: Int?
     let maxElements: Int?
+    let actionId: String?
+    let sourceSnapshotId: String?
+    let compatibility: CompatibilityResult?
+    let action: ActionRequest?
+    let element: ElementResult?
+}
+
+private struct PointRequest: Codable {
+    let x: Double
+    let y: Double
+}
+
+private struct ActionTargetRequest: Codable {
+    let mode: String
+    let elementId: String?
+    let coordinateSpace: String?
+    let point: PointRequest?
+}
+
+private struct ActionRequest: Codable {
+    let kind: String
+    let target: ActionTargetRequest?
+    let button: String?
+    let clickCount: Int?
+    let elementId: String?
+    let text: String?
+    let replace: Bool?
+    let key: String?
+    let modifiers: [String]?
+    let deltaX: Double?
+    let deltaY: Double?
+}
+
+private struct ActionReceipt: Codable {
+    let actionId: String
+    let performedAt: String
 }
 
 private struct ErrorBody: Encodable {
@@ -156,6 +192,7 @@ private struct ResolvedCapture {
 
 private struct AccessibilityResult {
     let elements: [ElementResult]
+    let handles: [String: AXUIElement]
     let truncated: Bool
 }
 
@@ -354,11 +391,12 @@ private func elementBounds(_ element: AXUIElement) -> Bounds? {
 
 private func accessibilityTree(pid: pid_t, maxDepth: Int, maxElements: Int) -> AccessibilityResult {
     guard AXIsProcessTrustedWithOptions(nil) else {
-        return AccessibilityResult(elements: [], truncated: false)
+        return AccessibilityResult(elements: [], handles: [:], truncated: false)
     }
     let root = AXUIElementCreateApplication(pid)
     var queue: [(AXUIElement, Int)] = [(root, 0)]
     var elements: [ElementResult] = []
+    var handles: [String: AXUIElement] = [:]
     var truncated = false
 
     while !queue.isEmpty {
@@ -381,8 +419,9 @@ private func accessibilityTree(pid: pid_t, maxDepth: Int, maxElements: Int) -> A
         } else {
             actions = []
         }
+        let id = "ax:\(elements.count)"
         elements.append(ElementResult(
-            id: "ax:\(elements.count)",
+            id: id,
             role: role,
             label: label,
             value: secure ? nil : stringAttribute(element, kAXValueAttribute as CFString),
@@ -390,6 +429,7 @@ private func accessibilityTree(pid: pid_t, maxDepth: Int, maxElements: Int) -> A
             bounds: elementBounds(element),
             secure: secure
         ))
+        handles[id] = element
 
         guard depth < maxDepth,
               let childrenValue = copyAttribute(element, kAXChildrenAttribute as CFString),
@@ -398,7 +438,7 @@ private func accessibilityTree(pid: pid_t, maxDepth: Int, maxElements: Int) -> A
         if children.count > remaining { truncated = true }
         queue.append(contentsOf: children.prefix(remaining).map { ($0, depth + 1) })
     }
-    return AccessibilityResult(elements: elements, truncated: truncated)
+    return AccessibilityResult(elements: elements, handles: handles, truncated: truncated)
 }
 
 private func redactedImage(_ image: CGImage, captureBounds: CGRect, elements: [ElementResult]) -> CGImage {
@@ -480,6 +520,327 @@ private func displayTopology(_ content: SCShareableContent) -> [DisplayStateResu
     }.sorted { $0.id < $1.id }
 }
 
+private func nearlyEqual(_ left: Double, _ right: Double, tolerance: Double = 0.5) -> Bool {
+    abs(left - right) <= tolerance
+}
+
+private func boundsMatch(_ left: Bounds, _ right: Bounds) -> Bool {
+    nearlyEqual(left.x, right.x) && nearlyEqual(left.y, right.y) &&
+        nearlyEqual(left.width, right.width) && nearlyEqual(left.height, right.height)
+}
+
+private func topologyMatches(_ expected: [DisplayStateResult], _ current: [DisplayStateResult]) -> Bool {
+    guard expected.count == current.count else { return false }
+    return zip(expected.sorted { $0.id < $1.id }, current.sorted { $0.id < $1.id }).allSatisfy {
+        $0.id == $1.id && boundsMatch($0.bounds, $1.bounds) &&
+            nearlyEqual($0.displayScale, $1.displayScale, tolerance: 0.01)
+    }
+}
+
+private func validateCompatibility(
+    _ expected: CompatibilityResult,
+    resolved: ResolvedCapture,
+    content: SCShareableContent
+) throws {
+    guard expected.surfaceId == resolved.surfaceId,
+          boundsMatch(expected.surfaceBounds, Bounds(resolved.bounds)),
+          topologyMatches(expected.displayTopology, displayTopology(content)),
+          let expectedApplication = expected.foregroundApplicationId,
+          foregroundApplication()?.id == expectedApplication else {
+        throw HelperError("TARGET_CHANGED", "The foreground application, window, or display layout changed.")
+    }
+}
+
+private func optionalBoundsMatch(_ left: Bounds?, _ right: Bounds?) -> Bool {
+    switch (left, right) {
+    case (nil, nil): return true
+    case let (.some(left), .some(right)): return boundsMatch(left, right)
+    default: return false
+    }
+}
+
+private func validatedElement(
+    id: String,
+    expected: ElementResult?,
+    accessibility: AccessibilityResult
+) throws -> (ElementResult, AXUIElement) {
+    guard let expected = expected,
+          expected.id == id,
+          let current = accessibility.elements.first(where: { $0.id == id }),
+          let handle = accessibility.handles[id],
+          current.role == expected.role,
+          current.label == expected.label,
+          current.value == expected.value,
+          current.actions == expected.actions,
+          current.secure == expected.secure,
+          optionalBoundsMatch(current.bounds, expected.bounds) else {
+        throw HelperError("TARGET_CHANGED", "The requested interface element changed after observation.")
+    }
+    guard !current.secure else {
+        throw HelperError("PERMISSION_DENIED", "Computer actions are not allowed on secure text fields.")
+    }
+    return (current, handle)
+}
+
+private func pointForTarget(
+    _ target: ActionTargetRequest,
+    expectedElement: ElementResult?,
+    accessibility: AccessibilityResult,
+    captureBounds: CGRect
+) throws -> CGPoint {
+    if target.mode == "element" {
+        guard let id = target.elementId else {
+            throw HelperError("BAD_MESSAGE", "The semantic action target is incomplete.")
+        }
+        let (_, handle) = try validatedElement(id: id, expected: expectedElement, accessibility: accessibility)
+        guard let bounds = elementBounds(handle)?.rect, bounds.width > 0, bounds.height > 0 else {
+            throw HelperError("TARGET_CHANGED", "The interface element no longer has actionable bounds.")
+        }
+        return CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+    guard target.mode == "point", target.coordinateSpace == "capture", let point = target.point,
+          point.x >= 0, point.y >= 0,
+          point.x <= captureBounds.width, point.y <= captureBounds.height else {
+        throw HelperError("BAD_MESSAGE", "The fallback action point is outside the observed capture.")
+    }
+    return CGPoint(x: captureBounds.minX + point.x, y: captureBounds.minY + point.y)
+}
+
+private func ensureForeground(_ applicationId: String) throws {
+    guard foregroundApplication()?.id == applicationId else {
+        throw HelperError("TARGET_CHANGED", "The foreground application changed before the action was dispatched.")
+    }
+}
+
+private func postMouseClick(point: CGPoint, button: String, count: Int) throws {
+    let downType: CGEventType
+    let upType: CGEventType
+    let mouseButton: CGMouseButton
+    if button == "left" {
+        downType = .leftMouseDown
+        upType = .leftMouseUp
+        mouseButton = .left
+    } else if button == "right" {
+        downType = .rightMouseDown
+        upType = .rightMouseUp
+        mouseButton = .right
+    } else {
+        throw HelperError("BAD_MESSAGE", "The mouse button is invalid.")
+    }
+    guard count == 1 || count == 2 else {
+        throw HelperError("BAD_MESSAGE", "The click count is invalid.")
+    }
+    for index in 1...count {
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: downType, mouseCursorPosition: point, mouseButton: mouseButton),
+              let up = CGEvent(mouseEventSource: nil, mouseType: upType, mouseCursorPosition: point, mouseButton: mouseButton) else {
+            throw HelperError("INTERNAL_ERROR", "The mouse event could not be created.")
+        }
+        down.setIntegerValueField(.mouseEventClickState, value: Int64(index))
+        up.setIntegerValueField(.mouseEventClickState, value: Int64(index))
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+}
+
+private func eventFlags(_ modifiers: [String]) throws -> CGEventFlags {
+    var flags: CGEventFlags = []
+    for modifier in modifiers {
+        switch modifier {
+        case "command": flags.insert(.maskCommand)
+        case "control": flags.insert(.maskControl)
+        case "option": flags.insert(.maskAlternate)
+        case "shift": flags.insert(.maskShift)
+        default: throw HelperError("BAD_MESSAGE", "The keyboard modifier is invalid.")
+        }
+    }
+    guard Set(modifiers).count == modifiers.count else {
+        throw HelperError("BAD_MESSAGE", "Keyboard modifiers must be unique.")
+    }
+    return flags
+}
+
+private let keyCodes: [String: CGKeyCode] = [
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
+    "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16,
+    "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+    "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34,
+    "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46,
+    "enter": 36, "tab": 48, "backspace": 51, "escape": 53, "delete": 117,
+    "home": 115, "end": 119, "page-up": 116, "page-down": 121,
+    "left": 123, "right": 124, "down": 125, "up": 126,
+]
+
+private func postKey(code: CGKeyCode, flags: CGEventFlags) throws {
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
+        throw HelperError("INTERNAL_ERROR", "The keyboard event could not be created.")
+    }
+    down.flags = flags
+    up.flags = flags
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
+}
+
+private func postText(_ text: String, expectedApplicationId: String) throws {
+    let characters = Array(text.utf16)
+    for offset in stride(from: 0, to: characters.count, by: 128) {
+        try ensureForeground(expectedApplicationId)
+        let chunk = Array(characters[offset..<min(offset + 128, characters.count)])
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+            throw HelperError("INTERNAL_ERROR", "The text event could not be created.")
+        }
+        chunk.withUnsafeBufferPointer { buffer in
+            down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
+            up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+}
+
+private func performAction(
+    _ action: ActionRequest,
+    expectedElement: ElementResult?,
+    accessibility: AccessibilityResult,
+    resolved: ResolvedCapture,
+    expectedApplicationId: String
+) throws {
+    try ensureForeground(expectedApplicationId)
+    switch action.kind {
+    case "click":
+        guard let target = action.target, let button = action.button, let count = action.clickCount else {
+            throw HelperError("BAD_MESSAGE", "The click action is incomplete.")
+        }
+        if target.mode == "element", button == "left", count == 1, let id = target.elementId {
+            let (element, handle) = try validatedElement(
+                id: id,
+                expected: expectedElement,
+                accessibility: accessibility
+            )
+            if element.actions.contains(kAXPressAction as String) {
+                try ensureForeground(expectedApplicationId)
+                guard AXUIElementPerformAction(handle, kAXPressAction as CFString) == .success else {
+                    throw HelperError("INTERNAL_ERROR", "The interface element could not be pressed.")
+                }
+                return
+            }
+        }
+        let point = try pointForTarget(
+            target,
+            expectedElement: expectedElement,
+            accessibility: accessibility,
+            captureBounds: resolved.bounds
+        )
+        try ensureForeground(expectedApplicationId)
+        try postMouseClick(point: point, button: button, count: count)
+    case "type":
+        guard let id = action.elementId, let text = action.text, !text.isEmpty,
+              text.count <= 8_192, let replace = action.replace else {
+            throw HelperError("BAD_MESSAGE", "The type action is incomplete.")
+        }
+        let (element, handle) = try validatedElement(
+            id: id,
+            expected: expectedElement,
+            accessibility: accessibility
+        )
+        guard element.role.localizedCaseInsensitiveContains("text") ||
+                element.role.localizedCaseInsensitiveContains("combo") else {
+            throw HelperError("BAD_MESSAGE", "The selected element is not text editable.")
+        }
+        guard AXUIElementSetAttributeValue(
+            handle,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            throw HelperError("TARGET_CHANGED", "The text field could not be focused safely.")
+        }
+        try ensureForeground(expectedApplicationId)
+        if replace { try postKey(code: 0, flags: .maskCommand) }
+        try postText(text, expectedApplicationId: expectedApplicationId)
+    case "key":
+        guard let key = action.key?.lowercased(), let modifiers = action.modifiers,
+              let code = keyCodes[key] else {
+            throw HelperError("BAD_MESSAGE", "The key action is invalid.")
+        }
+        let flags = try eventFlags(modifiers)
+        if key.count == 1 && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
+            throw HelperError("BAD_MESSAGE", "Printable text must use the type action.")
+        }
+        try ensureForeground(expectedApplicationId)
+        try postKey(code: code, flags: flags)
+    case "scroll":
+        guard let deltaX = action.deltaX, let deltaY = action.deltaY,
+              abs(deltaX) <= 10_000, abs(deltaY) <= 10_000,
+              deltaX != 0 || deltaY != 0 else {
+            throw HelperError("BAD_MESSAGE", "The scroll action is invalid.")
+        }
+        let point = try action.target.map {
+            try pointForTarget(
+                $0,
+                expectedElement: expectedElement,
+                accessibility: accessibility,
+                captureBounds: resolved.bounds
+            )
+        } ?? CGPoint(x: resolved.bounds.midX, y: resolved.bounds.midY)
+        try ensureForeground(expectedApplicationId)
+        guard let move = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ), let scroll = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: Int32(-deltaY.rounded()),
+            wheel2: Int32(-deltaX.rounded()),
+            wheel3: 0
+        ) else {
+            throw HelperError("INTERNAL_ERROR", "The scroll event could not be created.")
+        }
+        move.post(tap: .cghidEventTap)
+        scroll.post(tap: .cghidEventTap)
+    default:
+        throw HelperError("BAD_MESSAGE", "The computer action kind is invalid.")
+    }
+}
+
+private func act(_ request: Request) async throws -> ActionReceipt {
+    let currentPermissions = permissions()
+    guard currentPermissions.canAct else {
+        throw HelperError(
+            "PERMISSION_DENIED",
+            "Screen Recording and Accessibility permissions are required for computer actions."
+        )
+    }
+    guard let actionId = request.actionId, actionId.count == 36,
+          let sourceSnapshotId = request.sourceSnapshotId, !sourceSnapshotId.isEmpty,
+          let target = request.target, target.kind != "display", target.pid != nil,
+          let expected = request.compatibility,
+          let expectedApplicationId = expected.foregroundApplicationId,
+          let action = request.action else {
+        throw HelperError("BAD_MESSAGE", "The computer action request is incomplete.")
+    }
+    let maxDepth = min(max(request.maxDepth ?? 12, 1), 20)
+    let maxElements = min(max(request.maxElements ?? 400, 1), 1_000)
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    let resolved = try resolveCapture(target: target, content: content)
+    try validateCompatibility(expected, resolved: resolved, content: content)
+    guard let pid = resolved.pid else {
+        throw HelperError("BAD_MESSAGE", "The computer action target does not have an application.")
+    }
+    let accessibility = accessibilityTree(pid: pid, maxDepth: maxDepth, maxElements: maxElements)
+    try performAction(
+        action,
+        expectedElement: request.element,
+        accessibility: accessibility,
+        resolved: resolved,
+        expectedApplicationId: expectedApplicationId
+    )
+    return ActionReceipt(actionId: actionId, performedAt: ISO8601DateFormatter().string(from: Date()))
+}
+
 private func observe(_ request: Request) async throws -> ObservationResult {
     guard permissions().screenRecording == "granted" else {
         throw HelperError(
@@ -498,7 +859,7 @@ private func observe(_ request: Request) async throws -> ObservationResult {
     let resolved = try resolveCapture(target: target, content: content)
     let accessibility = resolved.pid.map {
         accessibilityTree(pid: $0, maxDepth: maxDepth, maxElements: maxElements)
-    } ?? AccessibilityResult(elements: [], truncated: false)
+    } ?? AccessibilityResult(elements: [], handles: [:], truncated: false)
 
     let configuration = SCStreamConfiguration()
     let sourceWidth = max(resolved.filter.contentRect.width * CGFloat(resolved.filter.pointPixelScale), 1)
@@ -575,6 +936,8 @@ private struct DSHComputerHelper {
                 emit(SuccessResponse(version: protocolVersion, id: request.id, result: try await targetList()))
             case "observe":
                 emit(SuccessResponse(version: protocolVersion, id: request.id, result: try await observe(request)))
+            case "act":
+                emit(SuccessResponse(version: protocolVersion, id: request.id, result: try await act(request)))
             default:
                 throw HelperError("METHOD_NOT_FOUND", "The native helper method is not available.")
             }

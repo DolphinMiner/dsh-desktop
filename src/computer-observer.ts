@@ -43,6 +43,8 @@ export interface ComputerHelperActInput {
   target: ComputerTarget
   sourceSnapshotId: string
   compatibility: ComputerSnapshotCompatibility
+  maxDepth: number
+  maxElements: number
   action: ComputerAction
   element?: ComputerElement
 }
@@ -479,6 +481,8 @@ export class ComputerObserver {
         target: cloneTarget(prepared.target),
         sourceSnapshotId: prepared.params.snapshotId,
         compatibility: prepared.observation.compatibility,
+        maxDepth: this.maxDepth,
+        maxElements: this.maxElements,
         action: prepared.params.action,
         ...(prepared.element === undefined ? {} : { element: prepared.element }),
       }, controller.signal)

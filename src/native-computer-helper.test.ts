@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { NativeComputerHelper } from './native-computer-helper'
+import { ComputerUseError } from './computer-observer'
 
 const fixture = join(process.cwd(), 'test', 'fixtures', 'fake-computer-helper.mjs')
 
@@ -64,4 +65,34 @@ test('rejects oversized output and a non-executable helper', async t => {
   const invalid = new NativeComputerHelper(path)
   t.after(() => invalid.dispose())
   await assert.rejects(invalid.getPermissions(), /missing or not executable/)
+})
+
+test('serializes bounded actions and preserves safe native preflight failures', async t => {
+  const client = helper()
+  t.after(() => client.dispose())
+  const target = (await client.listTargets()).targets[0]!
+  const input = {
+    actionId: '77777777-7777-4777-8777-777777777777',
+    target,
+    sourceSnapshotId: 'snapshot-1',
+    compatibility: {
+      surfaceId: 'window:7:42',
+      surfaceBounds: { x: 0, y: 0, width: 800, height: 600 },
+      displayTopology: [{
+        id: 'display:1',
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        displayScale: 2,
+      }],
+      foregroundApplicationId: 'application:42',
+    },
+    maxDepth: 12,
+    maxElements: 400,
+    action: { kind: 'key' as const, key: 'escape', modifiers: [] },
+  }
+  assert.equal((await client.act(input)).actionId, input.actionId)
+
+  const changed = helper('action-target-changed')
+  t.after(() => changed.dispose())
+  await assert.rejects(changed.act(input), (error: ComputerUseError) =>
+    error.code === 'TARGET_CHANGED' && !error.ambiguous)
 })
