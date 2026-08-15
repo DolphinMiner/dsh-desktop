@@ -14,7 +14,7 @@ DSH Desktop 是一个独立的社区项目，用 Electron 在 macOS 桌面端托
 
 ## 功能展示
 
-![DSH Desktop 运行官方 DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
+![DSH Desktop 运行官方 DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.jpg)
 
 MVP 刻意保持很薄：
 

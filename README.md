@@ -14,7 +14,7 @@ An independent, community-built macOS desktop host for the official
 
 ## Preview
 
-![DSH Desktop running the official DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
+![DSH Desktop running the official DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.jpg)
 
 This first MVP intentionally keeps the architecture narrow:
 
