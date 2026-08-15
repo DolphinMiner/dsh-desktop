@@ -98,6 +98,7 @@ function cleanupOperations(
     }],
     createWorktree: async () => { throw new Error('must not create a worktree') },
     inspectWorktreeForRemoval: async () => cleanupInspection(record),
+    inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
     removeWorktree: async () => undefined,
     ...overrides,
   }
@@ -196,6 +197,7 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
       clean: true,
       locked: true,
     }),
+    inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
     removeWorktree: async () => undefined,
   }
   const registry = new WorktreeRegistry(join(root, 'registry.json'))
@@ -237,6 +239,7 @@ test('persists an ambiguous create failure and never replays it', async t => {
       clean: true,
       locked: true,
     }),
+    inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
     removeWorktree: async () => undefined,
   }
   const manager = new WorktreeManager(
@@ -272,6 +275,7 @@ test('fails before Git when the workspace is not authorized', async t => {
     listWorktrees: async () => [],
     createWorktree: async () => ({ root: '/worktree', gitDir: '/worktree/.git', commonDir: '/repo/.git' }),
     inspectWorktreeForRemoval: async () => { throw new Error('must not run') },
+    inspectWorktreeHandoff: async () => { throw new Error('must not run') },
     removeWorktree: async () => { throw new Error('must not run') },
   }, new WorktreeRegistry(join(root, 'registry.json')), join(root, 'worktrees'), () => {
     throw new WorktreeManagerError('BAD_MESSAGE', 'Workspace is not active.')
@@ -317,6 +321,7 @@ test('reconciles a registered branch moved to another checkout without mutating 
     }],
     createWorktree: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
@@ -345,6 +350,7 @@ test('records an inspection failure without claiming that a checkout is missing'
     listWorktrees: async () => { throw new GitServiceError('TIMEOUT', 'Inspection timed out.') },
     createWorktree: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
@@ -542,4 +548,55 @@ test('does not claim an interrupted cleanup completed when a non-repository path
   assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'recovery-required')
   assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'interrupted-remove')
   await access(checkout)
+})
+
+test('binds handoff preflight to the immutable managed worktree identity', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-handoff-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'handoff-manager')
+  let inspectedInput: object | undefined
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    inspectWorktreeHandoff: async input => {
+      inspectedInput = input
+      return {
+        direction: input.direction,
+        baseCommit: input.baseCommit,
+        source: {
+          kind: 'worktree',
+          path: record.worktreePath!,
+          branch: record.branch!.slice('refs/heads/'.length),
+          head: record.baseCommit,
+          clean: false,
+        },
+        destination: {
+          kind: 'local',
+          path: record.repository.root,
+          branch: 'main',
+          head: record.baseCommit,
+          clean: true,
+        },
+        files: [{ status: 'modified', path: 'README.md', patchAvailable: true }],
+        patch: 'diff --git a/README.md b/README.md\n',
+        blockers: [],
+        canTransfer: true,
+      }
+    },
+  }), registry, '/managed', () => undefined)
+
+  const preflight = await manager.inspectHandoff(
+    record.id,
+    'worktree-to-local',
+    new AbortController().signal,
+  )
+  assert.equal(preflight.worktree.id, record.id)
+  assert.equal(preflight.canTransfer, true)
+  assert.deepEqual(inspectedInput, {
+    repositoryRoot: '/repo',
+    worktreePath: '/managed/handoff-manager',
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+    lockReason: 'DSH Desktop session 123456789012',
+    baseCommit: 'a'.repeat(40),
+    direction: 'worktree-to-local',
+  })
 })

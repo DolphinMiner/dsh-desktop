@@ -6,6 +6,8 @@ import type {
   DesktopProtocolError,
   GitRepositoryIdentity,
   WorktreeCleanupInspection,
+  WorktreeHandoffDirection,
+  WorktreeHandoffPreflight,
   WorktreeRecoveryReason,
   WorktreeSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -13,8 +15,10 @@ import type {
 import {
   GitCreateWorktreeInput,
   GitInspectWorktreeInput,
+  GitInspectWorktreeHandoffInput,
   GitRemoveWorktreeInput,
   GitServiceError,
+  GitWorktreeHandoffInspection,
   GitWorktreeEntry,
 } from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
@@ -38,6 +42,10 @@ export interface WorktreeGitOperations {
     input: GitInspectWorktreeInput,
     signal?: AbortSignal,
   ): Promise<WorktreeCleanupInspection>
+  inspectWorktreeHandoff(
+    input: GitInspectWorktreeHandoffInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeHandoffInspection>
   removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void>
 }
 
@@ -170,7 +178,7 @@ function sameCleanupInspection(
     left.clean === right.clean && left.locked === right.locked
 }
 
-function assertCleanupRecord(record: WorktreeRecord): asserts record is WorktreeRecord & {
+function assertCleanupRecord(record: WorktreeRecord, action = 'cleanup'): asserts record is WorktreeRecord & {
   executionMode: 'worktree'
   worktreePath: string
   branch: string
@@ -179,7 +187,7 @@ function assertCleanupRecord(record: WorktreeRecord): asserts record is Worktree
     (record.lifecycle !== 'ready' && record.lifecycle !== 'orphaned') || record.pendingOperation !== undefined) {
     throw new WorktreeManagerError(
       'CONFLICT',
-      'This worktree is not ready for cleanup. Resolve its recovery state first.',
+      `This worktree is not ready for ${action}. Resolve its recovery state first.`,
       record.lifecycle === 'recovery-required' || record.pendingOperation !== undefined,
     )
   }
@@ -231,6 +239,33 @@ export class WorktreeManager {
       lockReason,
     }, signal), true)
     return { record, inspection }
+  }
+
+  async inspectHandoff(
+    id: string,
+    direction: WorktreeHandoffDirection,
+    signal: AbortSignal,
+  ): Promise<WorktreeHandoffPreflight> {
+    if (!isBoundedString(id, MAX_ID_LENGTH) ||
+      (direction !== 'local-to-worktree' && direction !== 'worktree-to-local')) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree handoff request is invalid.')
+    }
+    const record = withMappedErrorSync(() => this.registry.get(id))
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    assertCleanupRecord(record, 'handoff')
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree lock identity is invalid.')
+    }
+    const inspection = await withMappedError(() => this.git.inspectWorktreeHandoff({
+      repositoryRoot: record.repository.root,
+      worktreePath: record.worktreePath,
+      branch: record.branch,
+      lockReason,
+      baseCommit: record.baseCommit,
+      direction,
+    }, signal))
+    return { ...inspection, worktree: summarizeWorktreeRecord(record) }
   }
 
   async removeCleanWorktree(

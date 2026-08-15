@@ -16,6 +16,8 @@ import type {
   GitStatusEntry,
   GitStatusSnapshot,
   WorktreeCleanupInspection,
+  WorktreeHandoffDirection,
+  WorktreeHandoffPreflight,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -69,6 +71,21 @@ export interface GitRemoveWorktreeInput {
 }
 
 export type GitInspectWorktreeInput = Omit<GitRemoveWorktreeInput, 'head'>
+
+export interface GitInspectWorktreeHandoffInput extends GitInspectWorktreeInput {
+  baseCommit: string
+  direction: WorktreeHandoffDirection
+}
+
+export type GitWorktreeHandoffInspection = Omit<WorktreeHandoffPreflight, 'worktree'>
+
+interface InspectedManagedWorktree {
+  repository: GitRepositoryIdentity
+  target: string
+  targetRepository: GitRepositoryIdentity
+  entry: GitWorktreeEntry
+  lockReason: string
+}
 
 interface InspectedWorktreeRemoval {
   repository: GitRepositoryIdentity
@@ -1234,6 +1251,125 @@ export class GitService {
     return (await this.inspectWorktreeForRemovalBefore(input, signal, deadline)).inspection
   }
 
+  async inspectWorktreeHandoff(
+    input: GitInspectWorktreeHandoffInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeHandoffInspection> {
+    const deadline = Date.now() + this.timeoutMs
+    if (input.direction !== 'local-to-worktree' && input.direction !== 'worktree-to-local') {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree handoff direction is invalid.')
+    }
+    const baseCommit = boundedObjectId(input.baseCommit, 'Worktree base commit')!
+    const managed = await this.inspectManagedWorktreeBefore(input, signal, deadline)
+    if (await this.resolveCommitBefore(managed.repository.root, baseCommit, signal, deadline) !== baseCommit) {
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree base commit changed.')
+    }
+    const [localStatus, worktreeStatus] = await Promise.all([
+      this.statusBefore(managed.repository, signal, deadline),
+      this.statusBefore(managed.targetRepository, signal, deadline),
+    ])
+    if (worktreeStatus.head !== managed.entry.head) {
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree changed during handoff preflight.')
+    }
+    const sourceStatus = input.direction === 'local-to-worktree' ? localStatus : worktreeStatus
+    const destinationStatus = input.direction === 'local-to-worktree' ? worktreeStatus : localStatus
+    const sourceRepository = input.direction === 'local-to-worktree'
+      ? managed.repository
+      : managed.targetRepository
+    const destinationRepository = input.direction === 'local-to-worktree'
+      ? managed.targetRepository
+      : managed.repository
+    const sourceKind = input.direction === 'local-to-worktree' ? 'local' as const : 'worktree' as const
+    const destinationKind = input.direction === 'local-to-worktree' ? 'worktree' as const : 'local' as const
+    const diffOptions = [
+      '--no-ext-diff',
+      '--no-textconv',
+      '--find-renames',
+      '--find-copies',
+      '--full-index',
+      '--submodule=short',
+    ]
+    const [names, patchResult] = await Promise.all([
+      this.run([
+        '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--name-status', '-z', baseCommit, '--',
+      ], signal, deadline),
+      this.run([
+        '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--patch', baseCommit, '--',
+      ], signal, deadline),
+    ])
+    const files = parseGitNameStatus(names.stdout)
+    for (const entry of sourceStatus.entries) {
+      if (entry.kind !== 'untracked' || files.some(file => file.path === entry.path)) continue
+      files.push({ status: 'untracked', path: entry.path, patchAvailable: false })
+    }
+    files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    const patch = patchResult.stdout.toString('utf8')
+    if (patch.includes('\0')) throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid handoff patch.')
+
+    const blockers: GitWorktreeHandoffInspection['blockers'] = []
+    const block = (reason: GitWorktreeHandoffInspection['blockers'][number]): void => {
+      if (!blockers.includes(reason)) blockers.push(reason)
+    }
+    if (sourceStatus.branch === undefined) block('source-detached')
+    if (sourceStatus.entries.some(entry => entry.kind === 'unmerged')) block('source-conflicts')
+    if (sourceStatus.head === undefined) {
+      block('source-diverged')
+    } else if (sourceStatus.head !== baseCommit) {
+      try {
+        await this.run([
+          '-C', sourceRepository.root,
+          'merge-base',
+          '--is-ancestor',
+          baseCommit,
+          sourceStatus.head,
+        ], signal, deadline)
+      } catch (error) {
+        if (error instanceof GitServiceError && error.code === 'GIT_FAILED') block('source-diverged')
+        else throw error
+      }
+    }
+    if (destinationStatus.branch === undefined) block('destination-detached')
+    if (destinationStatus.head !== baseCommit) block('destination-head-changed')
+    if (!destinationStatus.clean) block('destination-dirty')
+    if (files.length === 0) block('no-changes')
+
+    if (files.length > 0) {
+      const destinationWithIgnored = await this.statusBefore(destinationRepository, signal, deadline, true)
+      const transferPaths = files.flatMap(file => [file.path, ...(file.originalPath === undefined ? [] : [file.originalPath])])
+      const collides = destinationWithIgnored.entries.some(entry => {
+        if (entry.kind !== 'ignored' && entry.kind !== 'untracked') return false
+        const entryPath = entry.path.endsWith('/') ? entry.path.slice(0, -1) : entry.path
+        return transferPaths.some(path => path === entryPath || path.startsWith(`${entryPath}/`))
+      })
+      if (collides) block('destination-collision')
+    }
+
+    return {
+      direction: input.direction,
+      baseCommit,
+      source: {
+        kind: sourceKind,
+        path: sourceRepository.root,
+        ...(sourceStatus.branch === undefined ? {} : { branch: sourceStatus.branch }),
+        head: sourceStatus.head ?? baseCommit,
+        clean: sourceStatus.clean,
+      },
+      destination: {
+        kind: destinationKind,
+        path: destinationRepository.root,
+        ...(destinationStatus.branch === undefined ? {} : { branch: destinationStatus.branch }),
+        head: destinationStatus.head ?? baseCommit,
+        clean: destinationStatus.clean,
+      },
+      files,
+      patch,
+      blockers,
+      canTransfer: blockers.length === 0,
+    }
+  }
+
   async removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + this.timeoutMs
     const expectedHead = boundedObjectId(input.head, 'Expected worktree HEAD')!
@@ -1297,6 +1433,34 @@ export class GitService {
     signal: AbortSignal | undefined,
     deadline: number,
   ): Promise<InspectedWorktreeRemoval> {
+    const managed = await this.inspectManagedWorktreeBefore(input, signal, deadline)
+    const status = await this.statusBefore(managed.targetRepository, signal, deadline, true)
+    if (!status.clean || status.head !== managed.entry.head ||
+      status.branch !== managed.entry.branch!.slice('refs/heads/'.length) || status.entries.length !== 0) {
+      throw new GitServiceError(
+        'GIT_FAILED',
+        'The managed worktree contains modified, untracked, ignored, or conflicting files.',
+      )
+    }
+    return {
+      repository: managed.repository,
+      target: managed.target,
+      lockReason: managed.lockReason,
+      inspection: {
+        worktreePath: managed.target,
+        head: managed.entry.head!,
+        branch: managed.entry.branch!,
+        clean: true,
+        locked: true,
+      },
+    }
+  }
+
+  private async inspectManagedWorktreeBefore(
+    input: GitInspectWorktreeInput,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<InspectedManagedWorktree> {
     const requestedRoot = await this.canonicalDirectory(boundedInput(input.repositoryRoot, 'Repository root'))
     const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
     if (repository.root !== requestedRoot) {
@@ -1328,19 +1492,12 @@ export class GitService {
       !entry.locked || entry.lockReason !== lockReason || entry.prunable) {
       throw new GitServiceError('GIT_FAILED', 'The managed worktree identity changed before cleanup.')
     }
-    const status = await this.statusBefore(targetRepository, signal, deadline, true)
-    if (!status.clean || status.head !== entry.head || status.branch !== branch.slice('refs/heads/'.length) ||
-      status.entries.length !== 0) {
-      throw new GitServiceError(
-        'GIT_FAILED',
-        'The managed worktree contains modified, untracked, ignored, or conflicting files.',
-      )
-    }
     return {
       repository,
       target,
       lockReason,
-      inspection: { worktreePath: target, head: entry.head, branch, clean: true, locked: true },
+      targetRepository,
+      entry,
     }
   }
 

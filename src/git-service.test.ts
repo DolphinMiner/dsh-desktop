@@ -522,6 +522,70 @@ test('refuses cleanup when ignored content would otherwise be discarded', async 
   assert.equal(await readFile(join(target, 'private.local'), 'utf8'), 'must survive\n')
 })
 
+test('preflights local changes into an exact clean managed worktree', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-local-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  const baseCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH handoff test', '-b', 'handoff-topic', target, baseCommit)
+  await writeFile(join(root, 'README.md'), 'local change\n')
+  await writeFile(join(root, 'notes.txt'), 'untracked\n')
+
+  const preflight = await new GitService().inspectWorktreeHandoff({
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/handoff-topic',
+    lockReason: 'DSH handoff test',
+    baseCommit,
+    direction: 'local-to-worktree',
+  })
+
+  assert.equal(preflight.canTransfer, true)
+  assert.deepEqual(preflight.blockers, [])
+  assert.equal(preflight.source.kind, 'local')
+  assert.equal(preflight.source.clean, false)
+  assert.equal(preflight.destination.kind, 'worktree')
+  assert.equal(preflight.destination.clean, true)
+  assert.deepEqual(preflight.files.map(file => [file.status, file.path]), [
+    ['modified', 'README.md'],
+    ['untracked', 'notes.txt'],
+  ])
+  assert.match(preflight.patch, /local change/)
+})
+
+test('blocks a handoff that would overwrite an ignored destination path', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-collision-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  await writeFile(join(root, '.gitignore'), '*.local\n')
+  await git(root, 'add', '.gitignore')
+  await git(root, 'commit', '-m', 'ignore local artifacts')
+  const baseCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH handoff test', '-b', 'handoff-topic', target, baseCommit)
+  await writeFile(join(target, 'artifact.local'), 'source content\n')
+  await git(target, 'add', '--force', 'artifact.local')
+  await writeFile(join(root, 'artifact.local'), 'destination content\n')
+
+  const preflight = await new GitService().inspectWorktreeHandoff({
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/handoff-topic',
+    lockReason: 'DSH handoff test',
+    baseCommit,
+    direction: 'worktree-to-local',
+  })
+
+  assert.equal(preflight.destination.clean, true)
+  assert.deepEqual(preflight.files.map(file => [file.status, file.path]), [['added', 'artifact.local']])
+  assert.deepEqual(preflight.blockers, ['destination-collision'])
+  assert.equal(preflight.canTransfer, false)
+  assert.equal(await readFile(join(root, 'artifact.local'), 'utf8'), 'destination content\n')
+})
+
 test('requires the exact discovered root and rejects non-repositories', async t => {
   const root = await repositoryFixture()
   const outside = await mkdtemp(join(tmpdir(), 'dsh-git-outside-test-'))
