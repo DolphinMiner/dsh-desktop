@@ -13,7 +13,13 @@ import {
   parseComputerTargetList,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import { ComputerHelper, ComputerHelperObserveInput, ComputerUseError } from './computer-observer'
+import {
+  ComputerHelper,
+  ComputerHelperActInput,
+  ComputerHelperActResult,
+  ComputerHelperObserveInput,
+  ComputerUseError,
+} from './computer-observer'
 
 const HELPER_PROTOCOL_VERSION = 2
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -111,6 +117,15 @@ export class NativeComputerHelper implements ComputerHelper {
     const parsed = parseComputerObservation(value)
     if (parsed === undefined) throw new ComputerUseError('BAD_MESSAGE', 'The helper returned an invalid observation.')
     return parsed
+  }
+
+  async act(input: ComputerHelperActInput, signal?: AbortSignal): Promise<ComputerHelperActResult> {
+    const value = await this.call('act', input, signal)
+    if (!isRecord(value) || value.actionId !== input.actionId ||
+      typeof value.performedAt !== 'string' || Number.isNaN(Date.parse(value.performedAt))) {
+      throw new ComputerUseError('BAD_MESSAGE', 'The helper returned an invalid action receipt.', true)
+    }
+    return { actionId: input.actionId, performedAt: value.performedAt }
   }
 
   async dispose(): Promise<void> {

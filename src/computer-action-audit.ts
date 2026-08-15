@@ -277,6 +277,11 @@ export class ComputerActionAuditStore {
     return this.state.actions.some(action => action.actionId === actionId)
   }
 
+  get(actionId: string): ComputerActionAuditRecord | undefined {
+    const record = this.state.actions.find(action => action.actionId === actionId)
+    return record === undefined ? undefined : cloneRecord(record)
+  }
+
   recent(limit = 20): ComputerActionAuditRecord[] {
     const bounded = Math.max(0, Math.min(limit, 100))
     return this.state.actions.slice(-bounded).reverse().map(cloneRecord)

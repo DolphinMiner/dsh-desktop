@@ -111,6 +111,28 @@ test('returns a structured failure when a capability handler throws synchronousl
   assert.equal(response.error.ambiguous, true)
 })
 
+test('preserves explicit ambiguous-result semantics from a capability owner', async () => {
+  const handlers = testHandlers()
+  handlers['desktop.ping'] = () => {
+    throw {
+      code: 'DESKTOP_UNAVAILABLE',
+      message: 'The effect may have completed and must not be retried.',
+      ambiguous: true,
+    }
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  broker.receive(createRequest('ambiguous-1', 'desktop.ping', { nonce: 'test' }), value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  const response = replies[0]
+  assert.ok(response)
+  assert.equal(response.ok, false)
+  if (response.ok) return
+  assert.equal(response.error.code, 'DESKTOP_UNAVAILABLE')
+  assert.equal(response.error.ambiguous, true)
+})
+
 test('times out, cancels, and drops pending requests on disconnect', async () => {
   let aborted = false
   const handlers = testHandlers()

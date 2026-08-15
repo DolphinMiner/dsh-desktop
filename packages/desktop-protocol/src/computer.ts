@@ -106,14 +106,43 @@ export interface ComputerObservationSummary {
   screenshotCaptured: boolean
 }
 
+export interface ComputerActionGrant {
+  sessionId: string
+  application: ComputerApplication
+  grantedAt: string
+}
+
+export interface ComputerPendingActionGrant {
+  sessionId: string
+  application: ComputerApplication
+  requestedAt: string
+}
+
+export interface ComputerActionHistorySummary {
+  actionId: string
+  sessionId: string
+  sourceSnapshotId: string
+  targetName: string
+  kind: ComputerAction['kind']
+  status: 'intent' | 'approved' | 'dispatch' | 'succeeded' | 'failed' | 'cancelled' | 'ambiguous'
+  updatedAt: string
+  resultSnapshotId?: string
+}
+
 export interface ComputerControlSnapshot {
   revision: number
   enabled: boolean
   observing: boolean
+  acting: boolean
+  actionsPaused: boolean
+  auditAvailable: boolean
   permissions: ComputerPermissions
   targets: ComputerTarget[]
   selectedTarget?: ComputerTarget
   lastObservation?: ComputerObservationSummary
+  actionGrants: ComputerActionGrant[]
+  pendingActionGrant?: ComputerPendingActionGrant
+  recentActions: ComputerActionHistorySummary[]
   statusMessage?: string
 }
 
@@ -212,7 +241,7 @@ const MAX_COORDINATE = 1_000_000
 
 const NAMED_KEYS = new Set([
   'backspace', 'delete', 'down', 'end', 'enter', 'escape', 'home', 'left',
-  'page-down', 'page-up', 'right', 'space', 'tab', 'up',
+  'page-down', 'page-up', 'right', 'tab', 'up',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -493,6 +522,8 @@ export function parseComputerAction(value: unknown): ComputerAction | undefined 
     const modifiers = parseModifiers(value.modifiers)
     if (!hasOnlyKeys(value, ['kind', 'key', 'modifiers']) || !isComputerKey(value.key) ||
       modifiers === undefined) return undefined
+    if (/^[A-Za-z0-9]$/.test(value.key) &&
+      !modifiers.includes('command') && !modifiers.includes('control')) return undefined
     return { kind: 'key', key: value.key, modifiers }
   }
   if (value.kind === 'scroll') {

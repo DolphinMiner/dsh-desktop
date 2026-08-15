@@ -42,7 +42,13 @@ function internalError(error: unknown): DesktopProtocolError {
   if (typeof error === 'object' && error !== null && 'code' in error &&
     isDesktopProtocolErrorCode(error.code) && 'message' in error &&
     typeof error.message === 'string') {
-    return { code: error.code, message: error.message }
+    return {
+      code: error.code,
+      message: error.message,
+      ...('ambiguous' in error && typeof error.ambiguous === 'boolean'
+        ? { ambiguous: error.ambiguous }
+        : {}),
+    }
   }
   return {
     code: 'INTERNAL_ERROR',
