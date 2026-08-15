@@ -31,6 +31,18 @@ const bridge: DesktopBridge = {
   },
   git: {
     review: input => ipcRenderer.invoke('desktop:git:review', input),
+    comments: {
+      list: input => ipcRenderer.invoke('desktop:git:comments:list', input),
+      add: input => ipcRenderer.invoke('desktop:git:comments:add', input),
+      remove: input => ipcRenderer.invoke('desktop:git:comments:remove', input),
+      onChanged(listener) {
+        const handler = (_event: Electron.IpcRendererEvent, change: Parameters<typeof listener>[0]): void => {
+          listener(change)
+        }
+        ipcRenderer.on('desktop:git:comments:changed', handler)
+        return () => ipcRenderer.removeListener('desktop:git:comments:changed', handler)
+      },
+    },
   },
   computer: {
     getState: () => ipcRenderer.invoke('desktop:computer:get-state'),

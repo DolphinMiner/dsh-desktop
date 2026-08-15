@@ -1,6 +1,9 @@
 import { parsePatch } from 'diff'
 
+import type { GitReviewCommentAnchor } from './git-review-comments.js'
+
 export type ReviewDiffLineKind = 'context' | 'addition' | 'deletion' | 'metadata'
+export type GitReviewAnchorState = 'active' | 'stale' | 'out-of-scope'
 
 export interface ReviewDiffLine {
   kind: ReviewDiffLineKind
@@ -82,4 +85,17 @@ export function parseGitReviewPatch(patch: string): ReviewPatchFile[] {
       }),
     }
   })
+}
+
+export function classifyGitReviewAnchor(
+  files: readonly ReviewPatchFile[],
+  anchor: GitReviewCommentAnchor,
+): GitReviewAnchorState {
+  const file = files.find(item => item.path === anchor.path)
+  if (file === undefined) return 'out-of-scope'
+  const blob = anchor.side === 'old' ? file.oldBlob : file.newBlob
+  if (blob !== anchor.blob) return 'stale'
+  const found = file.hunks.some(hunk => hunk.lines.some(line =>
+    anchor.side === 'old' ? line.oldLine === anchor.line : line.newLine === anchor.line))
+  return found ? 'active' : 'stale'
 }

@@ -17,11 +17,14 @@ import {
 import {
   createEvent,
   DesktopRendererCommand,
+  parseAddGitReviewCommentInput,
   parseBeginOAuthInput,
   parseCancelOAuthInput,
   parseConnectApiKeyInput,
+  parseDeleteGitReviewCommentInput,
   parseDisconnectConnectionInput,
   parseDesktopGitReviewInput,
+  parseDesktopGitReviewCommentsInput,
   parseSelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -37,6 +40,8 @@ import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
+import { GitReviewCommentController } from './git-review-comment-controller'
+import { GitReviewCommentStore } from './git-review-comments'
 import { GitService } from './git-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
@@ -398,6 +403,7 @@ function installIpcHandlers(
   connections: ConnectionManager,
   computer: ComputerObserver,
   git: WorkspaceGitCapabilityService,
+  comments: GitReviewCommentController,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
@@ -408,7 +414,7 @@ function installIpcHandlers(
   }
 
   const validInput = <T>(value: T | undefined): T => {
-    if (value === undefined) throw new Error('The desktop connection request is invalid.')
+    if (value === undefined) throw new Error('The desktop request is invalid.')
     return value
   }
 
@@ -440,6 +446,24 @@ function installIpcHandlers(
     const signal = new AbortController().signal
     const repository = await git.discover(input, signal)
     return git.review({ ...input, repositoryRoot: repository.root }, signal)
+  })
+  ipcMain.handle('desktop:git:comments:list', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitReviewCommentsInput(value))
+    const signal = new AbortController().signal
+    return comments.list(input, signal)
+  })
+  ipcMain.handle('desktop:git:comments:add', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseAddGitReviewCommentInput(value))
+    const signal = new AbortController().signal
+    return comments.add(input, signal)
+  })
+  ipcMain.handle('desktop:git:comments:remove', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDeleteGitReviewCommentInput(value))
+    const signal = new AbortController().signal
+    return comments.remove(input, signal)
   })
   ipcMain.handle('desktop:computer:get-state', event => {
     assertTrustedSender(event)
@@ -656,9 +680,21 @@ app.whenReady().then(async () => {
   const gitService = new GitService()
   const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
   const reviewWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertKnownWorkspace)
+  const reviewComments = new GitReviewCommentStore(join(desktopDataPath, 'git-review-comments.v1.json'), {
+    onChange: event => {
+      if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop:git:comments:changed', event)
+      }
+    },
+  })
 
   installMenu()
-  installIpcHandlers(connections, computerObserver, reviewWorkspaceGit)
+  installIpcHandlers(
+    connections,
+    computerObserver,
+    reviewWorkspaceGit,
+    new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
+  )
 
   windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {
     onError: error => console.error('Could not persist the desktop window state.', error),

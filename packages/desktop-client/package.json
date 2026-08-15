@@ -21,9 +21,6 @@
   "files": [
     "lib/**/*"
   ],
-  "dependencies": {
-    "diff": "9.0.0"
-  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node ../../scripts/build-client.mjs"
   },

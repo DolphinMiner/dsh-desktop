@@ -43,6 +43,8 @@ import {
 
 export * from './computer.js'
 export * from './git.js'
+export * from './git-review-comments.js'
+export * from './git-review-patch.js'
 export * from './worktree.js'
 
 export const DESKTOP_PROTOCOL_VERSION = 10 as const
