@@ -99,6 +99,8 @@ function cleanupOperations(
     createWorktree: async () => { throw new Error('must not create a worktree') },
     inspectWorktreeForRemoval: async () => cleanupInspection(record),
     inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
+    transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
     ...overrides,
   }
@@ -198,6 +200,8 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
       locked: true,
     }),
     inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
+    transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
   }
   const registry = new WorktreeRegistry(join(root, 'registry.json'))
@@ -240,6 +244,8 @@ test('persists an ambiguous create failure and never replays it', async t => {
       locked: true,
     }),
     inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
+    transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => undefined,
   }
   const manager = new WorktreeManager(
@@ -276,6 +282,8 @@ test('fails before Git when the workspace is not authorized', async t => {
     createWorktree: async () => ({ root: '/worktree', gitDir: '/worktree/.git', commonDir: '/repo/.git' }),
     inspectWorktreeForRemoval: async () => { throw new Error('must not run') },
     inspectWorktreeHandoff: async () => { throw new Error('must not run') },
+    transferWorktreeHandoff: async () => { throw new Error('must not run') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not run') },
     removeWorktree: async () => { throw new Error('must not run') },
   }, new WorktreeRegistry(join(root, 'registry.json')), join(root, 'worktrees'), () => {
     throw new WorktreeManagerError('BAD_MESSAGE', 'Workspace is not active.')
@@ -322,6 +330,8 @@ test('reconciles a registered branch moved to another checkout without mutating 
     createWorktree: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
+    transferWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
@@ -351,6 +361,8 @@ test('records an inspection failure without claiming that a checkout is missing'
     createWorktree: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
     inspectWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
+    transferWorktreeHandoff: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeHandoffOutcome: async () => { throw new Error('must not inspect a handoff outcome') },
     removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
@@ -600,4 +612,114 @@ test('binds handoff preflight to the immutable managed worktree identity', async
     baseCommit: 'a'.repeat(40),
     direction: 'worktree-to-local',
   })
+})
+
+test('binds handoff transfer and outcome inspection to the managed identity and dispatch boundary', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-handoff-transfer-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'handoff-transfer-manager')
+  const expected = {
+    direction: 'worktree-to-local' as const,
+    baseCommit: record.baseCommit,
+    sourceTree: 'b'.repeat(40),
+    sourceHead: 'c'.repeat(40),
+    sourceBranch: record.branch!.slice('refs/heads/'.length),
+    destinationBranch: 'main',
+  }
+  let transferredInput: object | undefined
+  let outcomeInput: object | undefined
+  let dispatches = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    transferWorktreeHandoff: async (input, _signal, beforeDispatch) => {
+      transferredInput = input
+      beforeDispatch?.()
+      return {
+        sourceTree: input.expectedSourceTree,
+        destination: {
+          repository: record.repository,
+          head: record.baseCommit,
+          branch: 'main',
+          ahead: 0,
+          behind: 0,
+          clean: false,
+          entries: [{
+            kind: 'ordinary',
+            path: 'README.md',
+            indexStatus: 'M',
+            worktreeStatus: '.',
+          }],
+        },
+      }
+    },
+    inspectWorktreeHandoffOutcome: async input => {
+      outcomeInput = input
+      return 'completed'
+    },
+  }), registry, '/managed', () => undefined)
+
+  const transferred = await manager.transferHandoff(
+    record.id,
+    expected,
+    new AbortController().signal,
+    current => {
+      assert.equal(current.id, record.id)
+      dispatches += 1
+    },
+  )
+  assert.equal(transferred.result.sourceTree, expected.sourceTree)
+  assert.equal(dispatches, 1)
+  assert.equal(await manager.inspectHandoffOutcome(record.id, expected, new AbortController().signal), 'completed')
+  const exactInput = {
+    repositoryRoot: '/repo',
+    worktreePath: '/managed/handoff-transfer-manager',
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+    lockReason: 'DSH Desktop session 123456789012',
+    baseCommit: 'a'.repeat(40),
+    direction: 'worktree-to-local',
+    expectedSourceTree: 'b'.repeat(40),
+    expectedSourceHead: 'c'.repeat(40),
+    expectedSourceBranch: 'dsh/session-123456789012345678901234',
+    expectedDestinationBranch: 'main',
+  }
+  assert.deepEqual(transferredInput, exactInput)
+  assert.deepEqual(outcomeInput, exactInput)
+})
+
+test('marks only handoff failures after the dispatch callback as ambiguous', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-handoff-ambiguity-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'handoff-ambiguity-manager')
+  const expected = {
+    direction: 'local-to-worktree' as const,
+    baseCommit: record.baseCommit,
+    sourceTree: 'b'.repeat(40),
+    sourceHead: record.baseCommit,
+    sourceBranch: 'main',
+    destinationBranch: record.branch!.slice('refs/heads/'.length),
+  }
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    transferWorktreeHandoff: async (_input, _signal, beforeDispatch) => {
+      beforeDispatch?.()
+      throw new GitServiceError('TIMEOUT', 'The handoff timed out.')
+    },
+  }), registry, '/managed', () => undefined)
+
+  await assert.rejects(manager.transferHandoff(
+    record.id,
+    expected,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'TIMEOUT' && error.ambiguous)
+
+  const beforeDispatch = new WorktreeManager(cleanupOperations(record, {
+    transferWorktreeHandoff: async () => {
+      throw new GitServiceError('GIT_FAILED', 'The source changed.')
+    },
+  }), registry, '/managed', () => undefined)
+  await assert.rejects(beforeDispatch.transferHandoff(
+    record.id,
+    expected,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && !error.ambiguous)
 })

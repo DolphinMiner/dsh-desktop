@@ -18,7 +18,10 @@ import {
   GitInspectWorktreeHandoffInput,
   GitRemoveWorktreeInput,
   GitServiceError,
+  GitTransferWorktreeHandoffInput,
+  GitWorktreeHandoffOutcome,
   GitWorktreeHandoffInspection,
+  GitWorktreeHandoffTransferResult,
   GitWorktreeEntry,
 } from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
@@ -46,6 +49,15 @@ export interface WorktreeGitOperations {
     input: GitInspectWorktreeHandoffInput,
     signal?: AbortSignal,
   ): Promise<GitWorktreeHandoffInspection>
+  transferWorktreeHandoff(
+    input: GitTransferWorktreeHandoffInput,
+    signal?: AbortSignal,
+    beforeDispatch?: () => void,
+  ): Promise<GitWorktreeHandoffTransferResult>
+  inspectWorktreeHandoffOutcome(
+    input: GitTransferWorktreeHandoffInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeHandoffOutcome>
   removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void>
 }
 
@@ -77,6 +89,20 @@ export interface WorktreeReconciliationResult {
 export interface WorktreeCleanupState {
   record: WorktreeRecord
   inspection: WorktreeCleanupInspection
+}
+
+export interface ManagedWorktreeHandoffExpectation {
+  direction: WorktreeHandoffDirection
+  baseCommit: string
+  sourceTree: string
+  sourceHead: string
+  sourceBranch: string
+  destinationBranch: string
+}
+
+export interface ManagedWorktreeHandoffTransferResult {
+  record: WorktreeRecord
+  result: GitWorktreeHandoffTransferResult
 }
 
 export class WorktreeManagerError extends Error {
@@ -266,6 +292,74 @@ export class WorktreeManager {
       direction,
     }, signal))
     return { ...inspection, worktree: summarizeWorktreeRecord(record) }
+  }
+
+  async transferHandoff(
+    id: string,
+    expected: ManagedWorktreeHandoffExpectation,
+    signal: AbortSignal,
+    beforeDispatch?: (record: WorktreeRecord) => void,
+  ): Promise<ManagedWorktreeHandoffTransferResult> {
+    const { record, input } = this.handoffOperationInput(id, expected)
+    let dispatched = false
+    try {
+      const result = await this.git.transferWorktreeHandoff(input, signal, () => {
+        beforeDispatch?.(record)
+        dispatched = true
+      })
+      return { record, result }
+    } catch (error) {
+      mapError(error, dispatched)
+    }
+  }
+
+  async inspectHandoffOutcome(
+    id: string,
+    expected: ManagedWorktreeHandoffExpectation,
+    signal: AbortSignal,
+  ): Promise<GitWorktreeHandoffOutcome> {
+    const { input } = this.handoffOperationInput(id, expected)
+    return withMappedError(() => this.git.inspectWorktreeHandoffOutcome(input, signal), true)
+  }
+
+  private handoffOperationInput(
+    id: string,
+    expected: ManagedWorktreeHandoffExpectation,
+  ): { record: WorktreeRecord; input: GitTransferWorktreeHandoffInput } {
+    if (!isBoundedString(id, MAX_ID_LENGTH) ||
+      (expected.direction !== 'local-to-worktree' && expected.direction !== 'worktree-to-local') ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expected.baseCommit) ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expected.sourceTree) ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expected.sourceHead) ||
+      !isBoundedString(expected.sourceBranch, MAX_REF_LENGTH) || /[\r\n]/.test(expected.sourceBranch) ||
+      !isBoundedString(expected.destinationBranch, MAX_REF_LENGTH) || /[\r\n]/.test(expected.destinationBranch)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree handoff expectation is invalid.')
+    }
+    const record = withMappedErrorSync(() => this.registry.get(id))
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    assertCleanupRecord(record, 'handoff')
+    if (record.baseCommit !== expected.baseCommit) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree base changed after approval.', true)
+    }
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree lock identity is invalid.', true)
+    }
+    return {
+      record,
+      input: {
+        repositoryRoot: record.repository.root,
+        worktreePath: record.worktreePath,
+        branch: record.branch,
+        lockReason,
+        baseCommit: record.baseCommit,
+        direction: expected.direction,
+        expectedSourceTree: expected.sourceTree,
+        expectedSourceHead: expected.sourceHead,
+        expectedSourceBranch: expected.sourceBranch,
+        expectedDestinationBranch: expected.destinationBranch,
+      },
+    }
   }
 
   async removeCleanWorktree(

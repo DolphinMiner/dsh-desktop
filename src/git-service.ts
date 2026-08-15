@@ -80,6 +80,9 @@ export interface GitInspectWorktreeHandoffInput extends GitInspectWorktreeInput 
 
 export interface GitTransferWorktreeHandoffInput extends GitInspectWorktreeHandoffInput {
   expectedSourceTree: string
+  expectedSourceHead: string
+  expectedSourceBranch: string
+  expectedDestinationBranch: string
 }
 
 export type GitWorktreeHandoffInspection = Omit<WorktreeHandoffPreflight, 'worktree'>
@@ -88,6 +91,8 @@ export interface GitWorktreeHandoffTransferResult {
   sourceTree: string
   destination: GitStatusSnapshot
 }
+
+export type GitWorktreeHandoffOutcome = 'completed' | 'not-applied' | 'ambiguous'
 
 interface InspectedManagedWorktree {
   repository: GitRepositoryIdentity
@@ -1421,12 +1426,24 @@ export class GitService {
   ): Promise<GitWorktreeHandoffTransferResult> {
     const deadline = Date.now() + this.timeoutMs
     const expectedSourceTree = boundedObjectId(input.expectedSourceTree, 'Expected handoff source tree')!
+    const expectedSourceHead = boundedObjectId(input.expectedSourceHead, 'Expected handoff source HEAD')!
+    const expectedSourceBranch = boundedInput(input.expectedSourceBranch, 'Expected handoff source branch')
+    const expectedDestinationBranch = boundedInput(
+      input.expectedDestinationBranch,
+      'Expected handoff destination branch',
+    )
+    if (expectedSourceBranch.length > MAX_GIT_REF_LENGTH || expectedDestinationBranch.length > MAX_GIT_REF_LENGTH ||
+      /[\r\n]/.test(expectedSourceBranch) || /[\r\n]/.test(expectedDestinationBranch)) {
+      throw new GitServiceError('INVALID_INPUT', 'The expected handoff branch identity is invalid.')
+    }
     const inspected = await this.inspectWorktreeHandoffBefore(input, signal, deadline)
     if (!inspected.canTransfer || inspected.sourceTree === undefined) {
       throw new GitServiceError('GIT_FAILED', 'The worktree handoff is blocked and cannot be transferred.')
     }
-    if (inspected.sourceTree !== expectedSourceTree) {
-      throw new GitServiceError('GIT_FAILED', 'The handoff source changed after approval.')
+    if (inspected.sourceTree !== expectedSourceTree || inspected.source.head !== expectedSourceHead ||
+      inspected.source.branch !== expectedSourceBranch ||
+      inspected.destination.branch !== expectedDestinationBranch) {
+      throw new GitServiceError('GIT_FAILED', 'The handoff endpoints changed after approval.')
     }
     const patch = Buffer.from(inspected.patch, 'utf8')
     if (patch.length === 0 || patch.length > MAX_GIT_STDIN_BYTES) {
@@ -1462,6 +1479,41 @@ export class GitService {
       )
     }
     return { sourceTree: expectedSourceTree, destination }
+  }
+
+  async inspectWorktreeHandoffOutcome(
+    input: GitTransferWorktreeHandoffInput,
+    signal?: AbortSignal,
+  ): Promise<GitWorktreeHandoffOutcome> {
+    const deadline = Date.now() + this.timeoutMs
+    if (input.direction !== 'local-to-worktree' && input.direction !== 'worktree-to-local') {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree handoff direction is invalid.')
+    }
+    const baseCommit = boundedObjectId(input.baseCommit, 'Worktree base commit')!
+    const expectedSourceTree = boundedObjectId(input.expectedSourceTree, 'Expected handoff source tree')!
+    const expectedDestinationBranch = boundedInput(
+      input.expectedDestinationBranch,
+      'Expected handoff destination branch',
+    )
+    if (expectedDestinationBranch.length > MAX_GIT_REF_LENGTH || /[\r\n]/.test(expectedDestinationBranch)) {
+      throw new GitServiceError('INVALID_INPUT', 'The expected handoff branch identity is invalid.')
+    }
+    const managed = await this.inspectManagedWorktreeBefore(input, signal, deadline)
+    const destinationRepository = input.direction === 'local-to-worktree'
+      ? managed.targetRepository
+      : managed.repository
+    const [destination, destinationTree, baseTree] = await Promise.all([
+      this.statusBefore(destinationRepository, signal, deadline),
+      this.indexTreeBefore(destinationRepository.root, signal, deadline),
+      this.resolveTreeBefore(managed.repository.root, baseCommit, signal, deadline),
+    ])
+    if (destination.head !== baseCommit || destination.branch !== expectedDestinationBranch) return 'ambiguous'
+    const hasOnlyStagedChanges = destination.entries.length > 0 && destination.entries.every(entry =>
+      entry.kind !== 'untracked' && entry.kind !== 'ignored' && entry.kind !== 'unmerged' &&
+      entry.indexStatus !== '.' && entry.worktreeStatus === '.')
+    if (destinationTree === expectedSourceTree && hasOnlyStagedChanges) return 'completed'
+    if (destinationTree === baseTree && destination.clean && destination.entries.length === 0) return 'not-applied'
+    return 'ambiguous'
   }
 
   private async captureHandoffSourceBefore(

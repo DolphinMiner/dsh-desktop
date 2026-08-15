@@ -589,9 +589,19 @@ test('transfers the exact combined local tree into a clean managed worktree with
   const preflight = await service.inspectWorktreeHandoff(input)
   assert.equal(preflight.canTransfer, true)
   assert.ok(preflight.sourceTree)
+  assert.equal(await service.inspectWorktreeHandoffOutcome({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
+  }), 'not-applied')
   const result = await service.transferWorktreeHandoff({
     ...input,
     expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
   })
 
   assert.equal(result.sourceTree, preflight.sourceTree)
@@ -605,6 +615,21 @@ test('transfers the exact combined local tree into a clean managed worktree with
   assert.equal(await gitOutput(root, 'rev-parse', 'HEAD'), sourceHeadBefore)
   assert.equal(await gitOutput(root, 'write-tree'), sourceIndexBefore)
   assert.equal(await gitOutput(root, 'status', '--porcelain=v2', '--untracked-files=all'), sourceStatusBefore)
+  assert.equal(await service.inspectWorktreeHandoffOutcome({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
+  }), 'completed')
+  await writeFile(join(target, 'README.md'), 'drift after transfer\n')
+  assert.equal(await service.inspectWorktreeHandoffOutcome({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
+  }), 'ambiguous')
 })
 
 test('transfers the exact managed worktree tree back to a clean local checkout without changing the source', async t => {
@@ -636,7 +661,13 @@ test('transfers the exact managed worktree tree back to a clean local checkout w
   const preflight = await service.inspectWorktreeHandoff(input)
   assert.equal(preflight.canTransfer, true)
   assert.ok(preflight.sourceTree)
-  await service.transferWorktreeHandoff({ ...input, expectedSourceTree: preflight.sourceTree })
+  await service.transferWorktreeHandoff({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
+  })
 
   assert.equal(await gitOutput(root, 'rev-parse', 'HEAD'), baseCommit)
   assert.equal(await gitOutput(root, 'write-tree'), preflight.sourceTree)
@@ -674,8 +705,11 @@ test('rejects handoff source drift before the mutation dispatch boundary', async
   await assert.rejects(service.transferWorktreeHandoff({
     ...input,
     expectedSourceTree: preflight.sourceTree,
+    expectedSourceHead: preflight.source.head,
+    expectedSourceBranch: preflight.source.branch!,
+    expectedDestinationBranch: preflight.destination.branch!,
   }, undefined, () => { dispatches += 1 }), (error: GitServiceError) =>
-    error.code === 'GIT_FAILED' && /source changed/.test(error.message))
+    error.code === 'GIT_FAILED' && /endpoints changed/.test(error.message))
   assert.equal(dispatches, 0)
   assert.equal(await gitOutput(target, 'status', '--porcelain=v2', '--untracked-files=all'), '')
   assert.equal(await gitOutput(target, 'rev-parse', 'HEAD'), baseCommit)
