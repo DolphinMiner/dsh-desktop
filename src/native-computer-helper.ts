@@ -15,7 +15,7 @@ import {
 
 import { ComputerHelper, ComputerHelperObserveInput, ComputerUseError } from './computer-observer'
 
-const HELPER_PROTOCOL_VERSION = 1
+const HELPER_PROTOCOL_VERSION = 2
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 

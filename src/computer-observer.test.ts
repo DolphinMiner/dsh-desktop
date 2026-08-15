@@ -24,6 +24,7 @@ const granted: ComputerPermissions = {
   screenRecording: 'granted',
   accessibility: 'granted',
   canObserve: true,
+  canAct: true,
 }
 
 const targets: ComputerTarget[] = [
@@ -63,6 +64,16 @@ class FakeHelper implements ComputerHelper {
         pid: 42,
         frontmost: true,
       },
+      compatibility: {
+        surfaceId: 'window:7:42',
+        surfaceBounds: { x: 0, y: 0, width: 800, height: 600 },
+        displayTopology: [{
+          id: 'display:1',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          displayScale: input.target.displayScale ?? 2,
+        }],
+        foregroundApplicationId: 'application:42',
+      },
       capture: {
         bounds: { x: 0, y: 0, width: 800, height: 600 },
         displayScale: input.target.displayScale ?? 2,
@@ -93,7 +104,7 @@ test('requires permission and an explicit live target before observing', async t
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
 
-  helper.permissions = { ...granted, screenRecording: 'denied', canObserve: false }
+  helper.permissions = { ...granted, screenRecording: 'denied', canObserve: false, canAct: false }
   helper.targetList = { permissions: helper.permissions, targets }
   await observer.selectTarget('window:7')
   await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>

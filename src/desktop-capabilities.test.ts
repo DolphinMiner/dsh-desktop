@@ -146,6 +146,7 @@ test('routes only the bounded read-only computer capabilities', async () => {
           screenRecording: 'granted',
           accessibility: 'denied',
           canObserve: true,
+          canAct: false,
         }
       },
       listApplications: async () => {
@@ -156,6 +157,7 @@ test('routes only the bounded read-only computer capabilities', async () => {
             screenRecording: 'granted',
             accessibility: 'denied',
             canObserve: true,
+            canAct: false,
           },
           applications: [],
         }
@@ -163,10 +165,19 @@ test('routes only the bounded read-only computer capabilities', async () => {
       observe: async sessionId => {
         calls.push(`observe:${sessionId}`)
         return {
-          version: 1,
+          version: 2,
           snapshotId: 'snapshot-1',
           observedAt: '2026-08-16T12:00:00.000Z',
           target: { id: 'display:1', kind: 'display', name: 'Main Display' },
+          compatibility: {
+            surfaceId: 'display:1',
+            surfaceBounds: { x: 0, y: 0, width: 800, height: 600 },
+            displayTopology: [{
+              id: 'display:1',
+              bounds: { x: 0, y: 0, width: 800, height: 600 },
+              displayScale: 2,
+            }],
+          },
           capture: {
             bounds: { x: 0, y: 0, width: 800, height: 600 },
             displayScale: 2,

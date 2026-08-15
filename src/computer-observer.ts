@@ -50,6 +50,7 @@ const EMPTY_PERMISSIONS: ComputerPermissions = {
   screenRecording: 'unavailable',
   accessibility: 'unavailable',
   canObserve: false,
+  canAct: false,
 }
 
 export class ComputerUseError extends Error {

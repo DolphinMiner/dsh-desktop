@@ -5,7 +5,8 @@ import Foundation
 @preconcurrency import ScreenCaptureKit
 import Vision
 
-private let protocolVersion = 1
+private let protocolVersion = 2
+private let observationVersion = 2
 private let maxOutputText = 32_768
 
 private struct Bounds: Codable {
@@ -43,6 +44,7 @@ private struct PermissionResult: Codable {
     let screenRecording: String
     let accessibility: String
     let canObserve: Bool
+    let canAct: Bool
 }
 
 private struct TargetListResult: Codable {
@@ -68,6 +70,19 @@ private struct ElementResult: Codable {
     let secure: Bool
 }
 
+private struct DisplayStateResult: Codable {
+    let id: String
+    let bounds: Bounds
+    let displayScale: Double
+}
+
+private struct CompatibilityResult: Codable {
+    let surfaceId: String
+    let surfaceBounds: Bounds
+    let displayTopology: [DisplayStateResult]
+    let foregroundApplicationId: String?
+}
+
 private struct CaptureResult: Codable {
     let bounds: Bounds
     let displayScale: Double
@@ -83,6 +98,7 @@ private struct ObservationResult: Codable {
     let observedAt: String
     let target: Target
     let foregroundApplication: ApplicationResult?
+    let compatibility: CompatibilityResult
     let capture: CaptureResult
     let elements: [ElementResult]
     let truncated: Bool
@@ -133,6 +149,7 @@ private struct ResolvedCapture {
     let target: Target
     let filter: SCContentFilter
     let bounds: CGRect
+    let surfaceId: String
     let pid: pid_t?
     let warning: String?
 }
@@ -149,7 +166,8 @@ private func permissions() -> PermissionResult {
         supported: true,
         screenRecording: screenGranted ? "granted" : "denied",
         accessibility: accessibilityGranted ? "granted" : "denied",
-        canObserve: screenGranted
+        canObserve: screenGranted,
+        canAct: screenGranted && accessibilityGranted
     )
 }
 
@@ -257,7 +275,14 @@ private func resolveCapture(target: Target, content: SCShareableContent) throws 
             throw HelperError("TARGET_CHANGED", "The selected display is no longer available.")
         }
         let filter = SCContentFilter(display: display, excludingWindows: [])
-        return ResolvedCapture(target: target, filter: filter, bounds: display.frame, pid: nil, warning: nil)
+        return ResolvedCapture(
+            target: target,
+            filter: filter,
+            bounds: display.frame,
+            surfaceId: "display:\(display.displayID)",
+            pid: nil,
+            warning: nil
+        )
     case "window":
         let pieces = target.id.split(separator: ":")
         guard pieces.count == 3,
@@ -271,6 +296,7 @@ private func resolveCapture(target: Target, content: SCShareableContent) throws 
             target: target,
             filter: SCContentFilter(desktopIndependentWindow: window),
             bounds: window.frame,
+            surfaceId: "window:\(window.windowID):\(owner.processID)",
             pid: owner.processID,
             warning: nil
         )
@@ -290,6 +316,7 @@ private func resolveCapture(target: Target, content: SCShareableContent) throws 
             target: target,
             filter: SCContentFilter(desktopIndependentWindow: window),
             bounds: window.frame,
+            surfaceId: "window:\(window.windowID):\(application.processID)",
             pid: application.processID,
             warning: "Captured the largest visible window for the selected application."
         )
@@ -442,6 +469,17 @@ private func foregroundApplication() -> ApplicationResult? {
     )
 }
 
+private func displayTopology(_ content: SCShareableContent) -> [DisplayStateResult] {
+    content.displays.map { display in
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        return DisplayStateResult(
+            id: "display:\(display.displayID)",
+            bounds: Bounds(display.frame),
+            displayScale: Double(filter.pointPixelScale)
+        )
+    }.sorted { $0.id < $1.id }
+}
+
 private func observe(_ request: Request) async throws -> ObservationResult {
     guard permissions().screenRecording == "granted" else {
         throw HelperError(
@@ -484,12 +522,19 @@ private func observe(_ request: Request) async throws -> ObservationResult {
     }
     if let warning = resolved.warning { warnings.append(warning) }
     let scale = resolved.bounds.width > 0 ? Double(image.width) / resolved.bounds.width : 1
+    let foreground = foregroundApplication()
     return ObservationResult(
-        version: protocolVersion,
+        version: observationVersion,
         snapshotId: snapshotId,
         observedAt: ISO8601DateFormatter().string(from: Date()),
         target: target,
-        foregroundApplication: foregroundApplication(),
+        foregroundApplication: foreground,
+        compatibility: CompatibilityResult(
+            surfaceId: resolved.surfaceId,
+            surfaceBounds: Bounds(resolved.bounds),
+            displayTopology: displayTopology(content),
+            foregroundApplicationId: foreground?.id
+        ),
         capture: CaptureResult(
             bounds: Bounds(resolved.bounds),
             displayScale: scale,

@@ -11,7 +11,7 @@ import {
 
 export * from './computer.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 4 as const
+export const DESKTOP_PROTOCOL_VERSION = 5 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'

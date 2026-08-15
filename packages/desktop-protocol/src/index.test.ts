@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  COMPUTER_ACTION_VERSION,
+  COMPUTER_OBSERVATION_VERSION,
   createEvent,
   createRequest,
   DESKTOP_PROTOCOL_VERSION,
@@ -11,9 +13,12 @@ import {
   parseDesktopProtocolMessage,
   parseRendererCommand,
   isLikelyReadOnlyMcpTool,
+  parseComputerActParams,
+  parseComputerActionResult,
   parseComputerObservation,
   parseComputerPermissions,
   parseSelectComputerTargetInput,
+  summarizeComputerAction,
 } from './index'
 
 test('round-trips a valid capability request', () => {
@@ -121,24 +126,44 @@ test('validates bounded computer permissions and observations', () => {
     screenRecording: 'granted',
     accessibility: 'denied',
     canObserve: true,
+    canAct: false,
   }), {
     supported: true,
     screenRecording: 'granted',
     accessibility: 'denied',
     canObserve: true,
+    canAct: false,
   })
   assert.equal(parseComputerPermissions({
     supported: true,
     screenRecording: 'denied',
     accessibility: 'granted',
     canObserve: true,
+    canAct: false,
   }), undefined)
 
   const observation = {
-    version: 1,
+    version: COMPUTER_OBSERVATION_VERSION,
     snapshotId: 'snapshot-1',
     observedAt: '2026-08-16T12:00:00.000Z',
     target: { id: 'window:7', kind: 'window', name: 'Editor' },
+    foregroundApplication: {
+      id: 'application:42',
+      name: 'Editor',
+      bundleId: 'dev.editor',
+      pid: 42,
+      frontmost: true,
+    },
+    compatibility: {
+      surfaceId: 'window:7:42',
+      surfaceBounds: { x: 10, y: 20, width: 800, height: 600 },
+      displayTopology: [{
+        id: 'display:1',
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+        displayScale: 2,
+      }],
+      foregroundApplicationId: 'application:42',
+    },
     capture: {
       bounds: { x: 10, y: 20, width: 800, height: 600 },
       displayScale: 2,
@@ -162,10 +187,99 @@ test('validates bounded computer permissions and observations', () => {
     ...observation,
     elements: [{ id: 'ax:0', role: 'AXSecureTextField', actions: [], secure: true, value: 'secret' }],
   }), undefined)
+  assert.equal(parseComputerObservation({
+    ...observation,
+    compatibility: {
+      ...observation.compatibility,
+      surfaceBounds: { x: 10, y: 20, width: 799, height: 600 },
+    },
+  }), undefined)
   assert.deepEqual(parseCapabilityParams('computer.observe', { sessionId: 'session-1' }), {
     sessionId: 'session-1',
   })
   assert.deepEqual(parseCapabilityResult('computer.observe', observation), observation)
   assert.deepEqual(parseSelectComputerTargetInput({ targetId: 'window:7' }), { targetId: 'window:7' })
   assert.equal(parseSelectComputerTargetInput({ targetId: 'window:7', path: '/tmp' }), undefined)
+})
+
+test('validates snapshot-bound computer actions without echoing typed text', () => {
+  const input = {
+    actionId: 'action-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    action: {
+      kind: 'type',
+      elementId: 'ax:0.1',
+      text: 'sensitive draft',
+      replace: true,
+    },
+  } as const
+  assert.deepEqual(parseComputerActParams(input), input)
+  assert.deepEqual(summarizeComputerAction(input.action), {
+    kind: 'type',
+    elementId: 'ax:0.1',
+    textLength: 15,
+    replace: true,
+  })
+  assert.equal(parseComputerActParams({
+    ...input,
+    action: {
+      kind: 'click',
+      target: { mode: 'point', coordinateSpace: 'capture', point: { x: -1, y: 30 } },
+      button: 'left',
+      clickCount: 1,
+    },
+  }), undefined)
+
+  const observation = {
+    version: COMPUTER_OBSERVATION_VERSION,
+    snapshotId: 'snapshot-2',
+    observedAt: '2026-08-16T12:00:01.000Z',
+    target: { id: 'window:7', kind: 'window', name: 'Editor' },
+    foregroundApplication: {
+      id: 'application:42',
+      name: 'Editor',
+      bundleId: 'dev.editor',
+      pid: 42,
+      frontmost: true,
+    },
+    compatibility: {
+      surfaceId: 'window:7:42',
+      surfaceBounds: { x: 10, y: 20, width: 800, height: 600 },
+      displayTopology: [{
+        id: 'display:1',
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+        displayScale: 2,
+      }],
+      foregroundApplicationId: 'application:42',
+    },
+    capture: {
+      bounds: { x: 10, y: 20, width: 800, height: 600 },
+      displayScale: 2,
+      pixelWidth: 1600,
+      pixelHeight: 1200,
+      screenshotCaptured: true,
+    },
+    elements: [],
+    truncated: false,
+    warnings: [],
+  } as const
+  const result = {
+    version: COMPUTER_ACTION_VERSION,
+    actionId: 'action-1',
+    previousSnapshotId: 'snapshot-1',
+    completedAt: '2026-08-16T12:00:01.000Z',
+    action: {
+      kind: 'type',
+      elementId: 'ax:0.1',
+      textLength: 15,
+      replace: true,
+    },
+    observation,
+  } as const
+  assert.deepEqual(parseComputerActionResult(result), result)
+  assert.equal(parseComputerActionResult({
+    ...result,
+    action: { ...result.action, text: 'sensitive draft' },
+  }), undefined)
 })
