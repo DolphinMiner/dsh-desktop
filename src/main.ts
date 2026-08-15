@@ -44,7 +44,10 @@ import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 
 app.setName('DSH Desktop')
-app.setPath('userData', join(app.getPath('appData'), app.name))
+const developmentUserData = app.isPackaged ? undefined : process.env.DSH_DESKTOP_USER_DATA?.trim()
+app.setPath('userData', developmentUserData === undefined || developmentUserData === ''
+  ? join(app.getPath('appData'), app.name)
+  : resolve(developmentUserData))
 app.setAppLogsPath()
 
 const isPrimaryInstance = app.requestSingleInstanceLock()
