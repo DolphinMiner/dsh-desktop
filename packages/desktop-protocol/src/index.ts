@@ -1,9 +1,13 @@
 export const DESKTOP_PROTOCOL_CHANNEL = 'dsh-desktop' as const
 import {
+  ComputerActParams,
+  ComputerActionResult,
   ComputerApplicationList,
   ComputerObservation,
   ComputerObserveParams,
   ComputerPermissions,
+  parseComputerActParams,
+  parseComputerActionResult,
   parseComputerApplicationList,
   parseComputerObservation,
   parseComputerPermissions,
@@ -11,7 +15,7 @@ import {
 
 export * from './computer.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 5 as const
+export const DESKTOP_PROTOCOL_VERSION = 6 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -195,6 +199,10 @@ export interface DesktopCapabilityMap {
   'computer.observe': {
     params: ComputerObserveParams
     result: ComputerObservation
+  }
+  'computer.act': {
+    params: ComputerActParams
+    result: ComputerActionResult
   }
   'connections.list': {
     params: Record<string, never>
@@ -582,6 +590,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
       ? { sessionId: value.sessionId } as DesktopCapabilityParams<M>
       : undefined
   }
+  if (method === 'computer.act') {
+    return parseComputerActParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -642,6 +653,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'computer.observe') {
     return parseComputerObservation(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'computer.act') {
+    return parseComputerActionResult(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined
@@ -725,7 +739,8 @@ export function createEvent<E extends DesktopEventName>(
 }
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
-  return method === 'connections.resolveMcpTransport' || method === 'computer.observe'
+  return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
+    method === 'computer.act'
 }
 
 const READ_ONLY_MCP_TOOL_PREFIXES = [

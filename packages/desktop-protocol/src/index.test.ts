@@ -215,6 +215,7 @@ test('validates snapshot-bound computer actions without echoing typed text', () 
     },
   } as const
   assert.deepEqual(parseComputerActParams(input), input)
+  assert.deepEqual(parseCapabilityParams('computer.act', input), input)
   assert.deepEqual(summarizeComputerAction(input.action), {
     kind: 'type',
     elementId: 'ax:0.1',
@@ -278,6 +279,7 @@ test('validates snapshot-bound computer actions without echoing typed text', () 
     observation,
   } as const
   assert.deepEqual(parseComputerActionResult(result), result)
+  assert.deepEqual(parseCapabilityResult('computer.act', result), result)
   assert.equal(parseComputerActionResult({
     ...result,
     action: { ...result.action, text: 'sensitive draft' },

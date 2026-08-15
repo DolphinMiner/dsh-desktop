@@ -115,6 +115,18 @@ function cloneGrant(grant: ComputerActionGrant): ComputerActionGrant {
   return { ...grant, application: cloneApplication(grant.application) }
 }
 
+function redactTypedObservation(observation: ComputerObservation): ComputerObservation {
+  const { ocrText: _ocrText, ...capture } = observation.capture
+  return {
+    ...observation,
+    capture,
+    elements: observation.elements.map(element => {
+      const { value: _value, ...redacted } = element
+      return redacted
+    }),
+  }
+}
+
 interface PreparedComputerAction {
   params: ComputerActParams
   target: ComputerTarget
@@ -498,7 +510,9 @@ export class ComputerObserver {
         previousSnapshotId: prepared.params.snapshotId,
         completedAt: this.now().toISOString(),
         action: summarizeComputerAction(prepared.params.action),
-        observation,
+        observation: prepared.params.action.kind === 'type'
+          ? redactTypedObservation(observation)
+          : observation,
       }
       audit.recordOutcome(prepared.params.actionId, 'succeeded', 'completed', observation.snapshotId)
       this.statusMessage = 'Computer action completed and the target was observed again.'

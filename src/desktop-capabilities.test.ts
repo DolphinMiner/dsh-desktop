@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { ComputerObservation } from '@dolphinminer/dsh-desktop-protocol'
 
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 
@@ -129,8 +130,40 @@ test('dispatches workspace file capabilities with caller cancellation', async ()
   assert.deepEqual(operations, ['reveal:README.md', 'open:README.md'])
 })
 
-test('routes only the bounded read-only computer capabilities', async () => {
+test('routes bounded computer observation and action capabilities', async () => {
   const calls: string[] = []
+  const observation: ComputerObservation = {
+    version: 2,
+    snapshotId: 'snapshot-1',
+    observedAt: '2026-08-16T12:00:00.000Z',
+    target: { id: 'window:1', kind: 'window', name: 'Editor', pid: 42 },
+    foregroundApplication: {
+      id: 'application:42',
+      name: 'Editor',
+      pid: 42,
+      frontmost: true,
+    },
+    compatibility: {
+      surfaceId: 'window:1:42',
+      surfaceBounds: { x: 0, y: 0, width: 800, height: 600 },
+      displayTopology: [{
+        id: 'display:1',
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        displayScale: 2,
+      }],
+      foregroundApplicationId: 'application:42',
+    },
+    capture: {
+      bounds: { x: 0, y: 0, width: 800, height: 600 },
+      displayScale: 2,
+      pixelWidth: 1600,
+      pixelHeight: 1200,
+      screenshotCaptured: true,
+    },
+    elements: [],
+    truncated: false,
+    warnings: [],
+  }
   const handlers = createDesktopCapabilityHandlers({
     isAppFocused: () => false,
     notifications: { isSupported: () => false, show: () => undefined },
@@ -164,30 +197,22 @@ test('routes only the bounded read-only computer capabilities', async () => {
       },
       observe: async sessionId => {
         calls.push(`observe:${sessionId}`)
+        return observation
+      },
+      act: async params => {
+        calls.push(`act:${params.sessionId}:${params.action.kind}`)
         return {
-          version: 2,
-          snapshotId: 'snapshot-1',
-          observedAt: '2026-08-16T12:00:00.000Z',
-          target: { id: 'display:1', kind: 'display', name: 'Main Display' },
-          compatibility: {
-            surfaceId: 'display:1',
-            surfaceBounds: { x: 0, y: 0, width: 800, height: 600 },
-            displayTopology: [{
-              id: 'display:1',
-              bounds: { x: 0, y: 0, width: 800, height: 600 },
-              displayScale: 2,
-            }],
+          version: 1,
+          actionId: params.actionId,
+          previousSnapshotId: params.snapshotId,
+          completedAt: '2026-08-16T12:00:01.000Z',
+          action: {
+            kind: 'click',
+            target: { mode: 'element', elementId: 'ax:button' },
+            button: 'left',
+            clickCount: 1,
           },
-          capture: {
-            bounds: { x: 0, y: 0, width: 800, height: 600 },
-            displayScale: 2,
-            pixelWidth: 1600,
-            pixelHeight: 1200,
-            screenshotCaptured: true,
-          },
-          elements: [],
-          truncated: false,
-          warnings: [],
+          observation: { ...observation, snapshotId: 'snapshot-2' },
         }
       },
     },
@@ -197,5 +222,16 @@ test('routes only the bounded read-only computer capabilities', async () => {
   assert.equal((await handlers['computer.getPermissions']({}, context)).canObserve, true)
   assert.deepEqual((await handlers['computer.listApps']({}, context)).applications, [])
   assert.equal((await handlers['computer.observe']({ sessionId: 'session-1' }, context)).snapshotId, 'snapshot-1')
-  assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1'])
+  assert.equal((await handlers['computer.act']({
+    actionId: '11111111-1111-4111-8111-111111111111',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    action: {
+      kind: 'click',
+      target: { mode: 'element', elementId: 'ax:button' },
+      button: 'left',
+      clickCount: 1,
+    },
+  }, context)).observation.snapshotId, 'snapshot-2')
+  assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1', 'act:session-1:click'])
 })

@@ -25,6 +25,7 @@ import {
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
+import { ComputerActionAuditStore } from './computer-action-audit'
 import { ConnectionManager } from './connection-manager'
 import { ConnectionRegistry } from './connection-registry'
 import { CredentialVault, safeStorageBackend } from './credential-vault'
@@ -92,6 +93,13 @@ function assertActiveWorkspace(sessionId: string, workspaceRoot: string, signal:
   }
   if (!activityTracker.isRunningInWorkspace(sessionId, workspaceRoot)) {
     throw new WorkspacePathError('BAD_MESSAGE', 'The workspace is not active for this running session.')
+  }
+}
+
+function assertActiveSession(sessionId: string, signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException('The desktop request was cancelled.', 'AbortError')
+  if (!activityTracker.isRunning(sessionId)) {
+    throw new WorkspacePathError('BAD_MESSAGE', 'Computer actions require an active agent session.')
   }
 }
 
@@ -596,6 +604,7 @@ app.whenReady().then(async () => {
     new NativeComputerHelper(resolveComputerHelper()),
     new ComputerCaptureStore(join(app.getPath('temp'), 'com.dolphinminer.dsh-desktop', 'computer-captures')),
     {
+      audit: new ComputerActionAuditStore(join(desktopDataPath, 'computer-actions.v1.json')),
       onChange: snapshot => {
         if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('desktop:computer-changed', snapshot)
@@ -662,6 +671,10 @@ app.whenReady().then(async () => {
       getPermissions: signal => computerObserver!.getPermissions(signal),
       listApplications: signal => computerObserver!.listApplications(signal),
       observe: (sessionId, signal) => computerObserver!.observe(sessionId, signal),
+      act: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return computerObserver!.act(params, signal)
+      },
     },
     connections: {
       snapshot: () => connections.snapshot(),
@@ -669,7 +682,7 @@ app.whenReady().then(async () => {
         mcpProxy!.resolveMcpTransport(connectionId, signal),
       reportStatus: params => connections.reportStatus(params),
     },
-  }), { requestTimeoutMs: 30_000 })
+  }), { requestTimeoutMs: 70_000 })
   connections.onChange(snapshot => {
     for (const connection of snapshot.connections) {
       if (connection.status === 'disconnected') mcpProxy?.revoke(connection.id)

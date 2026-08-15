@@ -30,6 +30,12 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'computer_observe',
     'desktop_reveal_file',
     'desktop_open_file',
+    'computer_click',
+    'computer_click_at',
+    'computer_type',
+    'computer_key',
+    'computer_scroll',
+    'computer_scroll_at',
   ])
 
   const signal = new AbortController().signal
@@ -52,6 +58,10 @@ test('registers workspace-bound file tools and asks before opening', async () =>
   })
   assert.deepEqual(await gate?.({ name: 'desktop_reveal_file' }, async () => ({ kind: 'allow' })), {
     kind: 'allow',
+  })
+  assert.deepEqual(await gate?.({ name: 'computer_click' }, async () => ({ kind: 'allow' })), {
+    kind: 'ask',
+    reason: 'This computer action can change another application. Approve this operation once to continue.',
   })
 })
 
@@ -97,4 +107,75 @@ test('registers read-only computer tools and binds observations to the agent ses
     { method: 'computer.listApps', params: {} },
     { method: 'computer.observe', params: { sessionId: 'session-7' } },
   ])
+})
+
+test('binds approved computer actions to fresh IDs and redacts typed text from presentation', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params })
+        return { accepted: true }
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+
+  const typeTool = definitions.find(definition => definition.name === 'computer_type')!
+  const clickTool = definitions.find(definition => definition.name === 'computer_click')!
+  const execution = {
+    agent: { id: 'session-action', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never
+
+  await clickTool.execute({
+    snapshot_id: 'snapshot-1',
+    element_id: 'ax:button',
+    button: 'left',
+    click_count: 1,
+  }, execution)
+  await typeTool.execute({
+    snapshot_id: 'snapshot-2',
+    element_id: 'ax:text',
+    text: 'private draft',
+    replace: true,
+  }, execution)
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0]!.method, 'computer.act')
+  assert.equal(calls[1]!.method, 'computer.act')
+  assert.match(String(calls[0]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.notEqual(calls[0]!.params.actionId, calls[1]!.params.actionId)
+  assert.equal(calls[0]!.params.sessionId, 'session-action')
+  assert.deepEqual(calls[0]!.params.action, {
+    kind: 'click',
+    target: { mode: 'element', elementId: 'ax:button' },
+    button: 'left',
+    clickCount: 1,
+  })
+  assert.deepEqual(calls[1]!.params.action, {
+    kind: 'type',
+    elementId: 'ax:text',
+    text: 'private draft',
+    replace: true,
+  })
+  assert.deepEqual(typeTool.presentCall?.({
+    snapshot_id: 'snapshot-2',
+    element_id: 'ax:text',
+    text: 'private draft',
+    replace: true,
+  }), {
+    card: 'generic',
+    title: 'Type 13 characters',
+    kind: 'execute',
+  })
+  assert.equal(JSON.stringify(typeTool.presentCall?.({
+    snapshot_id: 'snapshot-2',
+    element_id: 'ax:text',
+    text: 'private draft',
+    replace: true,
+  })).includes('private draft'), false)
 })

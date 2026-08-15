@@ -50,6 +50,10 @@ export class DesktopActivityTracker {
     return activity?.running === true && activity.workspacePath === workspacePath
   }
 
+  isRunning(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.running === true
+  }
+
   private publish(): void {
     this.onChange(this.snapshot())
   }

@@ -4,6 +4,8 @@ import {
   ConnectionSnapshot,
   ConnectionSummary,
   ComputerApplicationList,
+  ComputerActParams,
+  ComputerActionResult,
   ComputerObservation,
   ComputerPermissions,
   McpTransportDescriptor,
@@ -42,6 +44,7 @@ export interface DesktopCapabilityDependencies {
     getPermissions(signal: AbortSignal): Promise<ComputerPermissions>
     listApplications(signal: AbortSignal): Promise<ComputerApplicationList>
     observe(sessionId: string, signal: AbortSignal): Promise<ComputerObservation>
+    act(params: ComputerActParams, signal: AbortSignal): Promise<ComputerActionResult>
   }
 }
 
@@ -79,6 +82,8 @@ export function createDesktopCapabilityHandlers(
       dependencies.computer?.listApplications(context.signal) ?? unsupportedComputer(),
     'computer.observe': (params, context) =>
       dependencies.computer?.observe(params.sessionId, context.signal) ?? unsupportedComputer(),
+    'computer.act': (params, context) =>
+      dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

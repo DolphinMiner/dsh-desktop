@@ -93,6 +93,40 @@ test('rejects unknown methods and replays one cached result for duplicate IDs', 
   if (replies[2]?.ok === false) assert.equal(replies[2].error.code, 'METHOD_NOT_FOUND')
 })
 
+test('never caches or replays computer action capability responses', async () => {
+  let calls = 0
+  const handlers = testHandlers()
+  handlers['computer.act'] = () => {
+    calls += 1
+    throw {
+      code: 'PERMISSION_DENIED',
+      message: 'Computer actions are paused.',
+    }
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  const request = createRequest('action-request', 'computer.act', {
+    actionId: '11111111-1111-4111-8111-111111111111',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    action: {
+      kind: 'click',
+      target: { mode: 'element', elementId: 'ax:button' },
+      button: 'left',
+      clickCount: 1,
+    },
+  })
+
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(calls, 2)
+  assert.equal(replies.length, 2)
+  assert.ok(replies.every(reply => !reply.ok && reply.error.code === 'PERMISSION_DENIED'))
+})
+
 test('returns a structured failure when a capability handler throws synchronously', async () => {
   const handlers = testHandlers()
   handlers['desktop.ping'] = () => {

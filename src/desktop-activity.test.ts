@@ -20,10 +20,12 @@ test('tracks authoritative running edges and rejects stale activity', () => {
 test('authorizes only the exact workspace of a running session', () => {
   const tracker = new DesktopActivityTracker(() => undefined)
   tracker.report({ sessionId: 'one', eventSeq: 1, running: true, workspacePath: '/repo' })
+  assert.equal(tracker.isRunning('one'), true)
   assert.equal(tracker.isRunningInWorkspace('one', '/repo'), true)
   assert.equal(tracker.isRunningInWorkspace('one', '/other'), false)
   assert.equal(tracker.isRunningInWorkspace('two', '/repo'), false)
   tracker.report({ sessionId: 'one', eventSeq: 2, running: false, workspacePath: '/repo' })
+  assert.equal(tracker.isRunning('one'), false)
   assert.equal(tracker.isRunningInWorkspace('one', '/repo'), false)
 })
 

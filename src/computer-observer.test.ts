@@ -225,6 +225,49 @@ test('requires a session-only app grant and re-observes after an action', async 
   ])
 })
 
+test('redacts typed values and OCR from the post-action result', async t => {
+  const { root, helper, observer } = await fixture({}, true)
+  t.after(() => observer.dispose())
+  t.after(() => rm(root, { recursive: true, force: true }))
+  helper.elements = [{
+    id: 'ax:text',
+    role: 'AXTextField',
+    label: 'Draft',
+    value: 'before',
+    actions: [],
+    bounds: { x: 20, y: 20, width: 180, height: 30 },
+    secure: false,
+  }]
+  await observer.selectTarget('window:7')
+  const source = await observer.observe('session-1')
+  const request = {
+    actionId: '77777777-7777-4777-8777-777777777777',
+    sessionId: 'session-1',
+    snapshotId: source.snapshotId,
+    action: {
+      kind: 'type' as const,
+      elementId: 'ax:text',
+      text: 'private draft',
+      replace: true,
+    },
+  }
+  await assert.rejects(observer.act(request), (error: ComputerUseError) =>
+    error.code === 'PERMISSION_DENIED')
+  observer.grantPendingActions()
+  helper.elements = [{ ...helper.elements[0]!, value: 'private draft' }]
+
+  const result = await observer.act(request)
+  assert.deepEqual(result.action, {
+    kind: 'type',
+    elementId: 'ax:text',
+    textLength: 13,
+    replace: true,
+  })
+  assert.equal(result.observation.capture.ocrText, undefined)
+  assert.equal(result.observation.elements[0]?.value, undefined)
+  assert.equal(JSON.stringify(result).includes('private draft'), false)
+})
+
 test('rejects stale snapshots and secure fields before dispatch', async t => {
   const { root, helper, observer, audit } = await fixture({}, true)
   t.after(() => observer.dispose())

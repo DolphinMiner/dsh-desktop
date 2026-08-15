@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto'
+
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@dolphinminer/dsh-desktop-host'
+import type { ComputerAction } from '@dolphinminer/dsh-desktop-protocol'
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -13,6 +16,21 @@ const OUTPUT_SCHEMA = {
 } as const
 
 const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
+const COMPUTER_ACTION_TIMEOUT_MS = 65_000
+const COMPUTER_ACTION_TOOLS = new Set([
+  'computer_click',
+  'computer_click_at',
+  'computer_type',
+  'computer_key',
+  'computer_scroll',
+  'computer_scroll_at',
+])
+
+function agentSessionId(exec: { agent?: { id: string } }): string {
+  const sessionId = exec.agent?.id
+  if (sessionId === undefined) throw new Error('Computer actions require an agent session.')
+  return sessionId
+}
 
 function agentWorkspace(exec: { agent?: { id: string; session: { header: { cwd?: string } } } }): {
   sessionId: string
@@ -29,6 +47,21 @@ function agentWorkspace(exec: { agent?: { id: string; session: { header: { cwd?:
 export const inject = ['desktopBridge', 'tools']
 
 export function apply(ctx: Context): void {
+  const act = async (
+    snapshotId: string,
+    action: ComputerAction,
+    exec: { agent?: { id: string }; signal: AbortSignal },
+  ) => JSON.parse(JSON.stringify(await ctx.desktopBridge.call(
+    'computer.act',
+    {
+      actionId: randomUUID(),
+      sessionId: agentSessionId(exec),
+      snapshotId,
+      action,
+    },
+    { signal: exec.signal, timeoutMs: COMPUTER_ACTION_TIMEOUT_MS },
+  )))
+
   ctx.tools.register(defineTool({
     name: 'computer_get_permissions',
     description: 'Check whether this Mac allows read-only screen observation and accessibility inspection.',
@@ -142,9 +175,179 @@ export function apply(ctx: Context): void {
     },
   }))
 
+  ctx.tools.register(defineTool({
+    name: 'computer_click',
+    description: 'Click an accessibility element from the latest compatible computer observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      element_id: { type: 'string', required: true, description: 'Accessibility element ID from that snapshot.' },
+      button: { type: 'string', enum: ['left', 'right'], required: true },
+      click_count: { type: 'integer', enum: [1, 2], required: true },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `${args.button === 'right' ? 'Right-click' : 'Click'} interface element`,
+      kind: 'execute',
+    }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'click',
+      target: { mode: 'element', elementId: args.element_id },
+      button: args.button,
+      clickCount: args.click_count,
+    }, exec),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_click_at',
+    description: 'Fallback click at capture-relative coordinates from the latest compatible computer observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      x: { type: 'number', required: true, description: 'Capture-relative horizontal coordinate.' },
+      y: { type: 'number', required: true, description: 'Capture-relative vertical coordinate.' },
+      button: { type: 'string', enum: ['left', 'right'], required: true },
+      click_count: { type: 'integer', enum: [1, 2], required: true },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Click observed point', kind: 'execute' }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'click',
+      target: { mode: 'point', coordinateSpace: 'capture', point: { x: args.x, y: args.y } },
+      button: args.button,
+      clickCount: args.click_count,
+    }, exec),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_type',
+    description: 'Enter text into a non-secure accessibility element from the latest compatible observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      element_id: { type: 'string', required: true, description: 'Editable accessibility element ID.' },
+      text: { type: 'string', required: true, description: 'Text to enter. Secure fields are always refused.' },
+      replace: { type: 'boolean', required: true, description: 'Replace the current field contents before typing.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Type ${String(args.text.length)} characters`,
+      kind: 'execute',
+    }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'type',
+      elementId: args.element_id,
+      text: args.text,
+      replace: args.replace,
+    }, exec),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_key',
+    description: 'Press a named key or a Command/Control shortcut against the latest compatible observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      key: { type: 'string', required: true, description: 'Named key or one alphanumeric shortcut key.' },
+      modifiers: {
+        type: 'array',
+        items: { type: 'string', enum: ['command', 'control', 'option', 'shift'] },
+        required: true,
+        description: 'Unique modifier keys. Printable keys require Command or Control.',
+      },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Press ${[...args.modifiers, args.key].join('+')}`,
+      kind: 'execute',
+    }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'key',
+      key: args.key,
+      modifiers: args.modifiers,
+    }, exec),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_scroll',
+    description: 'Scroll the selected surface or an accessibility element from the latest compatible observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      element_id: { type: 'string', description: 'Optional accessibility element to scroll over.' },
+      delta_x: { type: 'number', required: true },
+      delta_y: { type: 'number', required: true },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Scroll observed surface', kind: 'execute' }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'scroll',
+      ...(args.element_id === undefined
+        ? {}
+        : { target: { mode: 'element' as const, elementId: args.element_id } }),
+      deltaX: args.delta_x,
+      deltaY: args.delta_y,
+    }, exec),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'computer_scroll_at',
+    description: 'Fallback scroll at capture-relative coordinates from the latest compatible computer observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest computer snapshot ID.' },
+      x: { type: 'number', required: true, description: 'Capture-relative horizontal coordinate.' },
+      y: { type: 'number', required: true, description: 'Capture-relative vertical coordinate.' },
+      delta_x: { type: 'number', required: true },
+      delta_y: { type: 'number', required: true },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Scroll observed point', kind: 'execute' }),
+    timeoutMs: COMPUTER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    execute: (args, exec) => act(args.snapshot_id, {
+      kind: 'scroll',
+      target: { mode: 'point', coordinateSpace: 'capture', point: { x: args.x, y: args.y } },
+      deltaX: args.delta_x,
+      deltaY: args.delta_y,
+    }, exec),
+  }))
+
   ctx.on('tools/pre-execute', async (execution, next) => {
     const downstream = await next()
-    if (downstream.kind !== 'allow' || execution.name !== 'desktop_open_file') return downstream
+    if (downstream.kind !== 'allow') return downstream
+    if (COMPUTER_ACTION_TOOLS.has(execution.name)) {
+      return {
+        kind: 'ask',
+        reason: 'This computer action can change another application. Approve this operation once to continue.',
+      }
+    }
+    if (execution.name !== 'desktop_open_file') return downstream
     return {
       kind: 'ask',
       reason: 'Opening a file launches another application. Approve this operation once to continue.',
