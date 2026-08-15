@@ -24,6 +24,13 @@ const bridge: DesktopBridge = {
       ipcRenderer.on('desktop:connections-changed', handler)
       return () => ipcRenderer.removeListener('desktop:connections-changed', handler)
     },
+    onOAuthResult(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, result: Parameters<typeof listener>[0]): void => {
+        listener(result)
+      }
+      ipcRenderer.on('desktop:oauth-result', handler)
+      return () => ipcRenderer.removeListener('desktop:oauth-result', handler)
+    },
   },
 }
 

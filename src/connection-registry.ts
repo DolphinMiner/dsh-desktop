@@ -28,6 +28,7 @@ export interface StoredConnection {
   createdAt: string
   updatedAt: string
   lastConnectedAt?: string
+  sourceOperationId?: string
 }
 
 interface ConnectionRegistryDocument {
@@ -46,6 +47,7 @@ export interface ConnectionUpsert {
   access: ConnectionAccess
   scopes: string[]
   secretRef: string
+  operationId?: string
 }
 
 function emptyDocument(): ConnectionRegistryDocument {
@@ -84,6 +86,9 @@ function parseConnection(value: unknown): StoredConnection {
   }
   if (item.lastConnectedAt !== undefined && typeof item.lastConnectedAt !== 'string') {
     throw new Error('The desktop connection registry contains an invalid connection timestamp.')
+  }
+  if (item.sourceOperationId !== undefined && typeof item.sourceOperationId !== 'string') {
+    throw new Error('The desktop connection registry contains an invalid source operation.')
   }
   return {
     ...item,
@@ -136,9 +141,13 @@ export class ConnectionRegistry {
 
   upsert(input: ConnectionUpsert): { connection: StoredConnection; previousSecretRef?: string } {
     const document = this.read()
-    const index = input.id === undefined
-      ? -1
-      : document.connections.findIndex(connection => connection.id === input.id)
+    const index = input.id !== undefined
+      ? document.connections.findIndex(connection => connection.id === input.id)
+      : input.operationId === undefined
+        ? -1
+        : document.connections.findIndex(connection =>
+            connection.sourceOperationId === input.operationId,
+          )
     const previous = index < 0 ? undefined : document.connections[index]
     if (previous !== undefined && previous.provider !== input.provider) {
       throw new Error('A connection cannot change providers.')
@@ -160,6 +169,9 @@ export class ConnectionRegistry {
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
       ...(previous?.lastConnectedAt === undefined ? {} : { lastConnectedAt: previous.lastConnectedAt }),
+      ...(input.operationId === undefined
+        ? previous?.sourceOperationId === undefined ? {} : { sourceOperationId: previous.sourceOperationId }
+        : { sourceOperationId: input.operationId }),
     }
     if (index < 0) document.connections.push(connection)
     else document.connections[index] = connection

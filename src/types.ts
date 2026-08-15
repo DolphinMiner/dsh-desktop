@@ -7,6 +7,11 @@ export interface HarnessState {
   logPath: string
 }
 
+export interface OAuthResultNotice {
+  ok: boolean
+  message: string
+}
+
 export interface DesktopBridge {
   getHarnessState(): Promise<HarnessState>
   retryHarness(): Promise<void>
@@ -19,6 +24,7 @@ export interface DesktopBridge {
     beginOAuth(input: BeginOAuthInput): Promise<BeginOAuthResult>
     cancelOAuth(input: CancelOAuthInput): Promise<void>
     onChanged(listener: (snapshot: ConnectionSnapshot) => void): () => void
+    onOAuthResult(listener: (result: OAuthResultNotice) => void): () => void
   }
 }
 import type {

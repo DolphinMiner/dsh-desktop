@@ -11,9 +11,10 @@ import {
   ConnectionCredential,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import { ConnectionManager, OAuthConnectionProvider } from './connection-manager'
+import { ConnectionManager } from './connection-manager'
 import { ConnectionRegistry } from './connection-registry'
 import { CredentialEncryptionAdapter, CredentialVault } from './credential-vault'
+import { OAuthCompletion, OAuthConnectionProvider } from './oauth-types'
 
 class TestEncryption implements CredentialEncryptionAdapter {
   isAvailable(): boolean { return true }
@@ -32,6 +33,8 @@ class TestOAuth implements OAuthConnectionProvider {
   cancel(_input: CancelOAuthInput): Promise<void> { return Promise.resolve() }
   resolve(value: ConnectionCredential): Promise<ConnectionCredential> { return Promise.resolve(value) }
   revoke(_value: ConnectionCredential): Promise<void> { return Promise.resolve() }
+  setCompletionHandler(_handler: (completion: OAuthCompletion) => Promise<void>): void {}
+  handleCallback(_url: string): Promise<void> { return Promise.reject(new Error('not configured')) }
 }
 
 function manager(root: string): ConnectionManager {
@@ -86,10 +89,44 @@ test('persists multiple workspaces, deduplicates submissions, and restores witho
     assert.equal(registrySource.includes('lin_api_'), false)
     assert.equal(vaultSource.includes('lin_api_'), false)
 
-    const restarted = manager(root).snapshot()
+    const restartedManager = manager(root)
+    const restarted = restartedManager.snapshot()
     assert.equal(restarted.connections.length, 2)
     assert.equal(restarted.connections[0].status, 'connecting')
     assert.deepEqual(restarted.connections[0].enabledTools, ['mcp__linear_acme__list_issues'])
+    const coldDuplicate = await restartedManager.connectApiKey(firstRequest)
+    assert.equal(coldDuplicate.connections.length, 2)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('commits an OAuth handoff idempotently across a cold restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-oauth-commit-test-'))
+  const completion = {
+    flowId: 'oauth-flow-1',
+    input: {
+      requestId: 'oauth-request-1',
+      provider: 'linear' as const,
+      access: 'read-write' as const,
+    },
+    credential: {
+      kind: 'oauth' as const,
+      accessToken: 'oauth-access',
+      refreshToken: 'oauth-refresh',
+      expiresAt: '2026-08-17T00:00:00.000Z',
+      scopes: ['read', 'write'],
+    },
+    account: 'developer@example.com',
+    workspace: 'Acme',
+  }
+  try {
+    const first = await manager(root).completeOAuth(completion)
+    assert.equal(first.connections.length, 1)
+    assert.equal(first.connections[0].authKind, 'oauth')
+    const recovered = await manager(root).completeOAuth(completion)
+    assert.equal(recovered.connections.length, 1)
+    assert.equal(recovered.connections[0].workspace, 'Acme')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

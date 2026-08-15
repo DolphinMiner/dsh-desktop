@@ -162,6 +162,7 @@ export type DesktopEventData<E extends DesktopEventName> = DesktopEventMap[E]
 export interface DesktopProtocolError {
   code:
     | 'BAD_MESSAGE'
+    | 'AUTH_EXPIRED'
     | 'CANCELLED'
     | 'CONFLICT'
     | 'DESKTOP_UNAVAILABLE'
@@ -232,7 +233,7 @@ const MAX_STATUS_MESSAGE_LENGTH = 1_000
 const MAX_LIST_ITEMS = 1_000
 
 const ERROR_CODES: readonly DesktopProtocolError['code'][] = [
-  'BAD_MESSAGE', 'CANCELLED', 'CONFLICT', 'DESKTOP_UNAVAILABLE', 'DUPLICATE_REQUEST',
+  'AUTH_EXPIRED', 'BAD_MESSAGE', 'CANCELLED', 'CONFLICT', 'DESKTOP_UNAVAILABLE', 'DUPLICATE_REQUEST',
   'INTERNAL_ERROR', 'METHOD_NOT_FOUND', 'NOT_FOUND', 'OAUTH_UNAVAILABLE', 'TIMEOUT',
   'VAULT_UNAVAILABLE',
 ]

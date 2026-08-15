@@ -14,20 +14,13 @@ import {
 
 import { ConnectionRegistry, StoredConnection } from './connection-registry'
 import { CredentialVault, CredentialVaultError } from './credential-vault'
+import { OAuthCompletion, OAuthConnectionProvider } from './oauth-types'
 
 export class ConnectionManagerError extends Error {
   constructor(readonly code: DesktopProtocolError['code'], message: string) {
     super(message)
     this.name = 'ConnectionManagerError'
   }
-}
-
-export interface OAuthConnectionProvider {
-  readonly available: boolean
-  begin(input: BeginOAuthInput, signal?: AbortSignal): Promise<BeginOAuthResult>
-  cancel(input: CancelOAuthInput): Promise<void>
-  resolve(credential: ConnectionCredential, signal?: AbortSignal): Promise<ConnectionCredential>
-  revoke(credential: ConnectionCredential, signal?: AbortSignal): Promise<void>
 }
 
 interface RuntimeConnectionState {
@@ -77,7 +70,7 @@ export class ConnectionManager {
   private readonly runtime = new Map<string, RuntimeConnectionState>()
   private readonly listeners = new Set<(snapshot: ConnectionSnapshot) => void>()
   private readonly operations = new Map<string, Promise<ConnectionSnapshot>>()
-  private readonly receipts = new Map<string, ConnectionSnapshot>()
+  private readonly receipts = new Set<string>()
   private effectiveRevision: number
 
   constructor(
@@ -141,6 +134,7 @@ export class ConnectionManager {
           access: input.access,
           scopes: [...credential.scopes],
           secretRef: secretRef!,
+          operationId: input.requestId,
         })
         previousSecretRef = result.previousSecretRef
         this.runtime.set(result.connection.id, { status: 'connecting' })
@@ -191,7 +185,30 @@ export class ConnectionManager {
     }
     let credential = this.readCredential(connection.secretRef)
     if (credential.kind === 'oauth') {
-      const refreshed = await this.oauth.resolve(credential, signal)
+      let refreshed: ConnectionCredential
+      try {
+        refreshed = await this.oauth.resolve(credential, signal)
+      } catch (error) {
+        const status = error instanceof ConnectionManagerError && error.code === 'AUTH_EXPIRED'
+          ? 'expired'
+          : 'error'
+        this.registry.updateRuntime(
+          connection.id,
+          status,
+          status === 'expired'
+            ? 'Linear authorization expired. Reconnect the account.'
+            : 'Linear authorization could not be refreshed.',
+          [],
+        )
+        this.runtime.set(connection.id, {
+          status,
+          statusMessage: status === 'expired'
+            ? 'Linear authorization expired. Reconnect the account.'
+            : 'Linear authorization could not be refreshed.',
+        })
+        this.changed()
+        throw error
+      }
       if (refreshed !== credential) {
         this.vault.put(refreshed, connection.secretRef)
         credential = refreshed
@@ -239,6 +256,41 @@ export class ConnectionManager {
     return this.oauth.cancel(input)
   }
 
+  completeOAuth(completion: OAuthCompletion): Promise<ConnectionSnapshot> {
+    return this.once(`oauth:${completion.flowId}`, async () => {
+      const scopes = [...completion.credential.scopes]
+      const access = scopes.includes('write') ? 'read-write' : 'read-only'
+      const label = completion.input.label?.trim() || completion.workspace || 'Linear workspace'
+      const secretRef = this.vault.put(completion.credential)
+      let previousSecretRef: string | undefined
+      try {
+        const result = this.registry.upsert({
+          ...(completion.input.connectionId === undefined
+            ? {}
+            : { id: completion.input.connectionId }),
+          provider: 'linear',
+          label,
+          ...(completion.account === undefined ? {} : { account: completion.account }),
+          ...(completion.workspace === undefined ? {} : { workspace: completion.workspace }),
+          authKind: 'oauth',
+          access,
+          scopes,
+          secretRef,
+          operationId: completion.flowId,
+        })
+        previousSecretRef = result.previousSecretRef
+        this.runtime.set(result.connection.id, { status: 'connecting' })
+      } catch (error) {
+        this.deleteCredentialBestEffort(secretRef)
+        throw error
+      }
+      if (previousSecretRef !== undefined && previousSecretRef !== secretRef) {
+        this.deleteCredentialBestEffort(previousSecretRef)
+      }
+      return this.changed()
+    })
+  }
+
   private readCredential(secretRef: string): ConnectionCredential {
     let credential: ConnectionCredential | undefined
     try {
@@ -254,14 +306,13 @@ export class ConnectionManager {
 
   private once(requestIdValue: string, operation: () => Promise<ConnectionSnapshot>): Promise<ConnectionSnapshot> {
     const requestId = requiredString(requestIdValue, 'Request ID', 128)
-    const completed = this.receipts.get(requestId)
-    if (completed !== undefined) return Promise.resolve(completed)
+    if (this.receipts.has(requestId)) return Promise.resolve(this.snapshot())
     const existing = this.operations.get(requestId)
     if (existing !== undefined) return existing
     const pending = operation().then(snapshot => {
-      this.receipts.set(requestId, snapshot)
+      this.receipts.add(requestId)
       while (this.receipts.size > MAX_RECEIPTS) {
-        const oldest = this.receipts.keys().next().value as string | undefined
+        const oldest = this.receipts.values().next().value as string | undefined
         if (oldest === undefined) break
         this.receipts.delete(oldest)
       }

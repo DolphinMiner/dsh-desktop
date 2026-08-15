@@ -113,7 +113,7 @@ export class McpConnectionSupervisor {
   private async reconcileOnce(): Promise<void> {
     const snapshot = await this.connections.list()
     const desired = new Map(snapshot.connections
-      .filter(connection => connection.status !== 'disconnected')
+      .filter(connection => connection.status !== 'disconnected' && connection.status !== 'expired')
       .map(connection => [connection.id, connection]))
     for (const connectionId of this.failed.keys()) {
       if (!desired.has(connectionId)) this.failed.delete(connectionId)

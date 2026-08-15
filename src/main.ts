@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -28,7 +28,7 @@ import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
-import { UnavailableOAuthProvider } from './oauth-provider'
+import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 
@@ -43,6 +43,7 @@ let mainWindow: BrowserWindow | undefined
 let harness: HarnessService | undefined
 let mcpProxy: McpCredentialProxy | undefined
 let harnessOrigin: string | undefined
+let oauthCoordinator: LinearOAuthCoordinator | undefined
 let shuttingDown = false
 let shutdownComplete = false
 let state: HarnessState = {
@@ -50,6 +51,52 @@ let state: HarnessState = {
   message: 'Harness is not running.',
   logPath: '',
 }
+const pendingOAuthLinks: string[] = []
+
+function registerDesktopProtocol(): boolean {
+  if (process.defaultApp && process.argv[1] !== undefined) {
+    return app.setAsDefaultProtocolClient('dsh-desktop', process.execPath, [resolve(process.argv[1])])
+  }
+  return app.setAsDefaultProtocolClient('dsh-desktop')
+}
+
+const desktopProtocolRegistered = isPrimaryInstance && registerDesktopProtocol()
+
+function isOAuthLink(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'dsh-desktop:' && url.hostname === 'oauth'
+  } catch {
+    return false
+  }
+}
+
+function publishOAuthResult(ok: boolean, message: string): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('desktop:oauth-result', { ok, message })
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function receiveOAuthLink(url: string): void {
+  if (!isOAuthLink(url)) return
+  const coordinator = oauthCoordinator
+  if (coordinator === undefined) {
+    pendingOAuthLinks.push(url)
+    return
+  }
+  void coordinator.handleCallback(url).then(() => {
+    publishOAuthResult(true, 'Linear connected successfully.')
+  }).catch(error => {
+    publishOAuthResult(false, error instanceof Error ? error.message : 'Linear could not be connected.')
+  })
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  receiveOAuthLink(url)
+})
 
 function resolveDshBin(): string {
   const packageJson = require.resolve('@deepseek-ai/dsh/package.json')
@@ -152,7 +199,8 @@ function createWindow(): BrowserWindow {
 }
 
 if (isPrimaryInstance) {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    for (const argument of argv) receiveOAuthLink(argument)
     if (mainWindow === undefined || mainWindow.isDestroyed()) return
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
@@ -214,7 +262,15 @@ function installIpcHandlers(connections: ConnectionManager): void {
   })
   ipcMain.handle('desktop:connections:begin-oauth', async (event, value: unknown) => {
     assertTrustedSender(event)
-    return connections.beginOAuth(validInput(parseBeginOAuthInput(value)))
+    const input = validInput(parseBeginOAuthInput(value))
+    const result = await connections.beginOAuth(input)
+    try {
+      await shell.openExternal(result.authorizationUrl)
+    } catch (error) {
+      await connections.cancelOAuth({ requestId: input.requestId, flowId: result.flowId })
+      throw error
+    }
+    return result
   })
   ipcMain.handle('desktop:connections:cancel-oauth', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -267,15 +323,23 @@ app.whenReady().then(async () => {
   if (!isPrimaryInstance) return
 
   const desktopDataPath = join(app.getPath('userData'), 'desktop')
+  const encryption = {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    backend: () => safeStorage.getSelectedStorageBackend(),
+    encrypt: (plaintext: string) => safeStorage.encryptString(plaintext),
+    decrypt: (ciphertext: Buffer) => safeStorage.decryptString(ciphertext),
+  }
+  oauthCoordinator = new LinearOAuthCoordinator(
+    new EncryptedOAuthStateStore(join(desktopDataPath, 'oauth-state.v1.json'), encryption),
+    {
+      clientId: desktopProtocolRegistered ? process.env.DSH_DESKTOP_LINEAR_CLIENT_ID : undefined,
+      clientSecret: process.env.DSH_DESKTOP_LINEAR_CLIENT_SECRET,
+    },
+  )
   const connections = new ConnectionManager(
     new ConnectionRegistry(join(desktopDataPath, 'connections.v1.json')),
-    new CredentialVault(join(desktopDataPath, 'credentials.v1.json'), {
-      isAvailable: () => safeStorage.isEncryptionAvailable(),
-      backend: () => safeStorage.getSelectedStorageBackend(),
-      encrypt: plaintext => safeStorage.encryptString(plaintext),
-      decrypt: ciphertext => safeStorage.decryptString(ciphertext),
-    }),
-    new UnavailableOAuthProvider(),
+    new CredentialVault(join(desktopDataPath, 'credentials.v1.json'), encryption),
+    oauthCoordinator,
   )
   mcpProxy = new McpCredentialProxy(connections)
   await mcpProxy.start()
@@ -324,6 +388,11 @@ app.whenReady().then(async () => {
     }
     harness?.send(createEvent('connections.changed', { revision: snapshot.revision }))
   })
+  oauthCoordinator.setCompletionHandler(async completion => {
+    await connections.completeOAuth(completion)
+  })
+  for (const link of pendingOAuthLinks.splice(0)) receiveOAuthLink(link)
+  for (const argument of process.argv) receiveOAuthLink(argument)
   harness = new HarnessService({
     dshBin: resolveDshBin(),
     dshHome,
@@ -362,6 +431,7 @@ app.on('before-quit', event => {
       console.error('Could not stop Harness cleanly.', error)
     })
     .finally(() => {
+      oauthCoordinator?.dispose()
       shutdownComplete = true
       app.quit()
     })
