@@ -105,6 +105,11 @@ export interface ManagedWorktreeHandoffTransferResult {
   result: GitWorktreeHandoffTransferResult
 }
 
+export interface WorktreeHandoffState {
+  record: WorktreeRecord
+  preflight: WorktreeHandoffPreflight
+}
+
 export class WorktreeManagerError extends Error {
   constructor(
     readonly code: DesktopProtocolError['code'],
@@ -271,7 +276,7 @@ export class WorktreeManager {
     id: string,
     direction: WorktreeHandoffDirection,
     signal: AbortSignal,
-  ): Promise<WorktreeHandoffPreflight> {
+  ): Promise<WorktreeHandoffState> {
     if (!isBoundedString(id, MAX_ID_LENGTH) ||
       (direction !== 'local-to-worktree' && direction !== 'worktree-to-local')) {
       throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree handoff request is invalid.')
@@ -291,7 +296,10 @@ export class WorktreeManager {
       baseCommit: record.baseCommit,
       direction,
     }, signal))
-    return { ...inspection, worktree: summarizeWorktreeRecord(record) }
+    return {
+      record,
+      preflight: { ...inspection, worktree: summarizeWorktreeRecord(record) },
+    }
   }
 
   async transferHandoff(
@@ -302,13 +310,20 @@ export class WorktreeManager {
   ): Promise<ManagedWorktreeHandoffTransferResult> {
     const { record, input } = this.handoffOperationInput(id, expected)
     let dispatched = false
+    let dispatchBoundaryError: unknown
     try {
       const result = await this.git.transferWorktreeHandoff(input, signal, () => {
-        beforeDispatch?.(record)
+        try {
+          beforeDispatch?.(record)
+        } catch (error) {
+          dispatchBoundaryError = error
+          throw error
+        }
         dispatched = true
       })
       return { record, result }
     } catch (error) {
+      if (dispatchBoundaryError !== undefined) throw dispatchBoundaryError
       mapError(error, dispatched)
     }
   }

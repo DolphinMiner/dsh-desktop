@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  parseDesktopWorktreeHandoffConfirmInput,
   parseDesktopWorktreeHandoffPreflightInput,
   parseWorktreeHandoffPreflight,
+  parseWorktreeHandoffPreview,
+  parseWorktreeHandoffResult,
   type WorktreeHandoffPreflight,
 } from './worktree-handoff.js'
 
@@ -75,4 +78,30 @@ test('requires blocker and transfer truth to agree', () => {
     ...blocked,
     blockers: ['destination-dirty', 'destination-dirty'],
   }), undefined)
+})
+
+test('validates expiring handoff previews and explicit confirmations', () => {
+  const previewId = '22222222-2222-4222-8222-222222222222'
+  const preview = {
+    previewId,
+    expiresAt: '2026-08-16T12:05:00.000Z',
+    preflight: preflight(),
+  }
+  assert.deepEqual(parseWorktreeHandoffPreview(preview), preview)
+  assert.equal(parseWorktreeHandoffPreview({ ...preview, expiresAt: 'not-a-date' }), undefined)
+  assert.deepEqual(parseDesktopWorktreeHandoffConfirmInput({ previewId, confirmed: true }), {
+    previewId,
+    confirmed: true,
+  })
+  assert.equal(parseDesktopWorktreeHandoffConfirmInput({ previewId, confirmed: false }), undefined)
+})
+
+test('accepts only exact successful handoff results', () => {
+  const result = {
+    operationId: '22222222-2222-4222-8222-222222222222',
+    direction: 'worktree-to-local' as const,
+    sourceTree: 'b'.repeat(40),
+  }
+  assert.deepEqual(parseWorktreeHandoffResult(result), result)
+  assert.equal(parseWorktreeHandoffResult({ ...result, extra: true }), undefined)
 })

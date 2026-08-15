@@ -27,6 +27,7 @@ export type WorktreeHandoffOperationReason =
   | 'completed'
   | 'not-applied'
   | 'result-ambiguous'
+  | 'cancelled-before-dispatch'
   | 'interrupted-before-dispatch'
   | 'interrupted-after-dispatch'
   | 'reconciled-completed'
@@ -160,14 +161,17 @@ function isPhase(value: unknown): value is WorktreeHandoffOperationPhase {
 
 function isReason(value: unknown): value is WorktreeHandoffOperationReason {
   return value === 'completed' || value === 'not-applied' || value === 'result-ambiguous' ||
-    value === 'interrupted-before-dispatch' || value === 'interrupted-after-dispatch' ||
+    value === 'cancelled-before-dispatch' || value === 'interrupted-before-dispatch' ||
+    value === 'interrupted-after-dispatch' ||
     value === 'reconciled-completed' || value === 'reconciled-not-applied'
 }
 
 function isOutcome(phase: WorktreeHandoffOperationPhase, reason: WorktreeHandoffOperationReason | undefined): boolean {
   if (phase === 'succeeded') return reason === 'completed' || reason === 'reconciled-completed'
   if (phase === 'failed') return reason === 'not-applied' || reason === 'reconciled-not-applied'
-  if (phase === 'cancelled') return reason === 'interrupted-before-dispatch'
+  if (phase === 'cancelled') {
+    return reason === 'cancelled-before-dispatch' || reason === 'interrupted-before-dispatch'
+  }
   if (phase === 'ambiguous') {
     return reason === 'result-ambiguous' || reason === 'interrupted-after-dispatch'
   }
@@ -197,7 +201,8 @@ function transitionMatchesReason(
   reason: WorktreeHandoffOperationReason | undefined,
 ): boolean {
   if (from === 'intent') return (to === 'dispatch' && reason === undefined) ||
-    (to === 'cancelled' && reason === 'interrupted-before-dispatch')
+    (to === 'cancelled' &&
+      (reason === 'cancelled-before-dispatch' || reason === 'interrupted-before-dispatch'))
   if (from === 'dispatch') {
     return (to === 'succeeded' && reason === 'completed') ||
       (to === 'failed' && reason === 'not-applied') ||
@@ -414,6 +419,10 @@ export class WorktreeHandoffJournal {
 
   recordDispatch(operationId: string): WorktreeHandoffOperationRecord {
     return this.append(operationId, 'dispatch')
+  }
+
+  recordCancellation(operationId: string): WorktreeHandoffOperationRecord {
+    return this.append(operationId, 'cancelled', 'cancelled-before-dispatch')
   }
 
   recordOutcome(

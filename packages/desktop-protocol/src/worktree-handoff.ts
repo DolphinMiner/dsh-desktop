@@ -52,6 +52,23 @@ export interface WorktreeHandoffPreflight {
   canTransfer: boolean
 }
 
+export interface WorktreeHandoffPreview {
+  previewId: string
+  expiresAt: string
+  preflight: WorktreeHandoffPreflight
+}
+
+export interface DesktopWorktreeHandoffConfirmInput {
+  previewId: string
+  confirmed: true
+}
+
+export interface WorktreeHandoffResult {
+  operationId: string
+  direction: WorktreeHandoffDirection
+  sourceTree: string
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -71,6 +88,10 @@ function isObjectId(value: unknown): value is string {
 
 function isBoundedText(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maxLength && !value.includes('\0')
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 && !Number.isNaN(Date.parse(value))
 }
 
 function isDirection(value: unknown): value is WorktreeHandoffDirection {
@@ -167,4 +188,25 @@ export function parseWorktreeHandoffPreflight(value: unknown): WorktreeHandoffPr
     blockers,
     canTransfer: value.canTransfer,
   }
+}
+
+export function parseWorktreeHandoffPreview(value: unknown): WorktreeHandoffPreview | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['previewId', 'expiresAt', 'preflight']) ||
+    !isUuid(value.previewId) || !isIsoDate(value.expiresAt)) return undefined
+  const preflight = parseWorktreeHandoffPreflight(value.preflight)
+  return preflight === undefined ? undefined : { previewId: value.previewId, expiresAt: value.expiresAt, preflight }
+}
+
+export function parseDesktopWorktreeHandoffConfirmInput(
+  value: unknown,
+): DesktopWorktreeHandoffConfirmInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['previewId', 'confirmed']) ||
+    !isUuid(value.previewId) || value.confirmed !== true) return undefined
+  return { previewId: value.previewId, confirmed: true }
+}
+
+export function parseWorktreeHandoffResult(value: unknown): WorktreeHandoffResult | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['operationId', 'direction', 'sourceTree']) ||
+    !isUuid(value.operationId) || !isDirection(value.direction) || !isObjectId(value.sourceTree)) return undefined
+  return { operationId: value.operationId, direction: value.direction, sourceTree: value.sourceTree }
 }

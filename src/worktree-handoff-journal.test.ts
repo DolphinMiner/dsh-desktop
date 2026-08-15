@@ -115,6 +115,20 @@ test('allows only authoritative reconciliation to refine an ambiguous operation'
   )
 })
 
+test('records a final pre-dispatch cancellation without making it replayable', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const journal = new WorktreeHandoffJournal(path)
+  journal.begin(input())
+  journal.recordCancellation(operationId)
+
+  const cancelled = new WorktreeHandoffJournal(path).get(operationId)!
+  assert.equal(worktreeHandoffOperationPhase(cancelled), 'cancelled')
+  assert.equal(cancelled.events.at(-1)?.reason, 'cancelled-before-dispatch')
+  assert.throws(() => journal.recordDispatch(operationId),
+    (error: WorktreeHandoffJournalError) => error.code === 'DUPLICATE_REQUEST')
+})
+
 test('keeps recovery timestamps valid when the system clock moves backwards', async t => {
   const { root, path } = await fixture()
   t.after(() => rm(root, { recursive: true, force: true }))

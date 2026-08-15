@@ -597,11 +597,13 @@ test('binds handoff preflight to the immutable managed worktree identity', async
     },
   }), registry, '/managed', () => undefined)
 
-  const preflight = await manager.inspectHandoff(
+  const state = await manager.inspectHandoff(
     record.id,
     'worktree-to-local',
     new AbortController().signal,
   )
+  const preflight = state.preflight
+  assert.equal(state.record.id, record.id)
   assert.equal(preflight.worktree.id, record.id)
   assert.equal(preflight.canTransfer, true)
   assert.deepEqual(inspectedInput, {
