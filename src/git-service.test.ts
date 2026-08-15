@@ -6,7 +6,13 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import { GitService, GitServiceError, parseGitStatus, parseGitWorktreeList } from './git-service'
+import {
+  GitService,
+  GitServiceError,
+  parseGitNameStatus,
+  parseGitStatus,
+  parseGitWorktreeList,
+} from './git-service'
 
 const execFileAsync = promisify(execFile)
 
@@ -14,6 +20,13 @@ async function git(root: string, ...args: string[]): Promise<void> {
   await execFileAsync('git', ['-C', root, ...args], {
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
   })
+}
+
+async function gitOutput(root: string, ...args: string[]): Promise<string> {
+  const result = await execFileAsync('git', ['-C', root, ...args], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+  })
+  return result.stdout.toString().trim()
 }
 
 async function repositoryFixture(): Promise<string> {
@@ -103,6 +116,80 @@ test('rejects incomplete or malformed porcelain status', () => {
     ].join('\0'))),
     (error: GitServiceError) => error.code === 'BAD_OUTPUT',
   )
+})
+
+test('parses NUL-delimited review paths and rejects malformed status records', () => {
+  assert.deepEqual(parseGitNameStatus(Buffer.from([
+    'M',
+    'line\nbreak.txt',
+    'R100',
+    'old name.ts',
+    'new name.ts',
+    '',
+  ].join('\0'))), [{
+    status: 'modified',
+    path: 'line\nbreak.txt',
+    patchAvailable: true,
+  }, {
+    status: 'renamed',
+    path: 'new name.ts',
+    originalPath: 'old name.ts',
+    patchAvailable: true,
+  }])
+  assert.throws(
+    () => parseGitNameStatus(Buffer.from('R101\0old.ts\0new.ts\0')),
+    (error: GitServiceError) => error.code === 'BAD_OUTPUT',
+  )
+  assert.throws(
+    () => parseGitNameStatus(Buffer.from('M\0unterminated.txt')),
+    (error: GitServiceError) => error.code === 'BAD_OUTPUT',
+  )
+})
+
+test('reads authoritative unstaged, staged, commit, and merge-base review scopes', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const initialCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+
+  await writeFile(join(root, 'committed.txt'), 'committed change\n')
+  await git(root, 'add', 'committed.txt')
+  await git(root, 'commit', '-m', 'add committed file')
+  const selectedCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await writeFile(join(root, 'staged.txt'), 'staged change\n')
+  await git(root, 'add', 'staged.txt')
+  await writeFile(join(root, 'README.md'), 'unstaged change\n')
+  await writeFile(join(root, 'untracked.txt'), 'untracked change\n')
+
+  const service = new GitService()
+  const unstaged = await service.review(canonicalRoot, { kind: 'unstaged' })
+  assert.deepEqual(unstaged.files, [{
+    status: 'modified',
+    path: 'README.md',
+    patchAvailable: true,
+  }, {
+    status: 'untracked',
+    path: 'untracked.txt',
+    patchAvailable: false,
+  }])
+  assert.match(unstaged.patch, /diff --git a\/README\.md b\/README\.md/)
+  assert.doesNotMatch(unstaged.patch, /untracked\.txt/)
+
+  const staged = await service.review(canonicalRoot, { kind: 'staged' })
+  assert.deepEqual(staged.files, [{ status: 'added', path: 'staged.txt', patchAvailable: true }])
+  assert.match(staged.patch, /diff --git a\/staged\.txt b\/staged\.txt/)
+
+  const commit = await service.review(canonicalRoot, { kind: 'commit', ref: selectedCommit })
+  assert.equal(commit.selectedCommit, selectedCommit)
+  assert.deepEqual(commit.files, [{ status: 'added', path: 'committed.txt', patchAvailable: true }])
+  assert.match(commit.patch, /diff --git a\/committed\.txt b\/committed\.txt/)
+
+  const branch = await service.review(canonicalRoot, { kind: 'branch', baseRef: initialCommit })
+  assert.equal(branch.head, selectedCommit)
+  assert.equal(branch.baseCommit, initialCommit)
+  assert.equal(branch.mergeBase, initialCommit)
+  assert.deepEqual(branch.files, [{ status: 'added', path: 'committed.txt', patchAvailable: true }])
+  assert.match(branch.patch, /diff --git a\/committed\.txt b\/committed\.txt/)
 })
 
 test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {

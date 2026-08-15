@@ -173,6 +173,50 @@ test('validates bounded Git capability contracts', () => {
     ...status,
     entries: [{ ...status.entries[0], originalPath: undefined }],
   }), undefined)
+
+  const reviewParams = {
+    ...workspace,
+    repositoryRoot: '/repo',
+    scope: { kind: 'commit', ref: 'HEAD~1' } as const,
+  }
+  assert.deepEqual(parseCapabilityParams('git.review', reviewParams), reviewParams)
+  assert.equal(parseCapabilityParams('git.review', {
+    ...reviewParams,
+    scope: { kind: 'commit', ref: 'HEAD\n--output=/tmp/result' },
+  }), undefined)
+  assert.equal(parseCapabilityParams('git.review', {
+    ...reviewParams,
+    scope: { kind: 'unstaged', ref: 'HEAD' },
+  }), undefined)
+
+  const review = {
+    repository,
+    scope: { kind: 'commit', ref: 'HEAD~1' } as const,
+    head: 'a'.repeat(40),
+    selectedCommit: 'b'.repeat(40),
+    files: [{
+      status: 'renamed',
+      path: 'new file.ts',
+      originalPath: 'old file.ts',
+      patchAvailable: true,
+    }],
+    patch: 'diff --git a/old file.ts b/new file.ts\n',
+  }
+  assert.deepEqual(parseCapabilityResult('git.review', review), review)
+  assert.equal(parseCapabilityResult('git.review', {
+    ...review,
+    baseCommit: 'c'.repeat(40),
+  }), undefined)
+  assert.equal(parseCapabilityResult('git.review', {
+    ...review,
+    scope: { kind: 'branch', baseRef: 'main' },
+    selectedCommit: undefined,
+    baseCommit: 'c'.repeat(40),
+  }), undefined)
+  assert.equal(parseCapabilityResult('git.review', {
+    ...review,
+    files: [{ status: 'untracked', path: 'new.txt', patchAvailable: true }],
+  }), undefined)
 })
 
 test('validates worktree provisioning without exposing operation internals', () => {

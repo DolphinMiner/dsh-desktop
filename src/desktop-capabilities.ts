@@ -10,6 +10,8 @@ import {
   ComputerPermissions,
   GitDiscoverParams,
   GitRepositoryIdentity,
+  GitReviewParams,
+  GitReviewSnapshot,
   GitStatusParams,
   GitStatusSnapshot,
   WorktreeProvisionParams,
@@ -58,6 +60,7 @@ export interface DesktopCapabilityDependencies {
   git: {
     discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity>
     status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
+    review(params: GitReviewParams, signal: AbortSignal): Promise<GitReviewSnapshot>
   }
   worktrees: {
     snapshot(): WorktreeSnapshot
@@ -107,6 +110,7 @@ export function createDesktopCapabilityHandlers(
       dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
     'git.status': (params, context) => dependencies.git.status(params, context.signal),
+    'git.review': (params, context) => dependencies.git.review(params, context.signal),
     'worktrees.provision': (params, context) => dependencies.worktrees.provision(params, context.signal),
     'worktrees.list': () => dependencies.worktrees.snapshot(),
     'desktop.reportSessionBinding': (params, context) =>

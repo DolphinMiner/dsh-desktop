@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { GitRepositoryIdentity, GitStatusSnapshot } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  GitRepositoryIdentity,
+  GitReviewSnapshot,
+  GitStatusSnapshot,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { GitServiceError } from './git-service'
 import {
@@ -28,7 +32,17 @@ function cleanStatus(identity: GitRepositoryIdentity = repository): GitStatusSna
   }
 }
 
-test('authorizes both sides of workspace-bound discovery and status', async () => {
+function emptyReview(identity: GitRepositoryIdentity = repository): GitReviewSnapshot {
+  return {
+    repository: identity,
+    scope: { kind: 'unstaged' },
+    head: 'a'.repeat(40),
+    files: [],
+    patch: '',
+  }
+}
+
+test('authorizes both sides of workspace-bound Git reads', async () => {
   const calls: string[] = []
   const git: GitRepositoryOperations = {
     discoverRepository: async path => {
@@ -38,6 +52,10 @@ test('authorizes both sides of workspace-bound discovery and status', async () =
     status: async root => {
       calls.push(`status:${root}`)
       return cleanStatus()
+    },
+    review: async (root, scope) => {
+      calls.push(`review:${root}:${scope.kind}`)
+      return emptyReview()
     },
   }
   const service = new WorkspaceGitCapabilityService(git, (sessionId, workspaceRoot, signal) => {
@@ -49,6 +67,11 @@ test('authorizes both sides of workspace-bound discovery and status', async () =
 
   assert.deepEqual(await service.discover(params, signal), repository)
   assert.equal((await service.status({ ...params, repositoryRoot: '/repo' }, signal)).clean, true)
+  assert.equal((await service.review({
+    ...params,
+    repositoryRoot: '/repo',
+    scope: { kind: 'unstaged' },
+  }, signal)).patch, '')
   assert.deepEqual(calls, [
     'authorize:session-1:/repo',
     'discover:/repo',
@@ -57,6 +80,11 @@ test('authorizes both sides of workspace-bound discovery and status', async () =
     'discover:/repo',
     'authorize:session-1:/repo',
     'status:/repo',
+    'authorize:session-1:/repo',
+    'authorize:session-1:/repo',
+    'discover:/repo',
+    'authorize:session-1:/repo',
+    'review:/repo:unstaged',
     'authorize:session-1:/repo',
   ])
 })
@@ -69,6 +97,7 @@ test('rejects an unrelated requested root before reading status', async () => {
       statusCalls += 1
       return cleanStatus()
     },
+    review: async () => emptyReview(),
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -83,12 +112,28 @@ test('rejects a repository identity that changes during status', async () => {
   const service = new WorkspaceGitCapabilityService({
     discoverRepository: async () => repository,
     status: async () => cleanStatus({ ...repository, gitDir: '/repo/.git-replaced' }),
+    review: async () => emptyReview(),
   }, () => undefined)
 
   await assert.rejects(service.status({
     sessionId: 'session-1',
     workspaceRoot: '/repo',
     repositoryRoot: '/repo',
+  }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
+})
+
+test('rejects a repository identity that changes during review', async () => {
+  const service = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => repository,
+    status: async () => cleanStatus(),
+    review: async () => emptyReview({ ...repository, commonDir: '/repo/.git-replaced' }),
+  }, () => undefined)
+
+  await assert.rejects(service.review({
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    repositoryRoot: '/repo',
+    scope: { kind: 'unstaged' },
   }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
 })
 
@@ -99,6 +144,7 @@ test('maps bounded Git failures without weakening caller authorization', async (
       throw new GitServiceError('NOT_REPOSITORY', 'No repository was found.')
     },
     status: async () => cleanStatus(),
+    review: async () => emptyReview(),
   }, () => {
     authorized = true
   })

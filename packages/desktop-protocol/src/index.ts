@@ -15,10 +15,14 @@ import {
 import {
   GitDiscoverParams,
   GitRepositoryIdentity,
+  GitReviewParams,
+  GitReviewSnapshot,
   GitStatusParams,
   GitStatusSnapshot,
   parseGitDiscoverParams,
   parseGitRepositoryIdentity,
+  parseGitReviewParams,
+  parseGitReviewSnapshot,
   parseGitStatusParams,
   parseGitStatusSnapshot,
 } from './git.js'
@@ -41,7 +45,7 @@ export * from './computer.js'
 export * from './git.js'
 export * from './worktree.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 9 as const
+export const DESKTOP_PROTOCOL_VERSION = 10 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -238,6 +242,10 @@ export interface DesktopCapabilityMap {
   'git.status': {
     params: GitStatusParams
     result: GitStatusSnapshot
+  }
+  'git.review': {
+    params: GitReviewParams
+    result: GitReviewSnapshot
   }
   'worktrees.provision': {
     params: WorktreeProvisionParams
@@ -660,6 +668,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'git.status') {
     return parseGitStatusParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'git.review') {
+    return parseGitReviewParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'worktrees.provision') {
     return parseWorktreeProvisionParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -738,6 +749,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'git.status') {
     return parseGitStatusSnapshot(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'git.review') {
+    return parseGitReviewSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'worktrees.provision') {
     return parseWorktreeSummary(value) as DesktopCapabilityResult<M> | undefined

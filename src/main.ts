@@ -700,6 +700,7 @@ app.whenReady().then(async () => {
     git: {
       discover: (params, signal) => workspaceGit.discover(params, signal),
       status: (params, signal) => workspaceGit.status(params, signal),
+      review: (params, signal) => workspaceGit.review(params, signal),
     },
     worktrees: {
       snapshot: () => worktreeManager.snapshot(),

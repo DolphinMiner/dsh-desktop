@@ -26,6 +26,7 @@ function testHandlers() {
     git: {
       discover: () => Promise.reject(new Error('not configured')),
       status: () => Promise.reject(new Error('not configured')),
+      review: () => Promise.reject(new Error('not configured')),
     },
     worktrees: {
       snapshot: () => ({ revision: 0, worktrees: [] }),

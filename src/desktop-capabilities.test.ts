@@ -23,6 +23,7 @@ const workspaceFiles = {
 const git = {
   discover: () => Promise.reject(new Error('not configured')),
   status: () => Promise.reject(new Error('not configured')),
+  review: () => Promise.reject(new Error('not configured')),
 }
 
 const worktrees = {
@@ -257,7 +258,7 @@ test('routes bounded computer observation and action capabilities', async () => 
   assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1', 'act:session-1:click'])
 })
 
-test('routes workspace-bound Git discovery and status with caller cancellation', async () => {
+test('routes workspace-bound Git discovery, status, and review with caller cancellation', async () => {
   const calls: string[] = []
   const repository = { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' }
   const handlers = createDesktopCapabilityHandlers({
@@ -286,6 +287,17 @@ test('routes workspace-bound Git discovery and status with caller cancellation',
           entries: [],
         }
       },
+      review: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`review:${params.repositoryRoot}:${params.scope.kind}`)
+        return {
+          repository,
+          scope: params.scope,
+          head: 'a'.repeat(40),
+          files: [],
+          patch: '',
+        }
+      },
     },
   })
   const context = { requestId: 'git-1', signal: new AbortController().signal }
@@ -293,7 +305,12 @@ test('routes workspace-bound Git discovery and status with caller cancellation',
 
   assert.deepEqual(await handlers['git.discover'](workspace, context), repository)
   assert.equal((await handlers['git.status']({ ...workspace, repositoryRoot: '/repo' }, context)).clean, true)
-  assert.deepEqual(calls, ['discover:session-1:/repo', 'status:/repo'])
+  assert.equal((await handlers['git.review']({
+    ...workspace,
+    repositoryRoot: '/repo',
+    scope: { kind: 'unstaged' },
+  }, context)).patch, '')
+  assert.deepEqual(calls, ['discover:session-1:/repo', 'status:/repo', 'review:/repo:unstaged'])
 })
 
 test('routes worktree provisioning as a caller-cancellable capability', async () => {

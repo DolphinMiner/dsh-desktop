@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@dolphinminer/dsh-desktop-host'
-import type { ComputerAction } from '@dolphinminer/dsh-desktop-protocol'
+import type { ComputerAction, GitReviewScope } from '@dolphinminer/dsh-desktop-protocol'
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -20,6 +20,7 @@ const COMPUTER_ACTION_TIMEOUT_MS = 65_000
 const GIT_READ_TIMEOUT_MS = 35_000
 const WORKTREE_PROVISION_TIMEOUT_MS = 65_000
 const MAX_AGENT_GIT_ENTRIES = 500
+const MAX_AGENT_PATCH_CHARS = 200_000
 const COMPUTER_ACTION_TOOLS = new Set([
   'computer_click',
   'computer_click_at',
@@ -205,6 +206,66 @@ export function apply(ctx: Context): void {
         totalEntries: status.entries.length,
         entriesTruncated: status.entries.length > MAX_AGENT_GIT_ENTRIES,
         entries: status.entries.slice(0, MAX_AGENT_GIT_ENTRIES),
+      }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_git_review',
+    description: 'Read an authoritative Git patch for unstaged, staged, commit, or branch-versus-merge-base review.',
+    parameters: {
+      scope: {
+        type: 'string',
+        enum: ['unstaged', 'staged', 'commit', 'branch'],
+        required: true,
+        description: 'Git review scope.',
+      },
+      ref: {
+        type: 'string',
+        description: 'Required commit ref for commit scope or base ref for branch scope.',
+      },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Review ${args.scope} changes`,
+      kind: 'read',
+    }),
+    timeoutMs: GIT_READ_TIMEOUT_MS * 2 + 5_000,
+    async execute(args, exec) {
+      let scope: GitReviewScope
+      if (args.scope === 'commit' || args.scope === 'branch') {
+        if (args.ref === undefined || args.ref.trim() === '') {
+          throw new Error(`${args.scope} review requires an explicit ref.`)
+        }
+        scope = args.scope === 'commit'
+          ? { kind: 'commit', ref: args.ref }
+          : { kind: 'branch', baseRef: args.ref }
+      } else {
+        if (args.ref !== undefined) throw new Error(`${args.scope} review does not accept a ref.`)
+        scope = { kind: args.scope }
+      }
+      const workspace = agentWorkspace(exec)
+      const repository = await ctx.desktopBridge.call(
+        'git.discover',
+        workspace,
+        { signal: exec.signal, timeoutMs: GIT_READ_TIMEOUT_MS },
+      )
+      const review = await ctx.desktopBridge.call('git.review', {
+        ...workspace,
+        repositoryRoot: repository.root,
+        scope,
+      }, { signal: exec.signal, timeoutMs: GIT_READ_TIMEOUT_MS })
+      return JSON.parse(JSON.stringify({
+        ...review,
+        totalFiles: review.files.length,
+        filesTruncated: review.files.length > MAX_AGENT_GIT_ENTRIES,
+        files: review.files.slice(0, MAX_AGENT_GIT_ENTRIES),
+        patchTruncated: review.patch.length > MAX_AGENT_PATCH_CHARS,
+        patch: review.patch.slice(0, MAX_AGENT_PATCH_CHARS),
       }))
     },
   }))

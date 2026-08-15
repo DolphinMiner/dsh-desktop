@@ -2,6 +2,9 @@ import type {
   DesktopProtocolError,
   GitDiscoverParams,
   GitRepositoryIdentity,
+  GitReviewParams,
+  GitReviewScope,
+  GitReviewSnapshot,
   GitStatusParams,
   GitStatusSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -11,6 +14,7 @@ import { GitServiceError } from './git-service'
 export interface GitRepositoryOperations {
   discoverRepository(path: string, signal?: AbortSignal): Promise<GitRepositoryIdentity>
   status(repositoryRoot: string, signal?: AbortSignal): Promise<GitStatusSnapshot>
+  review(repositoryRoot: string, scope: GitReviewScope, signal?: AbortSignal): Promise<GitReviewSnapshot>
 }
 
 export type WorkspaceGitAuthorizer = (
@@ -80,6 +84,29 @@ export class WorkspaceGitCapabilityService {
       snapshot.repository.gitDir !== repository.gitDir ||
       snapshot.repository.commonDir !== repository.commonDir) {
       throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during Git status.')
+    }
+    return snapshot
+  }
+
+  async review(params: GitReviewParams, signal: AbortSignal): Promise<GitReviewSnapshot> {
+    const repository = await this.discover(params, signal)
+    if (repository.root !== params.repositoryRoot) {
+      throw new WorkspaceGitError(
+        'BAD_MESSAGE',
+        'The repository root does not match the active workspace repository.',
+      )
+    }
+    let snapshot: GitReviewSnapshot
+    try {
+      snapshot = await this.git.review(repository.root, params.scope, signal)
+    } catch (error) {
+      mapGitError(error)
+    }
+    this.authorize(params.sessionId, params.workspaceRoot, signal)
+    if (snapshot.repository.root !== repository.root ||
+      snapshot.repository.gitDir !== repository.gitDir ||
+      snapshot.repository.commonDir !== repository.commonDir) {
+      throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during Git review.')
     }
     return snapshot
   }

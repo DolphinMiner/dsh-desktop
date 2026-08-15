@@ -5,6 +5,9 @@ import type { Readable } from 'node:stream'
 
 import type {
   GitRepositoryIdentity,
+  GitReviewFile,
+  GitReviewScope,
+  GitReviewSnapshot,
   GitStatusEntry,
   GitStatusSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -326,6 +329,60 @@ export function parseGitWorktreeList(output: Buffer): GitWorktreeEntry[] {
   return entries
 }
 
+export function parseGitNameStatus(output: Buffer): GitReviewFile[] {
+  if (output.length === 0) return []
+  const encoded = output.toString('utf8')
+  if (!encoded.endsWith('\0')) {
+    throw new GitServiceError('BAD_OUTPUT', 'Git returned an unterminated changed-file list.')
+  }
+  const fields = encoded.split('\0')
+  fields.pop()
+  const files: GitReviewFile[] = []
+  for (let index = 0; index < fields.length;) {
+    const code = fields[index++]!
+    const kind = code[0]
+    const status = kind === 'A'
+      ? 'added'
+      : kind === 'M'
+        ? 'modified'
+        : kind === 'D'
+          ? 'deleted'
+          : kind === 'T'
+            ? 'type-changed'
+            : kind === 'U'
+              ? 'unmerged'
+              : kind === 'R'
+                ? 'renamed'
+                : kind === 'C'
+                  ? 'copied'
+                  : undefined
+    const scored = kind === 'R' || kind === 'C'
+    if (status === undefined || (scored ? !/^[RC](?:100|[1-9]?\d)$/.test(code) : code !== kind)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid changed-file status.')
+    }
+    const firstPath = fields[index++]
+    const secondPath = scored ? fields[index++] : undefined
+    if (firstPath === undefined || firstPath.length === 0 || firstPath.length > 4_096 ||
+      (scored && (secondPath === undefined || secondPath.length === 0 || secondPath.length > 4_096))) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid changed-file path.')
+    }
+    files.push(scored ? {
+      status,
+      path: secondPath!,
+      originalPath: firstPath,
+      patchAvailable: true,
+    } : {
+      status,
+      path: firstPath,
+      patchAvailable: true,
+    })
+  }
+  if (new Set(files.map(file => file.path)).size !== files.length) {
+    throw new GitServiceError('BAD_OUTPUT', 'Git returned duplicate changed-file paths.')
+  }
+  return files
+}
+
 export class GitService {
   private readonly executable: string
   private readonly timeoutMs: number
@@ -459,6 +516,101 @@ export class GitService {
       '-z',
     ], signal, deadline)
     return parseGitWorktreeList(result.stdout)
+  }
+
+  async review(
+    repositoryRoot: string,
+    scope: GitReviewScope,
+    signal?: AbortSignal,
+  ): Promise<GitReviewSnapshot> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const statusResult = await this.run([
+      '--no-optional-locks',
+      '-C', repository.root,
+      '-c', 'color.ui=false',
+      '-c', 'core.quotepath=false',
+      '-c', 'core.fsmonitor=false',
+      'status',
+      '--porcelain=v2',
+      '--branch',
+      '--untracked-files=all',
+      '-z',
+    ], signal, deadline)
+    const status = parseGitStatus(repository, statusResult.stdout)
+    const diffOptions = [
+      '--no-ext-diff',
+      '--no-textconv',
+      '--find-renames',
+      '--find-copies',
+      '--submodule=short',
+    ]
+    let nameArgs: string[]
+    let patchArgs: string[]
+    let selectedCommit: string | undefined
+    let baseCommit: string | undefined
+    let mergeBase: string | undefined
+
+    if (scope.kind === 'unstaged') {
+      nameArgs = ['diff', ...diffOptions, '--name-status', '-z', '--']
+      patchArgs = ['diff', ...diffOptions, '--patch', '--']
+    } else if (scope.kind === 'staged') {
+      nameArgs = ['diff', '--cached', ...diffOptions, '--name-status', '-z', '--']
+      patchArgs = ['diff', '--cached', ...diffOptions, '--patch', '--']
+    } else if (scope.kind === 'commit') {
+      selectedCommit = await this.resolveCommitBefore(repository.root, scope.ref, signal, deadline)
+      nameArgs = [
+        'diff-tree', '--root', '--no-commit-id', '-r', '--find-renames', '--find-copies',
+        '--name-status', '-z', selectedCommit, '--',
+      ]
+      patchArgs = ['show', '--format=', ...diffOptions, '--patch', selectedCommit, '--']
+    } else {
+      if (status.head === undefined) {
+        throw new GitServiceError('GIT_FAILED', 'A branch review requires a committed HEAD.')
+      }
+      baseCommit = await this.resolveCommitBefore(repository.root, scope.baseRef, signal, deadline)
+      mergeBase = parseCommandValue(await this.run([
+        '-C', repository.root,
+        'merge-base',
+        status.head,
+        baseCommit,
+      ], signal, deadline), 'merge-base identity')
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(mergeBase)) {
+        throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid merge-base identity.')
+      }
+      nameArgs = ['diff', ...diffOptions, '--name-status', '-z', mergeBase, status.head, '--']
+      patchArgs = ['diff', ...diffOptions, '--patch', mergeBase, status.head, '--']
+    }
+    const [names, patchResult] = await Promise.all([
+      this.run(['--no-optional-locks', '-C', repository.root, '-c', 'color.ui=false', ...nameArgs], signal, deadline),
+      this.run(['--no-optional-locks', '-C', repository.root, '-c', 'color.ui=false', ...patchArgs], signal, deadline),
+    ])
+    const files = parseGitNameStatus(names.stdout)
+    if (scope.kind === 'unstaged') {
+      for (const entry of status.entries) {
+        if (entry.kind !== 'untracked' || files.some(file => file.path === entry.path)) continue
+        files.push({ status: 'untracked', path: entry.path, patchAvailable: false })
+      }
+    }
+    const patch = patchResult.stdout.toString('utf8')
+    if (patch.includes('\0')) throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid patch payload.')
+    return {
+      repository,
+      scope,
+      ...(status.head === undefined ? {} : { head: status.head }),
+      ...(selectedCommit === undefined ? {} : { selectedCommit }),
+      ...(baseCommit === undefined ? {} : { baseCommit }),
+      ...(mergeBase === undefined ? {} : { mergeBase }),
+      files,
+      patch,
+    }
   }
 
   async createWorktree(

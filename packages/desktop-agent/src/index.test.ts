@@ -31,6 +31,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'desktop_reveal_file',
     'desktop_open_file',
     'desktop_git_status',
+    'desktop_git_review',
     'desktop_create_worktree',
     'computer_click',
     'computer_click_at',
@@ -69,6 +70,71 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     kind: 'ask',
     reason: 'Creating a worktree adds a local Git branch and checkout. Approve this operation once to continue.',
   })
+})
+
+test('reads bounded Git review scopes through the authoritative workspace repository', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: unknown }> = []
+  const repository = { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' }
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: unknown) => {
+        calls.push({ method, params })
+        if (method === 'git.discover') return repository
+        return {
+          repository,
+          scope: { kind: 'branch', baseRef: 'main' },
+          head: 'a'.repeat(40),
+          baseCommit: 'b'.repeat(40),
+          mergeBase: 'b'.repeat(40),
+          files: Array.from({ length: 501 }, (_, index) => ({
+            status: 'modified',
+            path: `file-${String(index)}.txt`,
+            patchAvailable: true,
+          })),
+          patch: 'x'.repeat(200_001),
+        }
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+
+  const tool = definitions.find(definition => definition.name === 'desktop_git_review')!
+  const execution = {
+    agent: { id: 'session-review', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never
+  const result = await tool.execute({ scope: 'branch', ref: 'main' }, execution) as {
+    totalFiles: number
+    filesTruncated: boolean
+    files: unknown[]
+    patchTruncated: boolean
+    patch: string
+  }
+
+  assert.deepEqual(calls, [{
+    method: 'git.discover',
+    params: { sessionId: 'session-review', workspaceRoot: '/repo' },
+  }, {
+    method: 'git.review',
+    params: {
+      sessionId: 'session-review',
+      workspaceRoot: '/repo',
+      repositoryRoot: '/repo',
+      scope: { kind: 'branch', baseRef: 'main' },
+    },
+  }])
+  assert.equal(result.totalFiles, 501)
+  assert.equal(result.filesTruncated, true)
+  assert.equal(result.files.length, 500)
+  assert.equal(result.patchTruncated, true)
+  assert.equal(result.patch.length, 200_000)
+
+  calls.length = 0
+  await assert.rejects(tool.execute({ scope: 'commit' }, execution), /requires an explicit ref/)
+  assert.deepEqual(calls, [])
 })
 
 test('reads Git status only through the current workspace repository identity', async () => {
