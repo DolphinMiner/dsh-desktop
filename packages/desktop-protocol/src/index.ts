@@ -50,6 +50,7 @@ export * from './git-revert.js'
 export * from './git-review-comments.js'
 export * from './git-review-patch.js'
 export * from './worktree.js'
+export * from './worktree-cleanup.js'
 
 export const DESKTOP_PROTOCOL_VERSION = 10 as const
 

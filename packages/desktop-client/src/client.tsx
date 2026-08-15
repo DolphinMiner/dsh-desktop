@@ -5,6 +5,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
+  IconBranchOutline16,
   IconCheckOutline16,
   IconCloseOutline16,
   IconLinkOutline16,
@@ -37,7 +38,13 @@ import type {
   ComputerTargetKind,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  DesktopWorktreeCleanupConfirmInput,
+  DesktopWorktreeCleanupPreviewInput,
   SelectComputerTargetInput,
+  WorktreeCleanupPreview,
+  WorktreeCleanupResult,
+  WorktreeSnapshot,
+  WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import {
@@ -80,12 +87,20 @@ interface DesktopComputerBridge {
   onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
 }
 
+interface DesktopWorktreesBridge {
+  list(): Promise<WorktreeSnapshot>
+  previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
+  confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
+  onChanged(listener: (snapshot: WorktreeSnapshot) => void): () => void
+}
+
 declare global {
   interface Window {
     dshDesktop?: {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
       git: DesktopGitBridge
+      worktrees: DesktopWorktreesBridge
       computer: DesktopComputerBridge
       connections: DesktopConnectionsBridge
     }
@@ -269,6 +284,27 @@ const styles: Record<string, CSSProperties> = {
     padding: '6px 0',
   },
   computerRecordIdentity: { display: 'grid', gap: 1, minWidth: 0 },
+  worktreeDetails: {
+    display: 'grid',
+    gap: 10,
+    gridTemplateColumns: 'minmax(0, 1fr)',
+  },
+  worktreeDetail: { display: 'grid', gap: 2, minWidth: 0 },
+  worktreeConfirmBody: { display: 'grid', gap: 16 },
+  worktreeConfirmDetails: {
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'grid',
+    gap: 10,
+    paddingBottom: 16,
+  },
+  worktreeAcknowledge: {
+    alignItems: 'flex-start',
+    cursor: 'pointer',
+    display: 'flex',
+    fontSize: 13,
+    gap: 9,
+    lineHeight: '20px',
+  },
 }
 
 interface PendingOAuth {
@@ -649,6 +685,264 @@ function ConnectionsSection(): React.JSX.Element {
   )
 }
 
+function worktreeBranch(worktree: WorktreeSummary): string {
+  const branch = worktree.branch ?? worktree.baseRef
+  return branch.startsWith('refs/heads/') ? branch.slice('refs/heads/'.length) : branch
+}
+
+function worktreeStatus(worktree: WorktreeSummary): {
+  state: 'done' | 'warning' | 'ongoing' | 'error'
+  label: string
+} {
+  if (worktree.lifecycle === 'provisioning') return { state: 'ongoing', label: 'Creating' }
+  if (worktree.lifecycle === 'removing') return { state: 'ongoing', label: 'Cleaning up' }
+  if (worktree.lifecycle === 'recovery-required') return { state: 'error', label: 'Needs attention' }
+  if (worktree.lifecycle === 'orphaned') return { state: 'warning', label: 'Orphaned' }
+  if (worktree.lifecycle === 'removed') return { state: 'done', label: 'Removed' }
+  return { state: 'done', label: 'Ready' }
+}
+
+function worktreeRecoveryLabel(reason: WorktreeSummary['recoveryReason']): string | undefined {
+  if (reason === undefined) return undefined
+  const labels: Record<NonNullable<WorktreeSummary['recoveryReason']>, string> = {
+    'create-ambiguous': 'Creation result is ambiguous',
+    'interrupted-create': 'Creation was interrupted',
+    'interrupted-remove': 'Cleanup was interrupted',
+    'inspection-failed': 'Git inspection failed',
+    'external-change': 'Checkout identity changed',
+    locked: 'Managed lock changed',
+    missing: 'Checkout is missing',
+    moved: 'Branch moved to another checkout',
+  }
+  return labels[reason]
+}
+
+function WorktreesSection(): React.JSX.Element {
+  const bridge = window.dshDesktop?.worktrees
+  const [snapshot, setSnapshot] = useState<WorktreeSnapshot>()
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>()
+  const [previewingId, setPreviewingId] = useState<string>()
+  const [preview, setPreview] = useState<WorktreeCleanupPreview>()
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
+
+  const applySnapshot = (next: WorktreeSnapshot): void => {
+    setSnapshot(current => current === undefined || next.revision >= current.revision ? next : current)
+  }
+
+  const refresh = async (): Promise<void> => {
+    if (bridge === undefined) {
+      setError('The desktop worktree bridge is unavailable.')
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    try {
+      applySnapshot(await bridge.list())
+      setError(undefined)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (bridge === undefined) {
+      setError('The desktop worktree bridge is unavailable.')
+      setLoading(false)
+      return
+    }
+    let active = true
+    const unsubscribe = bridge.onChanged(next => {
+      if (active) applySnapshot(next)
+    })
+    void bridge.list().then(next => {
+      if (active) {
+        applySnapshot(next)
+        setError(undefined)
+      }
+    }).catch(cause => {
+      if (active) setError(errorMessage(cause))
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [bridge])
+
+  const inspectCleanup = async (worktreeId: string): Promise<void> => {
+    if (bridge === undefined) return
+    setPreviewingId(worktreeId)
+    setError(undefined)
+    try {
+      setPreview(await bridge.previewCleanup({ worktreeId }))
+      setAcknowledged(false)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setPreviewingId(undefined)
+    }
+  }
+
+  const closePreview = (): void => {
+    if (cleaning) return
+    setPreview(undefined)
+    setAcknowledged(false)
+  }
+
+  const confirmCleanup = async (): Promise<void> => {
+    if (bridge === undefined || preview === undefined || !acknowledged) return
+    setCleaning(true)
+    setError(undefined)
+    try {
+      await bridge.confirmCleanup({ previewId: preview.previewId, confirmed: true })
+      setPreview(undefined)
+      setAcknowledged(false)
+      applySnapshot(await bridge.list())
+    } catch (cause) {
+      setPreview(undefined)
+      setAcknowledged(false)
+      setError(errorMessage(cause))
+    } finally {
+      setCleaning(false)
+    }
+  }
+
+  const worktrees = useMemo(() => [...(snapshot?.worktrees ?? [])].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  ), [snapshot])
+
+  return (
+    <section style={styles.root} aria-labelledby="desktop-worktrees-heading">
+      <header style={styles.header}>
+        <h2 id="desktop-worktrees-heading" style={styles.heading}>Worktrees</h2>
+        <Button
+          size="sm"
+          variant="toolbar"
+          icon={<IconRefreshOutline16 />}
+          aria-label="Refresh worktrees"
+          title="Refresh worktrees"
+          disabled={loading}
+          onClick={() => void refresh()}
+        />
+      </header>
+
+      {error !== undefined && (
+        <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-error-secondary, #fef0ef)' }}>
+          {error}
+        </div>
+      )}
+
+      {!loading && worktrees.length === 0 && <div style={styles.empty}>No managed worktrees.</div>}
+      <div style={styles.list}>
+        {worktrees.map(worktree => {
+          const status = worktreeStatus(worktree)
+          const recovery = worktreeRecoveryLabel(worktree.recoveryReason)
+          const cleanupAvailable = worktree.executionMode === 'worktree' &&
+            (worktree.lifecycle === 'ready' || worktree.lifecycle === 'orphaned')
+          return (
+            <article key={worktree.id} style={styles.item}>
+              <div style={styles.itemTop}>
+                <div style={styles.identity}>
+                  <span style={{ ...styles.itemTitle, alignItems: 'center', display: 'flex', gap: 6 }}>
+                    <IconBranchOutline16 />
+                    {worktreeBranch(worktree)}
+                  </span>
+                  <span style={styles.metadata}>{worktree.worktreePath ?? worktree.repositoryRoot}</span>
+                </div>
+                <span style={styles.status}>
+                  <StateDot state={status.state} />
+                  {status.label}
+                </span>
+              </div>
+              <div style={styles.worktreeDetails}>
+                <span style={styles.metadata}>Repository: {worktree.repositoryRoot}</span>
+                <span style={styles.metadata}>
+                  Base: {worktree.baseRef} at {worktree.baseCommit.slice(0, 12)}
+                </span>
+                {worktree.sessionId !== undefined && (
+                  <span style={styles.metadata}>Session: {worktree.sessionId}</span>
+                )}
+                {recovery !== undefined && <p style={styles.statusMessage}>{recovery}</p>}
+              </div>
+              <div style={styles.itemBottom}>
+                <span style={styles.metadata}>
+                  {worktree.sessionState === 'bound' ? 'Session bound' : 'Awaiting session'}
+                </span>
+                {cleanupAvailable && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    icon={<IconTrashOutline16 />}
+                    disabled={previewingId !== undefined || cleaning}
+                    onClick={() => void inspectCleanup(worktree.id)}
+                  >
+                    Clean up
+                  </Button>
+                )}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <Modal
+        open={preview !== undefined}
+        onClose={closePreview}
+        title="Clean up worktree"
+        closeLabel="Close cleanup preview"
+        description="The clean checkout directory will be removed. Its Git branch will be kept."
+        footer={(
+          <div style={styles.formActions}>
+            <Button variant="outline" disabled={cleaning} onClick={closePreview}>Cancel</Button>
+            <Button
+              variant="primary"
+              icon={<IconTrashOutline16 />}
+              disabled={!acknowledged || cleaning}
+              onClick={() => void confirmCleanup()}
+            >
+              Clean up
+            </Button>
+          </div>
+        )}
+      >
+        {preview !== undefined && (
+          <div style={styles.worktreeConfirmBody}>
+            <div style={styles.worktreeConfirmDetails}>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Branch</span>
+                <span style={styles.metadata}>{worktreeBranch(preview.worktree)}</span>
+              </div>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Checkout</span>
+                <span style={styles.metadata}>{preview.inspection.worktreePath}</span>
+              </div>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Commit</span>
+                <span style={styles.metadata}>{preview.inspection.head}</span>
+              </div>
+            </div>
+            <label style={styles.worktreeAcknowledge}>
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                disabled={cleaning}
+                onChange={event => setAcknowledged(event.currentTarget.checked)}
+                style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
+              />
+              <span>I understand this removes the checkout directory and keeps the branch.</span>
+            </label>
+          </div>
+        )}
+      </Modal>
+    </section>
+  )
+}
+
 function PermissionRow({
   label,
   status,
@@ -987,13 +1281,15 @@ function openDesktopSettings(sectionId?: string): void {
 
 function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const [section, setSection] = useState<'connections' | 'computer'>('connections')
+  const [section, setSection] = useState<'connections' | 'computer' | 'worktrees'>('connections')
 
   useEffect(() => {
     const listener = (sectionId?: string): void => {
       if (sectionId === 'computer') setSection('computer')
+      else if (sectionId === 'worktrees') setSection('worktrees')
       else if (sectionId === undefined || sectionId === 'connections') setSection('connections')
-      if (sectionId === undefined || sectionId === 'connections' || sectionId === 'computer') setOpen(true)
+      if (sectionId === undefined || sectionId === 'connections' || sectionId === 'computer' ||
+        sectionId === 'worktrees') setOpen(true)
     }
     settingsListeners.add(listener)
     return () => { settingsListeners.delete(listener) }
@@ -1036,8 +1332,19 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
           >
             Computer
           </Pill>
+          <Pill
+            type="button"
+            role="tab"
+            aria-selected={section === 'worktrees'}
+            active={section === 'worktrees'}
+            onClick={() => setSection('worktrees')}
+          >
+            Worktrees
+          </Pill>
         </div>
-        {section === 'connections' ? <ConnectionsSection /> : <ComputerSection />}
+        {section === 'connections' && <ConnectionsSection />}
+        {section === 'computer' && <ComputerSection />}
+        {section === 'worktrees' && <WorktreesSection />}
       </Modal>
     </>
   )
@@ -1070,6 +1377,12 @@ export function apply(ctx: ClientContext): void {
     order: 13,
     label: 'Computer',
   }, ComputerSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'worktrees',
+    order: 14,
+    label: 'Worktrees',
+  }, WorktreesSection))
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'review',

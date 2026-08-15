@@ -186,6 +186,26 @@ test('recovers interrupted create and remove operations without replaying them',
   assert.equal(new WorktreeRegistry(path).get(reserved.id)?.lifecycle, 'removed')
 })
 
+test('keeps persisted timestamps valid when the system clock moves backwards', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-clock-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.v1.json')
+  let now = Date.parse('2026-08-16T12:00:00.000Z')
+  const registry = new WorktreeRegistry(path, { now: () => new Date(now) })
+  const reserved = registry.reserve(reservation())
+  const ready = registry.markReady(reserved.id, 'create-1')
+
+  now -= 60_000
+  const removing = registry.beginRemoval(reserved.id, 'remove-clock')
+  assert.ok(Date.parse(removing.updatedAt) >= Date.parse(ready.updatedAt))
+  const recovered = new WorktreeRegistry(path, { now: () => new Date(now) })
+  const interrupted = recovered.get(reserved.id)!
+  assert.equal(interrupted.lifecycle, 'recovery-required')
+  assert.equal(interrupted.recoveryReason, 'interrupted-remove')
+  assert.ok(Date.parse(interrupted.updatedAt) >= Date.parse(interrupted.createdAt))
+  assert.equal(new WorktreeRegistry(path).status().available, true)
+})
+
 test('fails closed for corrupt state and persistence failure', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-failure-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

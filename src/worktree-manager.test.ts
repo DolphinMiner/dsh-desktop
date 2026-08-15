@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import type { GitRepositoryIdentity } from '@dolphinminer/dsh-desktop-protocol'
+import type { GitRepositoryIdentity, WorktreeCleanupInspection } from '@dolphinminer/dsh-desktop-protocol'
 
 import { GitCreateWorktreeInput, GitService, GitServiceError } from './git-service'
 import {
@@ -16,6 +16,7 @@ import {
   WorktreeManagerError,
 } from './worktree-manager'
 import { WorktreeRegistry } from './worktree-registry'
+import type { WorktreeRecord } from './worktree-registry'
 
 const execFileAsync = promisify(execFile)
 
@@ -44,6 +45,60 @@ function input(overrides: Partial<ProvisionWorktreeInput> = {}): ProvisionWorktr
     requestedBySessionId: 'session-1',
     workspaceRoot: '/repo',
     baseRef: 'refs/heads/main',
+    ...overrides,
+  }
+}
+
+function readyWorktree(
+  registry: WorktreeRegistry,
+  suffix: string,
+  worktreePath = `/managed/${suffix}`,
+): WorktreeRecord {
+  const record = registry.reserve({
+    operationId: `create-${suffix}`,
+    repository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    requestedBySessionId: `session-${suffix}`,
+    executionMode: 'worktree',
+    worktreePath,
+    baseRef: 'refs/heads/main',
+    baseCommit: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+  })
+  return registry.markReady(record.id, `create-${suffix}`)
+}
+
+function cleanupInspection(record: WorktreeRecord, head = record.baseCommit): WorktreeCleanupInspection {
+  return {
+    worktreePath: record.worktreePath!,
+    head,
+    branch: record.branch!,
+    clean: true,
+    locked: true,
+  }
+}
+
+function cleanupOperations(
+  record: WorktreeRecord,
+  overrides: Partial<WorktreeGitOperations> = {},
+): WorktreeGitOperations {
+  return {
+    discoverRepository: async path => path === record.repository.root
+      ? record.repository
+      : { root: path, gitDir: `${path}/.git`, commonDir: record.repository.commonDir },
+    resolveCommit: async () => record.baseCommit,
+    listWorktrees: async () => [{
+      path: record.worktreePath!,
+      head: record.baseCommit,
+      branch: record.branch,
+      detached: false,
+      bare: false,
+      locked: true,
+      lockReason: 'DSH Desktop session 123456789012',
+      prunable: false,
+    }],
+    createWorktree: async () => { throw new Error('must not create a worktree') },
+    inspectWorktreeForRemoval: async () => cleanupInspection(record),
+    removeWorktree: async () => undefined,
     ...overrides,
   }
 }
@@ -134,6 +189,14 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
         })
       })
     },
+    inspectWorktreeForRemoval: async request => ({
+      worktreePath: request.worktreePath,
+      head: 'a'.repeat(40),
+      branch: request.branch,
+      clean: true,
+      locked: true,
+    }),
+    removeWorktree: async () => undefined,
   }
   const registry = new WorktreeRegistry(join(root, 'registry.json'))
   const manager = new WorktreeManager(gitOperations, registry, join(root, 'worktrees'), () => undefined)
@@ -167,6 +230,14 @@ test('persists an ambiguous create failure and never replays it', async t => {
       createCalls += 1
       throw new GitServiceError('TIMEOUT', 'Git worktree creation timed out.')
     },
+    inspectWorktreeForRemoval: async request => ({
+      worktreePath: request.worktreePath,
+      head: 'a'.repeat(40),
+      branch: request.branch,
+      clean: true,
+      locked: true,
+    }),
+    removeWorktree: async () => undefined,
   }
   const manager = new WorktreeManager(
     operations,
@@ -200,6 +271,8 @@ test('fails before Git when the workspace is not authorized', async t => {
     resolveCommit: async () => 'a'.repeat(40),
     listWorktrees: async () => [],
     createWorktree: async () => ({ root: '/worktree', gitDir: '/worktree/.git', commonDir: '/repo/.git' }),
+    inspectWorktreeForRemoval: async () => { throw new Error('must not run') },
+    removeWorktree: async () => { throw new Error('must not run') },
   }, new WorktreeRegistry(join(root, 'registry.json')), join(root, 'worktrees'), () => {
     throw new WorktreeManagerError('BAD_MESSAGE', 'Workspace is not active.')
   })
@@ -243,6 +316,8 @@ test('reconciles a registered branch moved to another checkout without mutating 
       prunable: false,
     }],
     createWorktree: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
+    removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
   const result = await manager.reconcile(new AbortController().signal)
@@ -269,8 +344,202 @@ test('records an inspection failure without claiming that a checkout is missing'
     resolveCommit: async () => 'a'.repeat(40),
     listWorktrees: async () => { throw new GitServiceError('TIMEOUT', 'Inspection timed out.') },
     createWorktree: async () => { throw new Error('must not mutate Git') },
+    inspectWorktreeForRemoval: async () => { throw new Error('must not mutate Git') },
+    removeWorktree: async () => { throw new Error('must not mutate Git') },
   }, registry, '/managed', () => undefined)
 
   const result = await manager.reconcile(new AbortController().signal)
   assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'inspection-failed')
+})
+
+test('persists cleanup intent before removal and does not redispatch a completed operation', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'cleanup')
+  let removeCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    removeWorktree: async request => {
+      removeCalls += 1
+      assert.equal(request.worktreePath, record.worktreePath)
+      assert.equal(request.head, record.baseCommit)
+      const persisted = registry.get(record.id)
+      assert.equal(persisted?.lifecycle, 'removing')
+      assert.deepEqual(persisted?.pendingOperation, { id: 'cleanup-operation', kind: 'remove' })
+    },
+  }), registry, '/managed', () => undefined)
+
+  const preview = await manager.inspectCleanup(record.id, new AbortController().signal)
+  const removed = await manager.removeCleanWorktree(
+    record.id,
+    'cleanup-operation',
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(removed.lifecycle, 'removed')
+  assert.equal(removed.removalOperationId, 'cleanup-operation')
+  assert.equal(removeCalls, 1)
+  assert.equal(manager.snapshot().worktrees.length, 0)
+
+  const duplicate = await manager.removeCleanWorktree(
+    record.id,
+    'cleanup-operation',
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(duplicate.lifecycle, 'removed')
+  assert.equal(removeCalls, 1)
+})
+
+test('rejects cleanup when the approved worktree inspection changes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-drift-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'registry.json'))
+  const record = readyWorktree(registry, 'cleanup-drift')
+  let head = record.baseCommit
+  let removeCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    inspectWorktreeForRemoval: async () => cleanupInspection(record, head),
+    removeWorktree: async () => { removeCalls += 1 },
+  }), registry, '/managed', () => undefined)
+
+  const preview = await manager.inspectCleanup(record.id, new AbortController().signal)
+  head = 'b'.repeat(40)
+  await assert.rejects(manager.removeCleanWorktree(
+    record.id,
+    'cleanup-drift-operation',
+    preview.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && !error.ambiguous)
+  assert.equal(registry.get(record.id)?.lifecycle, 'ready')
+  assert.equal(removeCalls, 0)
+})
+
+test('keeps an ambiguous cleanup durable and never replays it after restart', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-timeout-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'cleanup-timeout')
+  let removeCalls = 0
+  const operations = cleanupOperations(record, {
+    removeWorktree: async () => {
+      removeCalls += 1
+      throw new GitServiceError('TIMEOUT', 'Git worktree cleanup timed out.')
+    },
+  })
+  const manager = new WorktreeManager(operations, registry, '/managed', () => undefined)
+  const preview = await manager.inspectCleanup(record.id, new AbortController().signal)
+
+  await assert.rejects(manager.removeCleanWorktree(
+    record.id,
+    'cleanup-timeout-operation',
+    preview.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'TIMEOUT' && error.ambiguous)
+  const interrupted = registry.get(record.id)
+  assert.equal(interrupted?.lifecycle, 'recovery-required')
+  assert.equal(interrupted?.recoveryReason, 'interrupted-remove')
+  assert.deepEqual(interrupted?.pendingOperation, { id: 'cleanup-timeout-operation', kind: 'remove' })
+
+  const restarted = new WorktreeManager(
+    operations,
+    new WorktreeRegistry(registryPath),
+    '/managed',
+    () => undefined,
+  )
+  await assert.rejects(restarted.removeCleanWorktree(
+    record.id,
+    'cleanup-timeout-operation',
+    preview.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'DUPLICATE_REQUEST' && error.ambiguous)
+  assert.equal(removeCalls, 1)
+})
+
+test('reconciles an interrupted cleanup only after Git and the checkout path are absent', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-reconcile-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'cleanup-reconcile')
+  registry.beginRemoval(record.id, 'cleanup-reconcile-operation')
+  const recoveredRegistry = new WorktreeRegistry(registryPath)
+  let removeCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    discoverRepository: async path => {
+      if (path === record.worktreePath) {
+        throw new GitServiceError('INVALID_INPUT', 'The checkout is missing.')
+      }
+      return record.repository
+    },
+    listWorktrees: async () => [{
+      path: record.repository.root,
+      head: record.baseCommit,
+      branch: 'refs/heads/main',
+      detached: false,
+      bare: false,
+      locked: false,
+      prunable: false,
+    }],
+    removeWorktree: async () => { removeCalls += 1 },
+  }), recoveredRegistry, '/managed', () => undefined)
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.snapshot.worktrees.length, 0)
+  assert.equal(recoveredRegistry.get(record.id)?.lifecycle, 'removed')
+  assert.equal(recoveredRegistry.get(record.id)?.removalOperationId, 'cleanup-reconcile-operation')
+  assert.equal(removeCalls, 0)
+})
+
+test('preserves interrupted cleanup state while the checkout still exists', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-present-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'cleanup-present')
+  registry.beginRemoval(record.id, 'cleanup-present-operation')
+  const recoveredRegistry = new WorktreeRegistry(registryPath)
+  let removeCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    removeWorktree: async () => { removeCalls += 1 },
+  }), recoveredRegistry, '/managed', () => undefined)
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'recovery-required')
+  assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'interrupted-remove')
+  assert.equal(removeCalls, 0)
+})
+
+test('does not claim an interrupted cleanup completed when a non-repository path remains', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-replaced-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const checkout = join(root, 'replacement-directory')
+  await mkdir(checkout)
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'cleanup-replaced', checkout)
+  registry.beginRemoval(record.id, 'cleanup-replaced-operation')
+  const recoveredRegistry = new WorktreeRegistry(registryPath)
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    discoverRepository: async path => {
+      if (path === checkout) throw new GitServiceError('INVALID_INPUT', 'The checkout is not a repository.')
+      return record.repository
+    },
+    listWorktrees: async () => [{
+      path: record.repository.root,
+      head: record.baseCommit,
+      branch: 'refs/heads/main',
+      detached: false,
+      bare: false,
+      locked: false,
+      prunable: false,
+    }],
+    removeWorktree: async () => { throw new Error('must not replay cleanup') },
+  }), recoveredRegistry, '/managed', () => undefined)
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'recovery-required')
+  assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'interrupted-remove')
+  await access(checkout)
 })

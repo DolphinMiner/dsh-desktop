@@ -32,7 +32,10 @@ import {
   parseDesktopGitRevertPreviewInput,
   parseDesktopGitReviewInput,
   parseDesktopGitReviewCommentsInput,
+  parseDesktopWorktreeCleanupConfirmInput,
+  parseDesktopWorktreeCleanupPreviewInput,
   parseSelectComputerTargetInput,
+  WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
@@ -63,6 +66,7 @@ import { HarnessState } from './types'
 import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 import { WorkspaceGitCapabilityService } from './workspace-git'
+import { WorktreeCleanupController } from './worktree-cleanup-controller'
 import { WorktreeManager } from './worktree-manager'
 import { summarizeWorktreeRecord, WorktreeRegistry } from './worktree-registry'
 
@@ -427,6 +431,9 @@ function installIpcHandlers(
   gitRevert: GitRevertController,
   gitPush: GitPushController,
   comments: GitReviewCommentController,
+  worktrees: WorktreeManager,
+  worktreeCleanup: WorktreeCleanupController,
+  publishWorktreeChange: (worktree: WorktreeSummary) => void,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
@@ -522,6 +529,22 @@ function installIpcHandlers(
     const input = validInput(parseDeleteGitReviewCommentInput(value))
     const signal = new AbortController().signal
     return comments.remove(input, signal)
+  })
+  ipcMain.handle('desktop:worktrees:list', event => {
+    assertTrustedSender(event)
+    return worktrees.snapshot()
+  })
+  ipcMain.handle('desktop:worktrees:cleanup:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeCleanupPreviewInput(value))
+    return worktreeCleanup.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:worktrees:cleanup:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeCleanupConfirmInput(value))
+    const result = await worktreeCleanup.confirm(input, new AbortController().signal)
+    publishWorktreeChange(result.worktree)
+    return result
   })
   ipcMain.handle('desktop:computer:get-state', event => {
     assertTrustedSender(event)
@@ -748,6 +771,45 @@ app.whenReady().then(async () => {
   })
   const gitMutations = new GitMutationJournal(join(desktopDataPath, 'git-mutations.v1.json'))
   const gitMutationQueue = new GitRepositoryMutationQueue()
+  const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
+  const worktreeManager = new WorktreeManager(
+    gitService,
+    worktreeRegistry,
+    join(desktopDataPath, 'worktrees'),
+    assertActiveWorkspace,
+  )
+  const publishWorktreeChange = (worktree?: WorktreeSummary): void => {
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('desktop:worktrees:changed', worktreeManager.snapshot())
+    }
+    if (worktree !== undefined) {
+      harness?.send(createEvent('worktrees.changed', {
+        revision: worktreeRegistry.status().revision,
+        worktree,
+      }))
+    }
+  }
+  const worktreeCleanup = new WorktreeCleanupController(worktreeManager, {
+    isSessionRunning: sessionId => activityTracker.isRunning(sessionId),
+    approve: async details => {
+      if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+      const branch = details.branch.startsWith('refs/heads/')
+        ? details.branch.slice('refs/heads/'.length)
+        : details.branch
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Clean up managed worktree?',
+        message: `Remove the checkout for ${branch}?`,
+        detail: `${details.worktreePath}\n\nRepository: ${details.repositoryRoot}\n` +
+          `Commit: ${details.head}\n\nThe branch is kept. The clean checkout directory is removed.`,
+        buttons: ['Cancel', 'Clean Up'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      })
+      return result.response === 1
+    },
+  })
 
   installMenu()
   installIpcHandlers(
@@ -793,6 +855,9 @@ app.whenReady().then(async () => {
       },
     }),
     new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
+    worktreeManager,
+    worktreeCleanup,
+    publishWorktreeChange,
   )
 
   windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {
@@ -811,14 +876,8 @@ app.whenReady().then(async () => {
     packageRoot: app.getAppPath(),
     productVersion: app.getVersion(),
   })
-  const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
-  const worktreeManager = new WorktreeManager(
-    gitService,
-    worktreeRegistry,
-    join(desktopDataPath, 'worktrees'),
-    assertActiveWorkspace,
-  )
   await worktreeManager.reconcile(new AbortController().signal)
+  publishWorktreeChange()
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,
     notifications: {
@@ -863,10 +922,7 @@ app.whenReady().then(async () => {
       provision: async (params, signal) => {
         const result = await worktreeManager.provision(params, signal)
         const summary = summarizeWorktreeRecord(result.record)
-        harness?.send(createEvent('worktrees.changed', {
-          revision: worktreeRegistry.status().revision,
-          worktree: summary,
-        }))
+        publishWorktreeChange(summary)
         if (result.created && result.record.worktreePath !== undefined) {
           const command: DesktopRendererCommand = {
             type: 'worktree.open',
@@ -883,10 +939,7 @@ app.whenReady().then(async () => {
         const record = await worktreeManager.bindSession(params, signal)
         if (record === undefined) return { managed: false }
         const summary = summarizeWorktreeRecord(record)
-        harness?.send(createEvent('worktrees.changed', {
-          revision: worktreeRegistry.status().revision,
-          worktree: summary,
-        }))
+        publishWorktreeChange(summary)
         return { managed: true, worktree: summary }
       },
     },

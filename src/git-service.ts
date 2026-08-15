@@ -15,6 +15,7 @@ import type {
   GitReviewSnapshot,
   GitStatusEntry,
   GitStatusSnapshot,
+  WorktreeCleanupInspection,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -57,6 +58,23 @@ export interface GitCreateWorktreeInput {
   branch: string
   commit: string
   lockReason: string
+}
+
+export interface GitRemoveWorktreeInput {
+  repositoryRoot: string
+  worktreePath: string
+  head: string
+  branch: string
+  lockReason: string
+}
+
+export type GitInspectWorktreeInput = Omit<GitRemoveWorktreeInput, 'head'>
+
+interface InspectedWorktreeRemoval {
+  repository: GitRepositoryIdentity
+  target: string
+  lockReason: string
+  inspection: WorktreeCleanupInspection
 }
 
 export interface GitWorktreeEntry {
@@ -898,6 +916,7 @@ export class GitService {
     repository: GitRepositoryIdentity,
     signal: AbortSignal | undefined,
     deadline: number,
+    includeIgnored = false,
   ): Promise<GitStatusSnapshot> {
     const result = await this.run([
       '--no-optional-locks',
@@ -909,6 +928,7 @@ export class GitService {
       '--porcelain=v2',
       '--branch',
       '--untracked-files=all',
+      ...(includeIgnored ? ['--ignored=matching'] : []),
       '-z',
     ], signal, deadline)
     return parseGitStatus(repository, result.stdout)
@@ -1025,9 +1045,17 @@ export class GitService {
         'Git operations require the exact repository root returned by repository discovery.',
       )
     }
+    return this.listWorktreesBefore(repository.root, signal, deadline)
+  }
+
+  private async listWorktreesBefore(
+    repositoryRoot: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitWorktreeEntry[]> {
     const result = await this.run([
       '--no-optional-locks',
-      '-C', repository.root,
+      '-C', repositoryRoot,
       'worktree',
       'list',
       '--porcelain',
@@ -1196,6 +1224,124 @@ export class GitService {
       throw new GitServiceError('GIT_FAILED', 'Git created a worktree at an unexpected commit.')
     }
     return created
+  }
+
+  async inspectWorktreeForRemoval(
+    input: GitInspectWorktreeInput,
+    signal?: AbortSignal,
+  ): Promise<WorktreeCleanupInspection> {
+    const deadline = Date.now() + this.timeoutMs
+    return (await this.inspectWorktreeForRemovalBefore(input, signal, deadline)).inspection
+  }
+
+  async removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void> {
+    const deadline = Date.now() + this.timeoutMs
+    const expectedHead = boundedObjectId(input.head, 'Expected worktree HEAD')!
+    const inspected = await this.inspectWorktreeForRemovalBefore(input, signal, deadline)
+    if (inspected.inspection.head !== expectedHead) {
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree HEAD changed before cleanup.')
+    }
+    const { repository, target, lockReason } = inspected
+    await this.run([
+      '--no-optional-locks',
+      '-C', repository.root,
+      'worktree',
+      'unlock',
+      target,
+    ], signal, deadline)
+    try {
+      await this.run([
+        '--no-optional-locks',
+        '-C', repository.root,
+        '-c', 'core.fsmonitor=false',
+        'worktree',
+        'remove',
+        '--',
+        target,
+      ], signal, deadline)
+    } catch (error) {
+      try {
+        const current = (await this.listWorktreesBefore(repository.root, signal, deadline))
+          .find(candidate => candidate.path === target)
+        if (current !== undefined && !current.locked) {
+          await this.run([
+            '--no-optional-locks',
+            '-C', repository.root,
+            'worktree',
+            'lock',
+            '--reason', lockReason,
+            target,
+          ], signal, deadline)
+        }
+      } catch {
+        // The caller treats any failure after unlock as ambiguous and requires recovery.
+      }
+      throw error
+    }
+    if ((await this.listWorktreesBefore(repository.root, signal, deadline)).some(candidate => candidate.path === target)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git reported cleanup success but the worktree is still registered.')
+    }
+    try {
+      await lstat(target)
+      throw new GitServiceError('BAD_OUTPUT', 'Git reported cleanup success but the worktree path still exists.')
+    } catch (error) {
+      if (error instanceof GitServiceError) throw error
+      if (!isRecordWithCode(error) || error.code !== 'ENOENT') {
+        throw new GitServiceError('BAD_OUTPUT', 'The cleaned worktree path could not be verified safely.')
+      }
+    }
+  }
+
+  private async inspectWorktreeForRemovalBefore(
+    input: GitInspectWorktreeInput,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<InspectedWorktreeRemoval> {
+    const requestedRoot = await this.canonicalDirectory(boundedInput(input.repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const targetValue = boundedInput(input.worktreePath, 'Worktree path')
+    if (!isAbsolute(targetValue) || normalize(targetValue) !== targetValue || targetValue === repository.root) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree removal path is invalid.')
+    }
+    const target = await this.canonicalDirectory(targetValue)
+    if (target !== targetValue) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree path changed during validation.')
+    }
+    const branch = boundedHeadRef(input.branch, 'Expected worktree branch')
+    const lockReason = boundedInput(input.lockReason, 'Expected worktree lock')
+    if (lockReason.length > 256 || /[\r\n]/.test(lockReason)) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree lock reason is invalid.')
+    }
+    const targetRepository = await this.discoverRepositoryBefore(target, signal, deadline)
+    if (targetRepository.root !== target || targetRepository.commonDir !== repository.commonDir) {
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree repository identity changed.')
+    }
+    const entries = await this.listWorktreesBefore(repository.root, signal, deadline)
+    const entry = entries.find(candidate => candidate.path === target)
+    if (entry === undefined || entry.bare || entry.detached || entry.head === undefined || entry.branch !== branch ||
+      !entry.locked || entry.lockReason !== lockReason || entry.prunable) {
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree identity changed before cleanup.')
+    }
+    const status = await this.statusBefore(targetRepository, signal, deadline, true)
+    if (!status.clean || status.head !== entry.head || status.branch !== branch.slice('refs/heads/'.length) ||
+      status.entries.length !== 0) {
+      throw new GitServiceError(
+        'GIT_FAILED',
+        'The managed worktree contains modified, untracked, ignored, or conflicting files.',
+      )
+    }
+    return {
+      repository,
+      target,
+      lockReason,
+      inspection: { worktreePath: target, head: entry.head, branch, clean: true, locked: true },
+    }
   }
 
   private async canonicalDirectory(path: string): Promise<string> {

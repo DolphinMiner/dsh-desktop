@@ -51,6 +51,18 @@ const bridge: DesktopBridge = {
       },
     },
   },
+  worktrees: {
+    list: () => ipcRenderer.invoke('desktop:worktrees:list'),
+    previewCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:preview', input),
+    confirmCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:confirm', input),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
+        listener(snapshot)
+      }
+      ipcRenderer.on('desktop:worktrees:changed', handler)
+      return () => ipcRenderer.removeListener('desktop:worktrees:changed', handler)
+    },
+  },
   computer: {
     getState: () => ipcRenderer.invoke('desktop:computer:get-state'),
     refresh: () => ipcRenderer.invoke('desktop:computer:refresh'),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -475,6 +475,51 @@ test('lists real locked worktrees without resolving a missing checkout path', as
   assert.equal(linked?.branch, 'refs/heads/topic')
   assert.equal(linked?.locked, true)
   assert.equal(linked?.lockReason, 'DSH test lock')
+})
+
+test('removes only an exact clean locked worktree and preserves its branch', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-worktree-remove-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH cleanup test', '-b', 'cleanup-topic', target, 'HEAD')
+  const head = await gitOutput(target, 'rev-parse', 'HEAD')
+  const service = new GitService()
+
+  await service.removeWorktree({
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    head,
+    branch: 'refs/heads/cleanup-topic',
+    lockReason: 'DSH cleanup test',
+  })
+  await assert.rejects(access(target), (error: NodeJS.ErrnoException) => error.code === 'ENOENT')
+  assert.equal(await gitOutput(root, 'rev-parse', 'refs/heads/cleanup-topic'), head)
+  assert.equal((await service.listWorktrees(await realpath(root))).some(entry => entry.path === target), false)
+})
+
+test('refuses cleanup when ignored content would otherwise be discarded', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-worktree-ignored-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  await writeFile(join(root, '.gitignore'), '*.local\n')
+  await git(root, 'add', '.gitignore')
+  await git(root, 'commit', '-m', 'ignore local state')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH cleanup test', '-b', 'dirty-topic', target, 'HEAD')
+  await writeFile(join(target, 'private.local'), 'must survive\n')
+  const head = await gitOutput(target, 'rev-parse', 'HEAD')
+
+  await assert.rejects(new GitService().removeWorktree({
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    head,
+    branch: 'refs/heads/dirty-topic',
+    lockReason: 'DSH cleanup test',
+  }), (error: GitServiceError) => error.code === 'GIT_FAILED' && /ignored/.test(error.message))
+  assert.equal(await readFile(join(target, 'private.local'), 'utf8'), 'must survive\n')
 })
 
 test('requires the exact discovered root and rejects non-repositories', async t => {

@@ -205,6 +205,10 @@ function cloneRecord(record: WorktreeRecord): WorktreeRecord {
   }
 }
 
+function monotonicUpdatedAt(now: Date, record: Pick<WorktreeRecord, 'createdAt' | 'updatedAt'>): string {
+  return new Date(Math.max(now.getTime(), Date.parse(record.createdAt), Date.parse(record.updatedAt))).toISOString()
+}
+
 export function summarizeWorktreeRecord(record: WorktreeRecord): WorktreeSummary {
   return {
     id: record.id,
@@ -356,6 +360,12 @@ export class WorktreeRegistry {
   getByCreationOperation(operationId: string): WorktreeRecord | undefined {
     this.assertAvailable()
     const record = this.state.records.find(item => item.creationOperationId === operationId)
+    return record === undefined ? undefined : cloneRecord(record)
+  }
+
+  getByOperation(operationId: string): WorktreeRecord | undefined {
+    this.assertAvailable()
+    const record = this.state.records.find(item => operationIds(item).includes(operationId))
     return record === undefined ? undefined : cloneRecord(record)
   }
 
@@ -519,7 +529,7 @@ export class WorktreeRegistry {
     }
     const updates = new Map<string, WorktreeRecord>()
     const results: WorktreeRecord[] = []
-    const now = this.now().toISOString()
+    const now = this.now()
     for (const requirement of requirements) {
       const current = this.state.records.find(record => record.id === requirement.id)
       if (current === undefined) {
@@ -529,15 +539,14 @@ export class WorktreeRegistry {
         throw new WorktreeRegistryError('CONFLICT', 'A removed worktree cannot require recovery.')
       }
       const result = cloneRecord(current)
-      const preserveOperationReason = requirement.reason === 'inspection-failed' &&
-        result.lifecycle === 'recovery-required' &&
+      const preserveOperationReason = result.lifecycle === 'recovery-required' &&
         (result.recoveryReason === 'create-ambiguous' || result.recoveryReason === 'interrupted-create' ||
           result.recoveryReason === 'interrupted-remove')
       if (!preserveOperationReason &&
         (result.lifecycle !== 'recovery-required' || result.recoveryReason !== requirement.reason)) {
         result.lifecycle = 'recovery-required'
         result.recoveryReason = requirement.reason
-        result.updatedAt = now
+        result.updatedAt = monotonicUpdatedAt(now, result)
         updates.set(result.id, result)
       }
       results.push(result)
@@ -571,14 +580,14 @@ export class WorktreeRegistry {
       return
     }
     this.commit(next => {
-      const now = this.now().toISOString()
+      const now = this.now()
       for (const record of next.records) {
         if (record.lifecycle !== 'provisioning' && record.lifecycle !== 'removing') continue
         record.recoveryReason = record.lifecycle === 'provisioning'
           ? 'interrupted-create'
           : 'interrupted-remove'
         record.lifecycle = 'recovery-required'
-        record.updatedAt = now
+        record.updatedAt = monotonicUpdatedAt(now, record)
       }
     })
   }
@@ -589,7 +598,7 @@ export class WorktreeRegistry {
     if (current === undefined) throw new WorktreeRegistryError('NOT_FOUND', 'The worktree record was not found.')
     const result = cloneRecord(current)
     if (!change(result)) return cloneRecord(current)
-    result.updatedAt = this.now().toISOString()
+    result.updatedAt = monotonicUpdatedAt(this.now(), result)
     this.commit(next => {
       const index = next.records.findIndex(item => item.id === id)
       if (index < 0) throw new WorktreeRegistryError('NOT_FOUND', 'The worktree record was not found.')

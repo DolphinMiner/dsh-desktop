@@ -1,15 +1,22 @@
 import { createHash } from 'node:crypto'
-import { mkdir, realpath } from 'node:fs/promises'
+import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
   DesktopProtocolError,
   GitRepositoryIdentity,
+  WorktreeCleanupInspection,
   WorktreeRecoveryReason,
   WorktreeSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import { GitCreateWorktreeInput, GitServiceError, GitWorktreeEntry } from './git-service'
+import {
+  GitCreateWorktreeInput,
+  GitInspectWorktreeInput,
+  GitRemoveWorktreeInput,
+  GitServiceError,
+  GitWorktreeEntry,
+} from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
 import {
   summarizeWorktreeRecord,
@@ -27,6 +34,11 @@ export interface WorktreeGitOperations {
   resolveCommit(repositoryRoot: string, ref: string, signal?: AbortSignal): Promise<string>
   listWorktrees(repositoryRoot: string, signal?: AbortSignal): Promise<GitWorktreeEntry[]>
   createWorktree(input: GitCreateWorktreeInput, signal?: AbortSignal): Promise<GitRepositoryIdentity>
+  inspectWorktreeForRemoval(
+    input: GitInspectWorktreeInput,
+    signal?: AbortSignal,
+  ): Promise<WorktreeCleanupInspection>
+  removeWorktree(input: GitRemoveWorktreeInput, signal?: AbortSignal): Promise<void>
 }
 
 export interface ProvisionWorktreeInput {
@@ -52,6 +64,11 @@ export interface WorktreeReconciliationResult {
   healthy: number
   recoveryRequired: number
   snapshot: WorktreeSnapshot
+}
+
+export interface WorktreeCleanupState {
+  record: WorktreeRecord
+  inspection: WorktreeCleanupInspection
 }
 
 export class WorktreeManagerError extends Error {
@@ -129,10 +146,43 @@ function throwIfCancelled(error: unknown): void {
   if (error instanceof DOMException && error.name === 'AbortError') throw error
 }
 
+async function checkoutPathState(path: string): Promise<'absent' | 'present' | 'unknown'> {
+  try {
+    await lstat(path)
+    return 'present'
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return 'absent'
+    return 'unknown'
+  }
+}
+
 function expectedLockReason(record: WorktreeRecord): string | undefined {
   const prefix = 'refs/heads/dsh/session-'
   if (record.branch?.startsWith(prefix) !== true) return undefined
   return `DSH Desktop session ${record.branch.slice(prefix.length, prefix.length + 12)}`
+}
+
+function sameCleanupInspection(
+  left: WorktreeCleanupInspection,
+  right: WorktreeCleanupInspection,
+): boolean {
+  return left.worktreePath === right.worktreePath && left.head === right.head && left.branch === right.branch &&
+    left.clean === right.clean && left.locked === right.locked
+}
+
+function assertCleanupRecord(record: WorktreeRecord): asserts record is WorktreeRecord & {
+  executionMode: 'worktree'
+  worktreePath: string
+  branch: string
+} {
+  if (record.executionMode !== 'worktree' || record.worktreePath === undefined || record.branch === undefined ||
+    (record.lifecycle !== 'ready' && record.lifecycle !== 'orphaned') || record.pendingOperation !== undefined) {
+    throw new WorktreeManagerError(
+      'CONFLICT',
+      'This worktree is not ready for cleanup. Resolve its recovery state first.',
+      record.lifecycle === 'recovery-required' || record.pendingOperation !== undefined,
+    )
+  }
 }
 
 export class WorktreeManager {
@@ -156,6 +206,78 @@ export class WorktreeManager {
     }
   }
 
+  getByOperation(operationId: string): WorktreeRecord | undefined {
+    if (!isBoundedString(operationId, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree operation identifier is invalid.')
+    }
+    return withMappedErrorSync(() => this.registry.getByOperation(operationId))
+  }
+
+  async inspectCleanup(id: string, signal: AbortSignal): Promise<WorktreeCleanupState> {
+    if (!isBoundedString(id, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree identifier is invalid.')
+    }
+    const record = withMappedErrorSync(() => this.registry.get(id))
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    assertCleanupRecord(record)
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree lock identity is invalid.', true)
+    }
+    const inspection = await withMappedError(() => this.git.inspectWorktreeForRemoval({
+      repositoryRoot: record.repository.root,
+      worktreePath: record.worktreePath,
+      branch: record.branch,
+      lockReason,
+    }, signal), true)
+    return { record, inspection }
+  }
+
+  async removeCleanWorktree(
+    id: string,
+    operationId: string,
+    expected: WorktreeCleanupInspection,
+    signal: AbortSignal,
+    beforeDispatch?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    const existingOperation = this.getByOperation(operationId)
+    if (existingOperation !== undefined) {
+      if (existingOperation.id !== id || existingOperation.removalOperationId !== operationId ||
+        existingOperation.lifecycle !== 'removed') {
+        throw new WorktreeManagerError(
+          'DUPLICATE_REQUEST',
+          'This cleanup operation is incomplete or belongs to another worktree and will not be replayed.',
+          true,
+        )
+      }
+      return existingOperation
+    }
+    const current = await this.inspectCleanup(id, signal)
+    if (!sameCleanupInspection(current.inspection, expected)) {
+      throw new WorktreeManagerError('CONFLICT', 'The worktree changed after cleanup approval.')
+    }
+    beforeDispatch?.(current.record)
+    const lockReason = expectedLockReason(current.record)!
+    withMappedErrorSync(() => this.registry.beginRemoval(id, operationId), true)
+    try {
+      await this.git.removeWorktree({
+        repositoryRoot: current.record.repository.root,
+        worktreePath: current.inspection.worktreePath,
+        head: current.inspection.head,
+        branch: current.inspection.branch,
+        lockReason,
+      }, signal)
+    } catch (error) {
+      try {
+        this.registry.requireRecovery(id, 'interrupted-remove')
+      } catch (registryError) {
+        mapError(registryError, true)
+      }
+      mapError(error, true)
+    }
+    return withMappedErrorSync(() => this.registry.markRemoved(id, operationId), true)
+  }
+
   async reconcile(signal: AbortSignal): Promise<WorktreeReconciliationResult> {
     const records = withMappedErrorSync(() => this.registry.list())
       .filter(record => record.lifecycle !== 'removed')
@@ -166,6 +288,7 @@ export class WorktreeManager {
       groups.set(record.repository.commonDir, group)
     }
     const recovery = new Map<string, WorktreeRecoveryReason>()
+    const completedRemovals = new Map<string, string>()
     let healthy = 0
 
     for (const [commonDir, group] of groups) {
@@ -214,13 +337,22 @@ export class WorktreeManager {
             continue
           }
         }
+        const entry = byPath.get(checkout)
         if (repository !== undefined &&
           (repository.root !== checkout || repository.commonDir !== record.repository.commonDir)) {
           recovery.set(record.id, 'external-change')
           continue
         }
-        const entry = byPath.get(checkout)
         if (repository === undefined) {
+          if (entry === undefined && record.pendingOperation?.kind === 'remove') {
+            const pathState = await checkoutPathState(checkout)
+            if (pathState === 'absent') {
+              completedRemovals.set(record.id, record.pendingOperation.id)
+            } else {
+              recovery.set(record.id, pathState === 'present' ? 'external-change' : 'inspection-failed')
+            }
+            continue
+          }
           const moved = record.branch === undefined
             ? undefined
             : entries.find(candidate => candidate.branch === record.branch && candidate.path !== checkout)
@@ -250,6 +382,10 @@ export class WorktreeManager {
       }
     }
 
+    for (const [id, operationId] of completedRemovals) {
+      withMappedErrorSync(() => this.registry.markRemoved(id, operationId), true)
+      recovery.delete(id)
+    }
     if (recovery.size > 0) {
       withMappedErrorSync(() => this.registry.requireRecoveryBatch(
         [...recovery].map(([id, reason]) => ({ id, reason })),
