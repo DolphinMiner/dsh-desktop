@@ -77,6 +77,15 @@ test('validates desktop commands and session activity reports', () => {
     type: 'settings.open',
     sectionId: 'connections',
   })
+  assert.deepEqual(parseRendererCommand({
+    type: 'worktree.open',
+    recordId: '11111111-1111-4111-8111-111111111111',
+    path: '/tmp/worktree',
+  }), {
+    type: 'worktree.open',
+    recordId: '11111111-1111-4111-8111-111111111111',
+    path: '/tmp/worktree',
+  })
   assert.equal(parseRendererCommand({ type: 'session.open', sessionId: '' }), undefined)
   assert.deepEqual(parseCapabilityParams('desktop.reportSessionActivity', {
     sessionId: 'session-1',
@@ -162,6 +171,63 @@ test('validates bounded Git capability contracts', () => {
   assert.equal(parseCapabilityResult('git.status', {
     ...status,
     entries: [{ ...status.entries[0], originalPath: undefined }],
+  }), undefined)
+})
+
+test('validates worktree provisioning without exposing operation internals', () => {
+  const params = {
+    operationId: 'provision-1',
+    requestedBySessionId: 'session-1',
+    workspaceRoot: '/repo',
+    baseRef: 'refs/heads/main',
+  }
+  assert.deepEqual(parseCapabilityParams('worktrees.provision', params), params)
+  assert.equal(parseCapabilityParams('worktrees.provision', { ...params, baseRef: 'main\n--force' }), undefined)
+
+  const summary = {
+    id: '11111111-1111-4111-8111-111111111111',
+    repositoryRoot: '/repo',
+    requestedBySessionId: 'session-1',
+    sessionState: 'pending',
+    executionMode: 'worktree',
+    worktreePath: '/worktrees/session-1',
+    baseRef: 'refs/heads/main',
+    baseCommit: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-1',
+    lifecycle: 'ready',
+    createdAt: '2026-08-16T12:00:00.000Z',
+    updatedAt: '2026-08-16T12:00:01.000Z',
+  }
+  assert.deepEqual(parseCapabilityResult('worktrees.provision', summary), summary)
+  assert.equal(parseCapabilityResult('worktrees.provision', {
+    ...summary,
+    lifecycle: 'recovery-required',
+  }), undefined)
+  assert.deepEqual(parseCapabilityResult('worktrees.provision', {
+    ...summary,
+    lifecycle: 'recovery-required',
+    recoveryReason: 'create-ambiguous',
+  }), {
+    ...summary,
+    lifecycle: 'recovery-required',
+    recoveryReason: 'create-ambiguous',
+  })
+  assert.deepEqual(parseCapabilityParams('desktop.reportSessionBinding', {
+    sessionId: 'session-created',
+    workspacePath: '/worktrees/session-1',
+  }), {
+    sessionId: 'session-created',
+    workspacePath: '/worktrees/session-1',
+  })
+  assert.deepEqual(parseCapabilityResult('desktop.reportSessionBinding', {
+    managed: true,
+    worktree: { ...summary, sessionState: 'bound', sessionId: 'session-created' },
+  }), {
+    managed: true,
+    worktree: { ...summary, sessionState: 'bound', sessionId: 'session-created' },
+  })
+  assert.equal(parseCapabilityResult('desktop.reportSessionBinding', {
+    managed: true,
   }), undefined)
 })
 

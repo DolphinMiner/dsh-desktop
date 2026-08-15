@@ -45,6 +45,8 @@ import { HarnessState } from './types'
 import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 import { WorkspaceGitCapabilityService } from './workspace-git'
+import { WorktreeManager } from './worktree-manager'
+import { summarizeWorktreeRecord, WorktreeRegistry } from './worktree-registry'
 
 app.setName('DSH Desktop')
 const developmentUserData = app.isPackaged ? undefined : process.env.DSH_DESKTOP_USER_DATA?.trim()
@@ -653,6 +655,12 @@ app.whenReady().then(async () => {
   })
   const gitService = new GitService()
   const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
+  const worktreeManager = new WorktreeManager(
+    gitService,
+    new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json')),
+    join(desktopDataPath, 'worktrees'),
+    assertActiveWorkspace,
+  )
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,
     notifications: {
@@ -690,6 +698,28 @@ app.whenReady().then(async () => {
     git: {
       discover: (params, signal) => workspaceGit.discover(params, signal),
       status: (params, signal) => workspaceGit.status(params, signal),
+    },
+    worktrees: {
+      provision: async (params, signal) => {
+        const result = await worktreeManager.provision(params, signal)
+        if (result.created && result.record.worktreePath !== undefined) {
+          const command: DesktopRendererCommand = {
+            type: 'worktree.open',
+            recordId: result.record.id,
+            path: result.record.worktreePath,
+          }
+          setImmediate(() => {
+            dispatchRendererCommand(command)
+          })
+        }
+        return summarizeWorktreeRecord(result.record)
+      },
+      reportSessionBinding: async (params, signal) => {
+        const record = await worktreeManager.bindSession(params, signal)
+        return record === undefined
+          ? { managed: false }
+          : { managed: true, worktree: summarizeWorktreeRecord(record) }
+      },
     },
     computer: {
       getPermissions: signal => computerObserver!.getPermissions(signal),

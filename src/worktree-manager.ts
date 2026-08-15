@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { mkdir, realpath } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { DesktopProtocolError, GitRepositoryIdentity } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -24,9 +24,19 @@ export interface WorktreeGitOperations {
 
 export interface ProvisionWorktreeInput {
   operationId: string
-  sessionId: string
+  requestedBySessionId: string
   workspaceRoot: string
   baseRef: string
+}
+
+export interface ProvisionWorktreeResult {
+  record: WorktreeRecord
+  created: boolean
+}
+
+export interface WorktreeSessionBindingInput {
+  sessionId: string
+  workspacePath: string
 }
 
 export class WorktreeManagerError extends Error {
@@ -46,7 +56,7 @@ function isBoundedString(value: string, maxLength: number): boolean {
 
 function validateInput(input: ProvisionWorktreeInput): void {
   if (!isBoundedString(input.operationId, MAX_ID_LENGTH) ||
-    !isBoundedString(input.sessionId, MAX_ID_LENGTH) ||
+    !isBoundedString(input.requestedBySessionId, MAX_ID_LENGTH) ||
     !isBoundedString(input.workspaceRoot, MAX_PATH_LENGTH) ||
     !isBoundedString(input.baseRef, MAX_REF_LENGTH) || /[\r\n]/.test(input.baseRef)) {
     throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree creation request is invalid.')
@@ -100,24 +110,24 @@ export class WorktreeManager {
     private readonly authorize: WorkspaceGitAuthorizer,
   ) {}
 
-  async provision(input: ProvisionWorktreeInput, signal: AbortSignal): Promise<WorktreeRecord> {
+  async provision(input: ProvisionWorktreeInput, signal: AbortSignal): Promise<ProvisionWorktreeResult> {
     validateInput(input)
-    this.authorize(input.sessionId, input.workspaceRoot, signal)
+    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
     const repository = await withMappedError(() =>
       this.git.discoverRepository(input.workspaceRoot, signal))
-    this.authorize(input.sessionId, input.workspaceRoot, signal)
+    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
     const baseCommit = await withMappedError(() =>
       this.git.resolveCommit(repository.root, input.baseRef, signal))
     const root = await withMappedError(async () => {
       await mkdir(this.managedRoot, { recursive: true, mode: 0o700 })
       return realpath(this.managedRoot)
     })
-    this.authorize(input.sessionId, input.workspaceRoot, signal)
+    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
 
     const digest = createHash('sha256')
       .update(repository.commonDir)
       .update('\0')
-      .update(input.sessionId)
+      .update(input.requestedBySessionId)
       .update('\0')
       .update(input.operationId)
       .digest('hex')
@@ -128,7 +138,7 @@ export class WorktreeManager {
       const record = this.registry.reserve({
         operationId: input.operationId,
         repository,
-        sessionId: input.sessionId,
+        requestedBySessionId: input.requestedBySessionId,
         executionMode: 'worktree',
         worktreePath,
         baseRef: input.baseRef,
@@ -157,8 +167,8 @@ export class WorktreeManager {
           }
           mapError(error, true)
         }
-        this.authorize(input.sessionId, input.workspaceRoot, signal)
-        return record
+        this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+        return { record, created: false }
       }
       throw new WorktreeManagerError(
         'CONFLICT',
@@ -192,7 +202,72 @@ export class WorktreeManager {
     }
 
     const ready = withMappedErrorSync(() => this.registry.markReady(record.id, input.operationId), true)
-    this.authorize(input.sessionId, input.workspaceRoot, signal)
-    return ready
+    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+    return { record: ready, created: true }
+  }
+
+  async bindSession(input: WorktreeSessionBindingInput, signal: AbortSignal): Promise<WorktreeRecord | undefined> {
+    if (!isBoundedString(input.sessionId, MAX_ID_LENGTH) ||
+      !isBoundedString(input.workspacePath, MAX_PATH_LENGTH) || !isAbsolute(input.workspacePath)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree session binding is invalid.')
+    }
+    const managedRoot = resolve(this.managedRoot)
+    const requestedPath = resolve(input.workspacePath)
+    const requestedRecord = withMappedErrorSync(() => this.registry.getByCheckoutPath(requestedPath))
+    let canonicalRoot: string
+    try {
+      canonicalRoot = await realpath(managedRoot)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && requestedRecord === undefined) return undefined
+      if (requestedRecord !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        try {
+          this.registry.requireRecovery(requestedRecord.id, 'missing')
+        } catch (registryError) {
+          mapError(registryError, true)
+        }
+      }
+      mapError(error, requestedRecord !== undefined)
+    }
+    const lexicalRelative = relative(managedRoot, requestedPath)
+    const canonicalLexicalRelative = relative(canonicalRoot!, requestedPath)
+    const isManagedCandidate = (value: string): boolean =>
+      value !== '' && value !== '..' && !value.startsWith(`..${sep}`) && !isAbsolute(value)
+    if (!isManagedCandidate(lexicalRelative) && !isManagedCandidate(canonicalLexicalRelative)) return undefined
+
+    let canonicalPath: string
+    try {
+      canonicalPath = await realpath(requestedPath)
+    } catch (error) {
+      if (requestedRecord !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        try {
+          this.registry.requireRecovery(requestedRecord.id, 'missing')
+        } catch (registryError) {
+          mapError(registryError, true)
+        }
+      }
+      if (requestedRecord === undefined && (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      mapError(error, requestedRecord !== undefined)
+    }
+    const canonicalRelative = relative(canonicalRoot, canonicalPath!)
+    const record = requestedRecord ?? withMappedErrorSync(() => this.registry.getByCheckoutPath(canonicalPath!))
+    if (record === undefined) return undefined
+    if (!isManagedCandidate(canonicalRelative) || canonicalPath !== record.worktreePath) {
+      try {
+        this.registry.requireRecovery(record.id, 'moved')
+      } catch (registryError) {
+        mapError(registryError, true)
+      }
+      throw new WorktreeManagerError('CONFLICT', 'The worktree path no longer matches its managed location.', true)
+    }
+    const observed = await withMappedError(() => this.git.discoverRepository(canonicalPath!, signal), true)
+    if (observed.root !== canonicalPath || observed.commonDir !== record.repository.commonDir) {
+      try {
+        this.registry.requireRecovery(record.id, 'external-change')
+      } catch (registryError) {
+        mapError(registryError, true)
+      }
+      throw new WorktreeManagerError('CONFLICT', 'The worktree no longer matches its Git repository.', true)
+    }
+    return withMappedErrorSync(() => this.registry.bindSession(record.id, input.sessionId), true)
   }
 }

@@ -41,7 +41,7 @@ async function repositoryFixture(parent: string): Promise<string> {
 function input(overrides: Partial<ProvisionWorktreeInput> = {}): ProvisionWorktreeInput {
   return {
     operationId: 'provision-1',
-    sessionId: 'session-1',
+    requestedBySessionId: 'session-1',
     workspaceRoot: '/repo',
     baseRef: 'refs/heads/main',
     ...overrides,
@@ -61,7 +61,9 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   )
   const firstInput = input({ workspaceRoot: repositoryRoot })
 
-  const first = await manager.provision(firstInput, new AbortController().signal)
+  const firstResult = await manager.provision(firstInput, new AbortController().signal)
+  const first = firstResult.record
+  assert.equal(firstResult.created, true)
   assert.equal(first.lifecycle, 'ready')
   assert.equal(first.executionMode, 'worktree')
   assert.equal(await git(first.worktreePath!, 'rev-parse', 'HEAD'), first.baseCommit)
@@ -70,16 +72,28 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   assert.match(porcelain, new RegExp(`worktree ${first.worktreePath!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   assert.match(porcelain, /locked DSH Desktop session/)
 
+  const bound = await manager.bindSession({
+    sessionId: 'session-worktree-1',
+    workspacePath: first.worktreePath!,
+  }, new AbortController().signal)
+  assert.equal(bound?.requestedBySessionId, 'session-1')
+  assert.equal(bound?.sessionId, 'session-worktree-1')
+  assert.equal(await manager.bindSession({
+    sessionId: 'session-local',
+    workspacePath: repositoryRoot,
+  }, new AbortController().signal), undefined)
+
   await writeFile(join(first.worktreePath!, 'README.md'), 'session one\n')
   const duplicate = await manager.provision(firstInput, new AbortController().signal)
-  assert.equal(duplicate.id, first.id)
+  assert.equal(duplicate.created, false)
+  assert.equal(duplicate.record.id, first.id)
   assert.equal(await readFile(join(first.worktreePath!, 'README.md'), 'utf8'), 'session one\n')
 
-  const second = await manager.provision(input({
+  const second = (await manager.provision(input({
     operationId: 'provision-2',
-    sessionId: 'session-2',
+    requestedBySessionId: 'session-2',
     workspaceRoot: repositoryRoot,
-  }), new AbortController().signal)
+  }), new AbortController().signal)).record
   assert.notEqual(second.worktreePath, first.worktreePath)
   assert.equal(await readFile(join(second.worktreePath!, 'README.md'), 'utf8'), 'base\n')
   assert.equal(await readFile(join(repositoryRoot, 'README.md'), 'utf8'), 'base\n')
@@ -125,7 +139,7 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
     gitDir: `${record.worktreePath!}/.git`,
     commonDir: '/repo/.git',
   })
-  assert.equal((await first).lifecycle, 'ready')
+  assert.equal((await first).record.lifecycle, 'ready')
 })
 
 test('persists an ambiguous create failure and never replays it', async t => {

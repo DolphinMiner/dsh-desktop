@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, normalize } from 'node:path'
 
-import type { GitRepositoryIdentity } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  GitRepositoryIdentity,
+  WorktreeExecutionMode,
+  WorktreeLifecycle,
+  WorktreeRecoveryReason,
+  WorktreeSummary,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { readJsonFile, writeJsonAtomically } from './atomic-json'
 
@@ -11,23 +17,7 @@ const MAX_ID_LENGTH = 256
 const MAX_PATH_LENGTH = 4_096
 const MAX_REF_LENGTH = 1_024
 
-export type WorktreeExecutionMode = 'local' | 'worktree'
-export type WorktreeLifecycle =
-  | 'provisioning'
-  | 'ready'
-  | 'removing'
-  | 'recovery-required'
-  | 'orphaned'
-  | 'removed'
 export type WorktreeOperationKind = 'create' | 'remove'
-export type WorktreeRecoveryReason =
-  | 'create-ambiguous'
-  | 'interrupted-create'
-  | 'interrupted-remove'
-  | 'external-change'
-  | 'locked'
-  | 'missing'
-  | 'moved'
 
 export interface WorktreePendingOperation {
   id: string
@@ -37,7 +27,8 @@ export interface WorktreePendingOperation {
 export interface WorktreeRecord {
   id: string
   repository: GitRepositoryIdentity
-  sessionId: string
+  requestedBySessionId: string
+  sessionId?: string
   executionMode: WorktreeExecutionMode
   worktreePath?: string
   baseRef: string
@@ -55,7 +46,7 @@ export interface WorktreeRecord {
 export interface WorktreeReservation {
   operationId: string
   repository: GitRepositoryIdentity
-  sessionId: string
+  requestedBySessionId: string
   executionMode: WorktreeExecutionMode
   worktreePath?: string
   baseRef: string
@@ -142,10 +133,11 @@ function parsePendingOperation(value: unknown): WorktreePendingOperation | undef
 
 function parseStoredRecord(value: unknown): WorktreeRecord | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'id', 'repository', 'sessionId', 'executionMode', 'worktreePath', 'baseRef', 'baseCommit',
+    'id', 'repository', 'requestedBySessionId', 'sessionId', 'executionMode', 'worktreePath', 'baseRef', 'baseCommit',
     'branch', 'lifecycle', 'creationOperationId', 'pendingOperation', 'removalOperationId',
     'recoveryReason', 'createdAt', 'updatedAt',
-  ]) || !isUuid(value.id) || !isBoundedString(value.sessionId) ||
+  ]) || !isUuid(value.id) || !isBoundedString(value.requestedBySessionId) ||
+    (value.sessionId !== undefined && !isBoundedString(value.sessionId)) ||
     (value.executionMode !== 'local' && value.executionMode !== 'worktree') ||
     !isBaseRef(value.baseRef) || !isCommit(value.baseCommit) || !isLifecycle(value.lifecycle) ||
     !isBoundedString(value.creationOperationId) || !isIsoDate(value.createdAt) ||
@@ -182,7 +174,8 @@ function parseStoredRecord(value: unknown): WorktreeRecord | undefined {
   return {
     id: value.id,
     repository,
-    sessionId: value.sessionId,
+    requestedBySessionId: value.requestedBySessionId,
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
     executionMode: value.executionMode,
     ...(value.worktreePath === undefined ? {} : { worktreePath: value.worktreePath }),
     baseRef: value.baseRef,
@@ -203,6 +196,25 @@ function cloneRecord(record: WorktreeRecord): WorktreeRecord {
     ...record,
     repository: { ...record.repository },
     ...(record.pendingOperation === undefined ? {} : { pendingOperation: { ...record.pendingOperation } }),
+  }
+}
+
+export function summarizeWorktreeRecord(record: WorktreeRecord): WorktreeSummary {
+  return {
+    id: record.id,
+    repositoryRoot: record.repository.root,
+    requestedBySessionId: record.requestedBySessionId,
+    sessionState: record.sessionId === undefined ? 'pending' : 'bound',
+    ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+    executionMode: record.executionMode,
+    ...(record.worktreePath === undefined ? {} : { worktreePath: record.worktreePath }),
+    baseRef: record.baseRef,
+    baseCommit: record.baseCommit,
+    ...(record.branch === undefined ? {} : { branch: record.branch }),
+    lifecycle: record.lifecycle,
+    ...(record.recoveryReason === undefined ? {} : { recoveryReason: record.recoveryReason }),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   }
 }
 
@@ -244,7 +256,9 @@ function parseDocument(value: unknown): WorktreeRegistryDocument {
     throw new Error('The worktree registry contains duplicate immutable identifiers.')
   }
   const active = records.filter(isActive)
-  if (new Set(active.map(record => record.sessionId)).size !== active.length ||
+  const boundSessionIds = active.flatMap(record => record.sessionId === undefined ? [] : [record.sessionId])
+  if (new Set(active.map(record => record.requestedBySessionId)).size !== active.length ||
+    new Set(boundSessionIds).size !== boundSessionIds.length ||
     new Set(active.map(effectiveCheckoutPath)).size !== active.length) {
     throw new Error('The worktree registry contains conflicting active assignments.')
   }
@@ -258,7 +272,7 @@ function parseDocument(value: unknown): WorktreeRegistryDocument {
 function normalizeReservation(value: WorktreeReservation): WorktreeReservation {
   const repository = parseRepository(value.repository)
   if (!isBoundedString(value.operationId) || repository === undefined ||
-    !isBoundedString(value.sessionId) ||
+    !isBoundedString(value.requestedBySessionId) ||
     (value.executionMode !== 'local' && value.executionMode !== 'worktree') ||
     !isBaseRef(value.baseRef) || !isCommit(value.baseCommit) ||
     (value.branch !== undefined && !isBaseRef(value.branch))) {
@@ -274,7 +288,7 @@ function normalizeReservation(value: WorktreeReservation): WorktreeReservation {
   return {
     operationId: value.operationId,
     repository,
-    sessionId: value.sessionId,
+    requestedBySessionId: value.requestedBySessionId,
     executionMode: value.executionMode,
     ...(value.worktreePath === undefined ? {} : { worktreePath: value.worktreePath }),
     baseRef: value.baseRef,
@@ -284,7 +298,8 @@ function normalizeReservation(value: WorktreeReservation): WorktreeReservation {
 }
 
 function matchesReservation(record: WorktreeRecord, input: WorktreeReservation): boolean {
-  return record.sessionId === input.sessionId && record.executionMode === input.executionMode &&
+  return record.requestedBySessionId === input.requestedBySessionId &&
+    record.executionMode === input.executionMode &&
     record.worktreePath === input.worktreePath && record.baseRef === input.baseRef &&
     record.baseCommit === input.baseCommit && record.branch === input.branch &&
     record.repository.root === input.repository.root && record.repository.gitDir === input.repository.gitDir &&
@@ -338,6 +353,12 @@ export class WorktreeRegistry {
     return record === undefined ? undefined : cloneRecord(record)
   }
 
+  getByCheckoutPath(path: string): WorktreeRecord | undefined {
+    this.assertAvailable()
+    const record = this.state.records.find(item => isActive(item) && effectiveCheckoutPath(item) === path)
+    return record === undefined ? undefined : cloneRecord(record)
+  }
+
   reserve(value: WorktreeReservation): WorktreeRecord {
     this.assertAvailable()
     const input = normalizeReservation(value)
@@ -361,8 +382,9 @@ export class WorktreeRegistry {
       throw new WorktreeRegistryError('DESKTOP_UNAVAILABLE', 'The worktree registry is full.')
     }
     const checkoutPath = input.executionMode === 'local' ? input.repository.root : input.worktreePath!
-    if (this.state.records.some(record => isActive(record) && record.sessionId === input.sessionId)) {
-      throw new WorktreeRegistryError('CONFLICT', 'This session already has an active checkout assignment.')
+    if (this.state.records.some(record =>
+      isActive(record) && record.requestedBySessionId === input.requestedBySessionId)) {
+      throw new WorktreeRegistryError('CONFLICT', 'This session already requested an active checkout assignment.')
     }
     if (this.state.records.some(record => isActive(record) && effectiveCheckoutPath(record) === checkoutPath)) {
       throw new WorktreeRegistryError('CONFLICT', 'This checkout is already assigned to another active session.')
@@ -371,7 +393,7 @@ export class WorktreeRegistry {
     const record: WorktreeRecord = {
       id: randomUUID(),
       repository: { ...input.repository },
-      sessionId: input.sessionId,
+      requestedBySessionId: input.requestedBySessionId,
       executionMode: input.executionMode,
       ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
       baseRef: input.baseRef,
@@ -385,6 +407,27 @@ export class WorktreeRegistry {
     }
     this.commit(next => next.records.push(record))
     return cloneRecord(record)
+  }
+
+  bindSession(id: string, sessionId: string): WorktreeRecord {
+    if (!isBoundedString(sessionId)) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The worktree session identifier is invalid.')
+    }
+    const owner = this.state.records.find(record => isActive(record) && record.sessionId === sessionId)
+    if (owner !== undefined && owner.id !== id) {
+      throw new WorktreeRegistryError('CONFLICT', 'This Harness session is already assigned to another checkout.')
+    }
+    return this.transition(id, record => {
+      if (record.lifecycle !== 'ready') {
+        throw new WorktreeRegistryError('CONFLICT', 'The worktree is not ready for a Harness session.')
+      }
+      if (record.sessionId === sessionId) return false
+      if (record.sessionId !== undefined) {
+        throw new WorktreeRegistryError('CONFLICT', 'This checkout is already assigned to another Harness session.')
+      }
+      record.sessionId = sessionId
+      return true
+    })
   }
 
   markReady(id: string, operationId: string): WorktreeRecord {

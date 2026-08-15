@@ -22,7 +22,7 @@ function reservation(overrides: Partial<WorktreeReservation> = {}): WorktreeRese
   return {
     operationId: 'create-1',
     repository,
-    sessionId: 'session-1',
+    requestedBySessionId: 'session-1',
     executionMode: 'worktree',
     worktreePath: '/worktrees/session-1',
     baseRef: 'refs/heads/main',
@@ -82,12 +82,12 @@ test('deduplicates creation and rejects shared mutable checkout assignments', as
   })), (error: WorktreeRegistryError) => error.code === 'CONFLICT')
   assert.throws(() => registry.reserve(reservation({
     operationId: 'create-3',
-    sessionId: 'session-2',
+    requestedBySessionId: 'session-2',
   })), (error: WorktreeRegistryError) => error.code === 'CONFLICT')
 
   const local = registry.reserve(reservation({
     operationId: 'create-local-1',
-    sessionId: 'session-local-1',
+    requestedBySessionId: 'session-local-1',
     executionMode: 'local',
     worktreePath: undefined,
     branch: undefined,
@@ -95,11 +95,26 @@ test('deduplicates creation and rejects shared mutable checkout assignments', as
   assert.equal(local.executionMode, 'local')
   assert.throws(() => registry.reserve(reservation({
     operationId: 'create-local-2',
-    sessionId: 'session-local-2',
+    requestedBySessionId: 'session-local-2',
     executionMode: 'local',
     worktreePath: undefined,
     branch: undefined,
   })), (error: WorktreeRegistryError) => error.code === 'CONFLICT')
+})
+
+test('binds an official Harness session once without confusing it with the requester', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-binding-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registry = new WorktreeRegistry(join(root, 'worktrees.v1.json'))
+  const first = registry.reserve(reservation())
+  registry.markReady(first.id, 'create-1')
+
+  const bound = registry.bindSession(first.id, 'session-created')
+  assert.equal(bound.requestedBySessionId, 'session-1')
+  assert.equal(bound.sessionId, 'session-created')
+  assert.equal(registry.bindSession(first.id, 'session-created').sessionId, 'session-created')
+  assert.throws(() => registry.bindSession(first.id, 'session-other'),
+    (error: WorktreeRegistryError) => error.code === 'CONFLICT')
 })
 
 test('recovers interrupted create and remove operations without replaying them', async t => {

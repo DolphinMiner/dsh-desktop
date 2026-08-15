@@ -31,6 +31,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'desktop_reveal_file',
     'desktop_open_file',
     'desktop_git_status',
+    'desktop_create_worktree',
     'computer_click',
     'computer_click_at',
     'computer_type',
@@ -63,6 +64,10 @@ test('registers workspace-bound file tools and asks before opening', async () =>
   assert.deepEqual(await gate?.({ name: 'computer_click' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',
     reason: 'This computer action can change another application. Approve this operation once to continue.',
+  })
+  assert.deepEqual(await gate?.({ name: 'desktop_create_worktree' }, async () => ({ kind: 'allow' })), {
+    kind: 'ask',
+    reason: 'Creating a worktree adds a local Git branch and checkout. Approve this operation once to continue.',
   })
 })
 
@@ -115,6 +120,38 @@ test('reads Git status only through the current workspace repository identity', 
   assert.equal(result.totalEntries, 501)
   assert.equal(result.entriesTruncated, true)
   assert.equal(result.entries.length, 500)
+})
+
+test('provisions an isolated worktree with a fresh durable operation ID', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params })
+        return { lifecycle: 'ready', worktreePath: '/worktrees/session-1' }
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+
+  const tool = definitions.find(definition => definition.name === 'desktop_create_worktree')!
+  await tool.execute({ base_ref: 'refs/heads/main' }, {
+    agent: { id: 'session-worktree', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never)
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]!.method, 'worktrees.provision')
+  assert.match(String(calls[0]!.params.operationId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[0]!.params, operationId: '<id>' }, {
+    operationId: '<id>',
+    requestedBySessionId: 'session-worktree',
+    workspaceRoot: '/repo',
+    baseRef: 'refs/heads/main',
+  })
 })
 
 test('refuses a desktop file action without an authoritative workspace', async () => {

@@ -12,6 +12,10 @@ import {
   GitRepositoryIdentity,
   GitStatusParams,
   GitStatusSnapshot,
+  WorktreeProvisionParams,
+  WorktreeSessionBindingParams,
+  WorktreeSessionBindingResult,
+  WorktreeSummary,
   McpTransportDescriptor,
   DesktopNotificationParams,
   DesktopSessionActivityParams,
@@ -54,6 +58,13 @@ export interface DesktopCapabilityDependencies {
     discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity>
     status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
   }
+  worktrees: {
+    provision(params: WorktreeProvisionParams, signal: AbortSignal): Promise<WorktreeSummary>
+    reportSessionBinding(
+      params: WorktreeSessionBindingParams,
+      signal: AbortSignal,
+    ): Promise<WorktreeSessionBindingResult>
+  }
 }
 
 function unsupportedComputer(): never {
@@ -94,6 +105,9 @@ export function createDesktopCapabilityHandlers(
       dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
     'git.status': (params, context) => dependencies.git.status(params, context.signal),
+    'worktrees.provision': (params, context) => dependencies.worktrees.provision(params, context.signal),
+    'desktop.reportSessionBinding': (params, context) =>
+      dependencies.worktrees.reportSessionBinding(params, context.signal),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

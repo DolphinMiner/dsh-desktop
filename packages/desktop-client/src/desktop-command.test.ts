@@ -59,6 +59,10 @@ function environment(options: { projectPath?: string | null } = {}): {
         operations.push(`workspace.create:${path}`)
         return { workspaceId: 'workspace-created' }
       },
+      connectWorkspace: async (id: string) => {
+        operations.push(`workspace.connect:${id}`)
+        return 'session-worktree'
+      },
       startSession: (id?: string) => { operations.push(`workspace.start:${id ?? 'new'}`) },
     },
     layout: { toggleSidebar: () => { operations.push('layout.toggle') } },
@@ -98,6 +102,20 @@ test('waits for reconnect before reopening official sessions and workspaces', as
   await workspace
 
   assert.deepEqual(runtime.operations, ['session.open:session-2', 'workspace.start:workspace-2'])
+})
+
+test('opens a managed worktree through an official workspace and session', async () => {
+  const runtime = environment()
+  await runDesktopCommand(runtime.value, {
+    type: 'worktree.open',
+    recordId: '11111111-1111-4111-8111-111111111111',
+    path: '/managed/worktree',
+  })
+  assert.deepEqual(runtime.operations, [
+    'workspace.create:/managed/worktree',
+    'workspace.connect:workspace-created',
+    'session.open:session-worktree',
+  ])
 })
 
 test('routes native controls without creating a second desktop state store', async () => {

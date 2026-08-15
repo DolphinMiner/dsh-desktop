@@ -94,6 +94,14 @@ export async function apply(ctx: Context): Promise<void> {
     ctx.logger('dsh-desktop').warn('desktop capability bridge unavailable: %s', message)
   })
 
+  ctx.on('session/created', session => {
+    if (session.header.cwd === undefined) return
+    void bridge.call('desktop.reportSessionBinding', {
+      sessionId: session.id,
+      workspacePath: session.header.cwd,
+    }).catch(() => undefined)
+  })
+
   await supervisor.reconcile()
 
   ctx.on('session/event', (session, event) => {

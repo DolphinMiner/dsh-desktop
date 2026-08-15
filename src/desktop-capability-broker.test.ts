@@ -27,6 +27,10 @@ function testHandlers() {
       discover: () => Promise.reject(new Error('not configured')),
       status: () => Promise.reject(new Error('not configured')),
     },
+    worktrees: {
+      provision: () => Promise.reject(new Error('not configured')),
+      reportSessionBinding: () => Promise.resolve({ managed: false }),
+    },
     connections: {
       snapshot: () => ({
         revision: 0,
@@ -129,6 +133,36 @@ test('never caches or replays computer action capability responses', async () =>
   assert.equal(calls, 2)
   assert.equal(replies.length, 2)
   assert.ok(replies.every(reply => !reply.ok && reply.error.code === 'PERMISSION_DENIED'))
+})
+
+test('never caches worktree provisioning responses at the capability broker', async () => {
+  let calls = 0
+  const handlers = testHandlers()
+  handlers['worktrees.provision'] = () => {
+    calls += 1
+    throw {
+      code: 'CONFLICT',
+      message: 'The durable operation owner must decide whether recovery is safe.',
+      ambiguous: true,
+    }
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  const request = createRequest('worktree-request', 'worktrees.provision', {
+    operationId: 'provision-1',
+    requestedBySessionId: 'session-1',
+    workspaceRoot: '/repo',
+    baseRef: 'refs/heads/main',
+  })
+
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(calls, 2)
+  assert.equal(replies.length, 2)
+  assert.ok(replies.every(reply => !reply.ok && reply.error.ambiguous === true))
 })
 
 test('returns a structured failure when a capability handler throws synchronously', async () => {

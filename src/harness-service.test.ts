@@ -17,6 +17,10 @@ const unconfiguredGit = {
   discover: () => Promise.reject(new Error('not configured')),
   status: () => Promise.reject(new Error('not configured')),
 }
+const unconfiguredWorktrees = {
+  provision: () => Promise.reject(new Error('not configured')),
+  reportSessionBinding: () => Promise.resolve({ managed: false }),
+}
 
 async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 2_000): Promise<T> {
   let timer: NodeJS.Timeout | undefined
@@ -147,6 +151,7 @@ test('routes a child-process capability request through the desktop broker', asy
       open: () => Promise.reject(new Error('not configured')),
     },
     git: unconfiguredGit,
+    worktrees: unconfiguredWorktrees,
     connections: {
       snapshot: () => ({
         revision: 0,
@@ -292,6 +297,7 @@ test('cancels pending desktop work and recovers without replay after a Harness c
       },
     },
     git: unconfiguredGit,
+    worktrees: unconfiguredWorktrees,
     connections: {
       snapshot: () => ({
         revision: 0,

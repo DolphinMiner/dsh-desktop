@@ -25,6 +25,11 @@ const git = {
   status: () => Promise.reject(new Error('not configured')),
 }
 
+const worktrees = {
+  provision: () => Promise.reject(new Error('not configured')),
+  reportSessionBinding: () => Promise.reject(new Error('not configured')),
+}
+
 test('suppresses native notifications while the app is focused', async () => {
   let shown = 0
   const handlers = createDesktopCapabilityHandlers({
@@ -36,6 +41,7 @@ test('suppresses native notifications while the app is focused', async () => {
     sessionActivity: { report: () => true },
     workspaceFiles,
     git,
+    worktrees,
     connections,
   })
 
@@ -61,6 +67,7 @@ test('reports unsupported notifications and dispatches supported notifications o
     sessionActivity: { report: () => true },
     workspaceFiles,
     git,
+    worktrees,
     connections,
   })
   const context = { requestId: 'notify-2', signal: new AbortController().signal }
@@ -90,6 +97,7 @@ test('projects session activity through the desktop-owned tracker', async () => 
     },
     workspaceFiles,
     git,
+    worktrees,
     connections,
   })
 
@@ -123,6 +131,7 @@ test('dispatches workspace file capabilities with caller cancellation', async ()
       },
     },
     git,
+    worktrees,
     connections,
   })
   const context = { requestId: 'path-1', signal: new AbortController().signal }
@@ -179,6 +188,7 @@ test('routes bounded computer observation and action capabilities', async () => 
     sessionActivity: { report: () => true },
     workspaceFiles,
     git,
+    worktrees,
     connections,
     computer: {
       getPermissions: async signal => {
@@ -255,6 +265,7 @@ test('routes workspace-bound Git discovery and status with caller cancellation',
     sessionActivity: { report: () => true },
     workspaceFiles,
     connections,
+    worktrees,
     git: {
       discover: async (params, signal) => {
         assert.equal(signal.aborted, false)
@@ -282,4 +293,64 @@ test('routes workspace-bound Git discovery and status with caller cancellation',
   assert.deepEqual(await handlers['git.discover'](workspace, context), repository)
   assert.equal((await handlers['git.status']({ ...workspace, repositoryRoot: '/repo' }, context)).clean, true)
   assert.deepEqual(calls, ['discover:session-1:/repo', 'status:/repo'])
+})
+
+test('routes worktree provisioning as a caller-cancellable capability', async () => {
+  const calls: string[] = []
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    connections,
+    git,
+    worktrees: {
+      provision: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`${params.operationId}:${params.requestedBySessionId}:${params.baseRef}`)
+        return {
+          id: '11111111-1111-4111-8111-111111111111',
+          repositoryRoot: '/repo',
+          requestedBySessionId: params.requestedBySessionId,
+          sessionState: 'pending',
+          executionMode: 'worktree',
+          worktreePath: '/worktrees/session-1',
+          baseRef: params.baseRef,
+          baseCommit: 'a'.repeat(40),
+          branch: 'refs/heads/dsh/session-1',
+          lifecycle: 'ready',
+          createdAt: '2026-08-16T12:00:00.000Z',
+          updatedAt: '2026-08-16T12:00:01.000Z',
+        }
+      },
+      reportSessionBinding: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`bind:${params.sessionId}:${params.workspacePath}`)
+        return { managed: false }
+      },
+    },
+  })
+  const params = {
+    operationId: 'provision-1',
+    requestedBySessionId: 'session-1',
+    workspaceRoot: '/repo',
+    baseRef: 'refs/heads/main',
+  }
+
+  const result = await handlers['worktrees.provision'](params, {
+    requestId: 'worktree-1',
+    signal: new AbortController().signal,
+  })
+  assert.equal(result.lifecycle, 'ready')
+  assert.deepEqual(await handlers['desktop.reportSessionBinding']({
+    sessionId: 'session-created',
+    workspacePath: '/other',
+  }, {
+    requestId: 'worktree-binding-1',
+    signal: new AbortController().signal,
+  }), { managed: false })
+  assert.deepEqual(calls, [
+    'provision-1:session-1:refs/heads/main',
+    'bind:session-created:/other',
+  ])
 })

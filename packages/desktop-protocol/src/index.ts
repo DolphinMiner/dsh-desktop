@@ -22,11 +22,22 @@ import {
   parseGitStatusParams,
   parseGitStatusSnapshot,
 } from './git.js'
+import {
+  parseWorktreeProvisionParams,
+  parseWorktreeSessionBindingParams,
+  parseWorktreeSessionBindingResult,
+  parseWorktreeSummary,
+  WorktreeProvisionParams,
+  WorktreeSessionBindingParams,
+  WorktreeSessionBindingResult,
+  WorktreeSummary,
+} from './worktree.js'
 
 export * from './computer.js'
 export * from './git.js'
+export * from './worktree.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 7 as const
+export const DESKTOP_PROTOCOL_VERSION = 8 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -129,6 +140,7 @@ export type DesktopRendererCommand =
   | { type: 'session.open'; sessionId: string }
   | { type: 'session.stop'; sessionId?: string }
   | { type: 'workspace.open'; workspaceId: string }
+  | { type: 'worktree.open'; recordId: string; path: string }
   | { type: 'settings.open'; sectionId?: string }
   | { type: 'sidebar.toggle' }
 
@@ -222,6 +234,14 @@ export interface DesktopCapabilityMap {
   'git.status': {
     params: GitStatusParams
     result: GitStatusSnapshot
+  }
+  'worktrees.provision': {
+    params: WorktreeProvisionParams
+    result: WorktreeSummary
+  }
+  'desktop.reportSessionBinding': {
+    params: WorktreeSessionBindingParams
+    result: WorktreeSessionBindingResult
   }
   'connections.list': {
     params: Record<string, never>
@@ -320,6 +340,7 @@ const MAX_NONCE_LENGTH = 256
 const MAX_TITLE_LENGTH = 120
 const MAX_BODY_LENGTH = 1_000
 const MAX_SESSION_ID_LENGTH = 256
+const MAX_PATH_LENGTH = 4_096
 const MAX_TOKEN_LENGTH = 32_768
 const MAX_LABEL_LENGTH = 160
 const MAX_STATUS_MESSAGE_LENGTH = 1_000
@@ -514,6 +535,12 @@ export function parseRendererCommand(value: unknown): DesktopRendererCommand | u
       ? { type: value.type, workspaceId: value.workspaceId }
       : undefined
   }
+  if (value.type === 'worktree.open') {
+    return isBoundedString(value.recordId, MAX_ID_LENGTH) &&
+      isBoundedString(value.path, MAX_PATH_LENGTH)
+      ? { type: value.type, recordId: value.recordId, path: value.path }
+      : undefined
+  }
   if (value.type === 'session.stop') {
     return value.sessionId === undefined || isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH)
       ? { type: value.type, ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }) }
@@ -618,6 +645,12 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'git.status') {
     return parseGitStatusParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'worktrees.provision') {
+    return parseWorktreeProvisionParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'desktop.reportSessionBinding') {
+    return parseWorktreeSessionBindingParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -687,6 +720,12 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'git.status') {
     return parseGitStatusSnapshot(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'worktrees.provision') {
+    return parseWorktreeSummary(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'desktop.reportSessionBinding') {
+    return parseWorktreeSessionBindingResult(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined
@@ -771,7 +810,7 @@ export function createEvent<E extends DesktopEventName>(
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
-    method === 'computer.act'
+    method === 'computer.act' || method === 'worktrees.provision'
 }
 
 const READ_ONLY_MCP_TOOL_PREFIXES = [

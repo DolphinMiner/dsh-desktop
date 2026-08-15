@@ -75,6 +75,12 @@ export async function runDesktopCommand(
     ctx.workspaces.startSession(workspace.workspaceId)
     return
   }
+  if (command.type === 'worktree.open') {
+    const workspace = await ctx.workspaces.create({ path: command.path })
+    const sessionId = await ctx.workspaces.connectWorkspace(workspace.workspaceId)
+    ctx.sessions.open(sessionId)
+    return
+  }
   if (command.type === 'session.stop') {
     const sessionId = command.sessionId as SessionId | undefined ?? ctx.sessions.list.getSnapshot().current
     if (sessionId === undefined) return

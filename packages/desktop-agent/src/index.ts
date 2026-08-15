@@ -18,6 +18,7 @@ const OUTPUT_SCHEMA = {
 const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
 const GIT_READ_TIMEOUT_MS = 35_000
+const WORKTREE_PROVISION_TIMEOUT_MS = 65_000
 const MAX_AGENT_GIT_ENTRIES = 500
 const COMPUTER_ACTION_TOOLS = new Set([
   'computer_click',
@@ -209,6 +210,39 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'desktop_create_worktree',
+    description: 'Create a new isolated, app-managed Git worktree for a follow-up agent session.',
+    parameters: {
+      base_ref: {
+        type: 'string',
+        required: true,
+        description: 'Explicit branch, tag, or commit to use as the new worktree base.',
+      },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Create worktree from ${args.base_ref}`,
+      kind: 'execute',
+    }),
+    timeoutMs: WORKTREE_PROVISION_TIMEOUT_MS + 5_000,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const workspace = agentWorkspace(exec)
+      const result = await ctx.desktopBridge.call('worktrees.provision', {
+        operationId: randomUUID(),
+        requestedBySessionId: workspace.sessionId,
+        workspaceRoot: workspace.workspaceRoot,
+        baseRef: args.base_ref,
+      }, { signal: exec.signal, timeoutMs: WORKTREE_PROVISION_TIMEOUT_MS })
+      return JSON.parse(JSON.stringify(result))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'computer_click',
     description: 'Click an accessibility element from the latest compatible computer observation.',
     parameters: {
@@ -378,6 +412,12 @@ export function apply(ctx: Context): void {
       return {
         kind: 'ask',
         reason: 'This computer action can change another application. Approve this operation once to continue.',
+      }
+    }
+    if (execution.name === 'desktop_create_worktree') {
+      return {
+        kind: 'ask',
+        reason: 'Creating a worktree adds a local Git branch and checkout. Approve this operation once to continue.',
       }
     }
     if (execution.name !== 'desktop_open_file') return downstream
