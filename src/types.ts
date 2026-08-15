@@ -26,6 +26,7 @@ export interface DesktopBridge {
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
   git: {
     review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
+    mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
     comments: {
       list(input: DesktopGitReviewCommentsInput): Promise<GitReviewCommentSnapshot>
       add(input: AddGitReviewCommentInput): Promise<GitReviewCommentSnapshot>
@@ -65,11 +66,13 @@ import type {
   ComputerControlSnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  DesktopGitIndexMutationInput,
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DeleteGitReviewCommentInput,
   GitReviewCommentSnapshot,
   GitReviewCommentsChangedEvent,
   GitReviewSnapshot,
+  GitIndexMutationResult,
   SelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'

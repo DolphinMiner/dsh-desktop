@@ -23,6 +23,7 @@ import {
   parseConnectApiKeyInput,
   parseDeleteGitReviewCommentInput,
   parseDisconnectConnectionInput,
+  parseDesktopGitIndexMutationInput,
   parseDesktopGitReviewInput,
   parseDesktopGitReviewCommentsInput,
   parseSelectComputerTargetInput,
@@ -42,6 +43,8 @@ import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
 import { GitReviewCommentController } from './git-review-comment-controller'
 import { GitReviewCommentStore } from './git-review-comments'
+import { GitIndexController } from './git-index-controller'
+import { GitMutationJournal } from './git-mutation-journal'
 import { GitService } from './git-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
@@ -403,6 +406,7 @@ function installIpcHandlers(
   connections: ConnectionManager,
   computer: ComputerObserver,
   git: WorkspaceGitCapabilityService,
+  gitIndex: GitIndexController,
   comments: GitReviewCommentController,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
@@ -446,6 +450,11 @@ function installIpcHandlers(
     const signal = new AbortController().signal
     const repository = await git.discover(input, signal)
     return git.review({ ...input, repositoryRoot: repository.root }, signal)
+  })
+  ipcMain.handle('desktop:git:index:mutate', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitIndexMutationInput(value))
+    return gitIndex.mutate(input, new AbortController().signal)
   })
   ipcMain.handle('desktop:git:comments:list', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -687,12 +696,14 @@ app.whenReady().then(async () => {
       }
     },
   })
+  const gitMutations = new GitMutationJournal(join(desktopDataPath, 'git-mutations.v1.json'))
 
   installMenu()
   installIpcHandlers(
     connections,
     computerObserver,
     reviewWorkspaceGit,
+    new GitIndexController(reviewWorkspaceGit, gitMutations),
     new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
   )
 

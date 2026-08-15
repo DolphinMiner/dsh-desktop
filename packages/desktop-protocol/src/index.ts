@@ -43,6 +43,7 @@ import {
 
 export * from './computer.js'
 export * from './git.js'
+export * from './git-index.js'
 export * from './git-review-comments.js'
 export * from './git-review-patch.js'
 export * from './worktree.js'

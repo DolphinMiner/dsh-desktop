@@ -57,6 +57,10 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
       calls.push(`review:${root}:${scope.kind}`)
       return emptyReview()
     },
+    mutateIndex: async (root, kind, paths) => {
+      calls.push(`mutate:${root}:${kind}:${paths.join(',')}`)
+      return cleanStatus()
+    },
   }
   const service = new WorkspaceGitCapabilityService(git, (sessionId, workspaceRoot, signal) => {
     assert.equal(signal.aborted, false)
@@ -72,6 +76,13 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
     repositoryRoot: '/repo',
     scope: { kind: 'unstaged' },
   }, signal)).patch, '')
+  assert.equal((await service.mutateIndex({
+    ...params,
+    repositoryRoot: '/repo',
+    requestId: '11111111-1111-4111-8111-111111111111',
+    kind: 'stage',
+    paths: ['src/example.ts'],
+  }, signal)).clean, true)
   assert.deepEqual(calls, [
     'authorize:session-1:/repo',
     'discover:/repo',
@@ -86,6 +97,11 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
     'authorize:session-1:/repo',
     'review:/repo:unstaged',
     'authorize:session-1:/repo',
+    'authorize:session-1:/repo',
+    'discover:/repo',
+    'authorize:session-1:/repo',
+    'mutate:/repo:stage:src/example.ts',
+    'authorize:session-1:/repo',
   ])
 })
 
@@ -98,6 +114,7 @@ test('rejects an unrelated requested root before reading status', async () => {
       return cleanStatus()
     },
     review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -113,6 +130,7 @@ test('rejects a repository identity that changes during status', async () => {
     discoverRepository: async () => repository,
     status: async () => cleanStatus({ ...repository, gitDir: '/repo/.git-replaced' }),
     review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -127,6 +145,7 @@ test('rejects a repository identity that changes during review', async () => {
     discoverRepository: async () => repository,
     status: async () => cleanStatus(),
     review: async () => emptyReview({ ...repository, commonDir: '/repo/.git-replaced' }),
+    mutateIndex: async () => cleanStatus(),
   }, () => undefined)
 
   await assert.rejects(service.review({
@@ -134,6 +153,24 @@ test('rejects a repository identity that changes during review', async () => {
     workspaceRoot: '/repo',
     repositoryRoot: '/repo',
     scope: { kind: 'unstaged' },
+  }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
+})
+
+test('rejects a repository identity that changes during an index mutation', async () => {
+  const service = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => repository,
+    status: async () => cleanStatus(),
+    review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus({ ...repository, commonDir: '/repo/.git-replaced' }),
+  }, () => undefined)
+
+  await assert.rejects(service.mutateIndex({
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    repositoryRoot: '/repo',
+    requestId: '11111111-1111-4111-8111-111111111111',
+    kind: 'stage',
+    paths: ['src/example.ts'],
   }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
 })
 
@@ -145,6 +182,7 @@ test('maps bounded Git failures without weakening caller authorization', async (
     },
     status: async () => cleanStatus(),
     review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
   }, () => {
     authorized = true
   })

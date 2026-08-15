@@ -193,6 +193,63 @@ test('reads authoritative unstaged, staged, commit, and merge-base review scopes
   assert.match(branch.patch, /diff --git a\/committed\.txt b\/committed\.txt/)
 })
 
+test('stages and unstages literal paths and returns authoritative status', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'README.md'), 'changed\n')
+  await writeFile(join(root, ':(literal) file.txt'), 'literal path\n')
+
+  const service = new GitService()
+  const staged = await service.mutateIndex(canonicalRoot, 'stage', [
+    'README.md',
+    ':(literal) file.txt',
+  ])
+  assert.deepEqual(staged.entries.map(entry => [entry.path, entry.indexStatus, entry.worktreeStatus]), [
+    [':(literal) file.txt', 'A', '.'],
+    ['README.md', 'M', '.'],
+  ])
+
+  const unstaged = await service.mutateIndex(canonicalRoot, 'unstage', ['README.md'])
+  assert.deepEqual(unstaged.entries.map(entry => [entry.path, entry.indexStatus, entry.worktreeStatus]), [
+    [':(literal) file.txt', 'A', '.'],
+    ['README.md', '.', 'M'],
+  ])
+})
+
+test('unstages a changed initial commit candidate without deleting the working file', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-git-unborn-test-'))
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await git(root, 'init', '-b', 'main')
+  await writeFile(join(root, 'initial.txt'), 'first\n')
+  const service = new GitService()
+  await service.mutateIndex(canonicalRoot, 'stage', ['initial.txt'])
+  await writeFile(join(root, 'initial.txt'), 'changed after stage\n')
+
+  const status = await service.mutateIndex(canonicalRoot, 'unstage', ['initial.txt'])
+  assert.equal(status.head, undefined)
+  assert.deepEqual(status.entries, [{
+    kind: 'untracked',
+    path: 'initial.txt',
+    indexStatus: '?',
+    worktreeStatus: '?',
+  }])
+  assert.equal(await gitOutput(root, 'status', '--porcelain', '--', 'initial.txt'), '?? initial.txt')
+})
+
+test('rejects traversal and duplicate Git mutation paths before invocation', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const service = new GitService()
+
+  await assert.rejects(service.mutateIndex(canonicalRoot, 'stage', ['../outside']),
+    (error: GitServiceError) => error.code === 'INVALID_INPUT')
+  await assert.rejects(service.mutateIndex(canonicalRoot, 'stage', ['README.md', 'README.md']),
+    (error: GitServiceError) => error.code === 'INVALID_INPUT')
+})
+
 test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {
   const entries = parseGitWorktreeList(Buffer.from([
     'worktree /repo',

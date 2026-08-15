@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
+  IconBranchOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
   IconSendOutline16,
@@ -15,6 +16,7 @@ import type {
   AddGitReviewCommentInput,
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
+  DesktopGitIndexMutationInput,
   DeleteGitReviewCommentInput,
   GitReviewFile,
   GitReviewComment,
@@ -23,6 +25,7 @@ import type {
   GitReviewCommentsChangedEvent,
   GitReviewScope,
   GitReviewSnapshot,
+  GitIndexMutationResult,
   ReviewDiffLine,
   ReviewPatchFile,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -37,6 +40,7 @@ import {
 
 export interface DesktopGitBridge {
   review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
+  mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
   comments: {
     list(input: DesktopGitReviewCommentsInput): Promise<GitReviewCommentSnapshot>
     add(input: AddGitReviewCommentInput): Promise<GitReviewCommentSnapshot>
@@ -129,6 +133,7 @@ const styles: Record<string, CSSProperties> = {
     zIndex: 1,
   },
   patchPath: {
+    flex: 1,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 12,
     minWidth: 0,
@@ -412,6 +417,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   }>()
   const [commentBody, setCommentBody] = useState('')
   const [pendingComment, setPendingComment] = useState<string>()
+  const [pendingMutation, setPendingMutation] = useState<'stage' | 'unstage'>()
+  const [mutationError, setMutationError] = useState<string>()
 
   useEffect(() => {
     let current = true
@@ -514,7 +521,29 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     }
     setCommentDraft(undefined)
     setCommentBody('')
+    setMutationError(undefined)
     setRequestedScope({ ...scope })
+  }
+
+  const mutateSelected = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || snapshot === undefined || selected === undefined ||
+      (snapshot.scope.kind !== 'unstaged' && snapshot.scope.kind !== 'staged')) return
+    const kind = snapshot.scope.kind === 'unstaged' ? 'stage' : 'unstage'
+    setPendingMutation(kind)
+    setMutationError(undefined)
+    void bridge.mutateIndex({
+      sessionId,
+      workspaceRoot,
+      requestId: crypto.randomUUID(),
+      kind,
+      paths: [selected.path],
+    }).then(() => {
+      setMutationError(undefined)
+      setRequestedScope({ ...snapshot.scope })
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setRequestedScope({ ...snapshot.scope })
+    }).finally(() => setPendingMutation(undefined))
   }
 
   const beginComment = (anchor: GitReviewCommentAnchor): void => {
@@ -651,8 +680,21 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
               <div style={styles.patchHeader}>
                 <span style={styles.patchPath}>{selected.path}</span>
                 <Pill>{selected.status}</Pill>
+                {(snapshot.scope.kind === 'unstaged' || snapshot.scope.kind === 'staged') && (
+                  <Button
+                    size="sm"
+                    variant="toolbar"
+                    icon={<IconBranchOutline16 />}
+                    disabled={loading || pendingMutation !== undefined}
+                    title={snapshot.scope.kind === 'unstaged' ? 'Stage selected file' : 'Unstage selected file'}
+                    onClick={mutateSelected}
+                  >
+                    {snapshot.scope.kind === 'unstaged' ? 'Stage' : 'Unstage'}
+                  </Button>
+                )}
               </div>
             )}
+            {mutationError !== undefined && <div role="alert" style={styles.state}>{mutationError}</div>}
             {commentError !== undefined && <div role="alert" style={styles.state}>{commentError}</div>}
             {parsed.error !== undefined && <div role="alert" style={styles.state}>{parsed.error}</div>}
             {parsed.error === undefined && selected?.patchAvailable === false && (

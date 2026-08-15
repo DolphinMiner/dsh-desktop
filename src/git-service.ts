@@ -1,9 +1,10 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { lstat, realpath, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize, posix, win32 } from 'node:path'
 import type { Readable } from 'node:stream'
 
 import type {
+  GitIndexMutationKind,
   GitRepositoryIdentity,
   GitReviewFile,
   GitReviewScope,
@@ -15,6 +16,9 @@ import type {
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 const MAX_ERROR_MESSAGE_LENGTH = 2_000
+const MAX_MUTATION_PATHS = 256
+const MAX_MUTATION_PATH_LENGTH = 4_096
+const MAX_MUTATION_TOTAL_PATH_LENGTH = 65_536
 
 export type GitServiceErrorCode =
   | 'BAD_OUTPUT'
@@ -88,6 +92,25 @@ function boundedInput(value: string, label: string): string {
     throw new GitServiceError('INVALID_INPUT', `${label} is invalid.`)
   }
   return value
+}
+
+function boundedMutationPaths(paths: readonly string[]): string[] {
+  if (paths.length < 1 || paths.length > MAX_MUTATION_PATHS || new Set(paths).size !== paths.length) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git mutation path list is invalid.')
+  }
+  let totalLength = 0
+  for (const path of paths) {
+    totalLength += path.length
+    if (path.length < 1 || path.length > MAX_MUTATION_PATH_LENGTH || path.includes('\0') ||
+      path === '.' || posix.isAbsolute(path) || win32.isAbsolute(path) || posix.normalize(path) !== path ||
+      path.split('/').includes('..')) {
+      throw new GitServiceError('INVALID_INPUT', 'A Git mutation path is invalid.')
+    }
+  }
+  if (totalLength > MAX_MUTATION_TOTAL_PATH_LENGTH) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git mutation path list is too large.')
+  }
+  return [...paths]
 }
 
 function redactError(value: string): string {
@@ -455,6 +478,52 @@ export class GitService {
         'Git operations require the exact repository root returned by repository discovery.',
       )
     }
+    return this.statusBefore(repository, signal, deadline)
+  }
+
+  async mutateIndex(
+    repositoryRoot: string,
+    kind: GitIndexMutationKind,
+    paths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<GitStatusSnapshot> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    if (kind !== 'stage' && kind !== 'unstage') {
+      throw new GitServiceError('INVALID_INPUT', 'The Git index mutation kind is invalid.')
+    }
+    const safePaths = boundedMutationPaths(paths)
+    let command: string[]
+    if (kind === 'stage') {
+      command = ['add', '--all', '--', ...safePaths]
+    } else {
+      const before = await this.statusBefore(repository, signal, deadline)
+      command = before.head === undefined
+        ? ['rm', '--cached', '--force', '--ignore-unmatch', '-r', '--', ...safePaths]
+        : ['restore', '--staged', '--', ...safePaths]
+    }
+    await this.run([
+      '--no-optional-locks',
+      '--literal-pathspecs',
+      '-C', repository.root,
+      '-c', 'core.fsmonitor=false',
+      ...command,
+    ], signal, deadline)
+    return this.statusBefore(repository, signal, deadline)
+  }
+
+  private async statusBefore(
+    repository: GitRepositoryIdentity,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitStatusSnapshot> {
     const result = await this.run([
       '--no-optional-locks',
       '-C', repository.root,
