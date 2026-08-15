@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
-import { realpath, stat } from 'node:fs/promises'
+import { lstat, realpath, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import type { Readable } from 'node:stream'
 
 import type {
@@ -35,9 +36,21 @@ export interface GitServiceOptions {
   maxOutputBytes?: number
 }
 
+export interface GitCreateWorktreeInput {
+  repositoryRoot: string
+  worktreePath: string
+  branch: string
+  commit: string
+  lockReason: string
+}
+
 interface GitCommandResult {
   stdout: Buffer
   stderr: Buffer
+}
+
+function isRecordWithCode(value: unknown): value is { code: string } {
+  return typeof value === 'object' && value !== null && 'code' in value && typeof value.code === 'string'
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
@@ -310,6 +323,99 @@ export class GitService {
     return parseGitStatus(repository, result.stdout)
   }
 
+  async resolveCommit(repositoryRoot: string, ref: string, signal?: AbortSignal): Promise<string> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const boundedRef = boundedInput(ref, 'Git base ref')
+    if (boundedRef.length > 1_024 || /[\r\n]/.test(boundedRef)) {
+      throw new GitServiceError('INVALID_INPUT', 'Git base ref is invalid.')
+    }
+    const commit = parseCommandValue(await this.run([
+      '-C', repository.root,
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${boundedRef}^{commit}`,
+    ], signal, deadline), 'commit identity')
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid commit identity.')
+    }
+    return commit
+  }
+
+  async createWorktree(
+    input: GitCreateWorktreeInput,
+    signal?: AbortSignal,
+  ): Promise<GitRepositoryIdentity> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(input.repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const target = boundedInput(input.worktreePath, 'Worktree path')
+    if (!isAbsolute(target) || normalize(target) !== target) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree path must be normalized and absolute.')
+    }
+    const parent = await this.canonicalDirectory(dirname(target))
+    if (join(parent, basename(target)) !== target) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree path parent changed during validation.')
+    }
+    try {
+      await lstat(target)
+      throw new GitServiceError('INVALID_INPUT', 'The worktree path already exists.')
+    } catch (error) {
+      if (error instanceof GitServiceError) throw error
+      if (!isRecordWithCode(error) || error.code !== 'ENOENT') {
+        throw new GitServiceError('INVALID_INPUT', 'The worktree path could not be inspected safely.')
+      }
+    }
+    const branch = boundedInput(input.branch, 'Worktree branch')
+    const lockReason = boundedInput(input.lockReason, 'Worktree lock reason')
+    if (branch.length > 1_024 || /[\r\n]/.test(branch) || lockReason.length > 256 || /[\r\n]/.test(lockReason) ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) {
+      throw new GitServiceError('INVALID_INPUT', 'The worktree creation request is invalid.')
+    }
+    await this.run([
+      '-C', repository.root,
+      'check-ref-format',
+      '--branch',
+      branch,
+    ], signal, deadline)
+    await this.run([
+      '-C', repository.root,
+      '-c', 'core.fsmonitor=false',
+      '-c', 'core.hooksPath=/dev/null',
+      'worktree',
+      'add',
+      '--no-track',
+      '--lock',
+      '--reason', lockReason,
+      '-b', branch,
+      target,
+      input.commit,
+    ], signal, deadline)
+    const created = await this.discoverRepositoryBefore(target, signal, deadline)
+    if (created.root !== target || created.commonDir !== repository.commonDir) {
+      throw new GitServiceError('GIT_FAILED', 'Git created a worktree with an unexpected repository identity.')
+    }
+    const createdHead = await this.resolveCommitBefore(created.root, 'HEAD', signal, deadline)
+    if (createdHead !== input.commit) {
+      throw new GitServiceError('GIT_FAILED', 'Git created a worktree at an unexpected commit.')
+    }
+    return created
+  }
+
   private async canonicalDirectory(path: string): Promise<string> {
     const canonical = await this.canonicalPath(path)
     const info = await stat(canonical).catch(() => undefined)
@@ -325,6 +431,25 @@ export class GitService {
     } catch {
       throw new GitServiceError('INVALID_INPUT', 'Git returned a path that cannot be resolved safely.')
     }
+  }
+
+  private async resolveCommitBefore(
+    repositoryRoot: string,
+    ref: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const commit = parseCommandValue(await this.run([
+      '-C', repositoryRoot,
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${ref}^{commit}`,
+    ], signal, deadline), 'commit identity')
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid commit identity.')
+    }
+    return commit
   }
 
   private run(

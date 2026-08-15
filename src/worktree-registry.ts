@@ -21,6 +21,7 @@ export type WorktreeLifecycle =
   | 'removed'
 export type WorktreeOperationKind = 'create' | 'remove'
 export type WorktreeRecoveryReason =
+  | 'create-ambiguous'
   | 'interrupted-create'
   | 'interrupted-remove'
   | 'external-change'
@@ -122,7 +123,7 @@ function isLifecycle(value: unknown): value is WorktreeLifecycle {
 }
 
 function isRecoveryReason(value: unknown): value is WorktreeRecoveryReason {
-  return value === 'interrupted-create' || value === 'interrupted-remove' ||
+  return value === 'create-ambiguous' || value === 'interrupted-create' || value === 'interrupted-remove' ||
     value === 'external-change' || value === 'locked' || value === 'missing' || value === 'moved'
 }
 
@@ -328,6 +329,12 @@ export class WorktreeRegistry {
   get(id: string): WorktreeRecord | undefined {
     this.assertAvailable()
     const record = this.state.records.find(item => item.id === id)
+    return record === undefined ? undefined : cloneRecord(record)
+  }
+
+  getByCreationOperation(operationId: string): WorktreeRecord | undefined {
+    this.assertAvailable()
+    const record = this.state.records.find(item => item.creationOperationId === operationId)
     return record === undefined ? undefined : cloneRecord(record)
   }
 
