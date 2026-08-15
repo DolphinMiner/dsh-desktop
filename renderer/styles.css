@@ -1,0 +1,174 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f6f3;
+  color: #171a18;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    linear-gradient(#dfe4df 1px, transparent 1px),
+    linear-gradient(90deg, #dfe4df 1px, transparent 1px),
+    #f5f6f3;
+  background-size: 48px 48px;
+}
+
+.shell {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 30px 34px 24px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  border: 3px solid #171a18;
+  border-right-color: #19a974;
+  border-radius: 50%;
+}
+
+.status {
+  align-self: center;
+  width: min(560px, 100%);
+  margin: 0 auto;
+}
+
+.indicator {
+  width: 18px;
+  height: 18px;
+  margin-bottom: 26px;
+  border-radius: 50%;
+  background: #19a974;
+  box-shadow: 0 0 0 7px rgb(25 169 116 / 12%);
+}
+
+.indicator.is-starting {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.indicator.is-error {
+  background: #d6483f;
+  box-shadow: 0 0 0 7px rgb(214 72 63 / 12%);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #657069;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+h1 {
+  margin: 0;
+  font-size: 38px;
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+
+#message {
+  min-height: 48px;
+  margin: 18px 0 0;
+  color: #515a55;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.progress {
+  width: 100%;
+  height: 3px;
+  margin-top: 28px;
+  overflow: hidden;
+  background: #d9dfda;
+}
+
+.progress span {
+  display: block;
+  width: 36%;
+  height: 100%;
+  background: #19a974;
+  animation: travel 1.4s ease-in-out infinite;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+button {
+  min-width: 104px;
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid #bdc6c0;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #252a27;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #87928b;
+  background: #f7f9f7;
+}
+
+button.primary {
+  border-color: #171a18;
+  background: #171a18;
+  color: #ffffff;
+}
+
+button.primary:hover {
+  background: #2b302d;
+}
+
+button:focus-visible {
+  outline: 3px solid rgb(25 169 116 / 28%);
+  outline-offset: 2px;
+}
+
+footer {
+  color: #778079;
+  font-size: 12px;
+}
+
+@keyframes travel {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(290%); }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(0.92); opacity: 0.75; }
+  50% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indicator,
+  .progress span {
+    animation: none;
+  }
+}

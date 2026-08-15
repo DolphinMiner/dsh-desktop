@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible DSH Desktop problem.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, remove API keys, prompts, workspace content, and personal data from logs and screenshots.
+        Problems in the agent, model, tools, sessions, or upstream Web UI belong in the DeepSeek Harness repository.
+  - type: input
+    id: version
+    attributes:
+      label: DSH Desktop version or commit
+      placeholder: 0.1.0 or a full commit SHA
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 15.6, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: List the smallest reliable sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Paste only the relevant lines from harness.log after removing secrets and private content.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed API keys, tokens, prompts, workspace content, and personal data.
+          required: true

@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a focused desktop integration or workflow improvement.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What desktop workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the user-visible outcome, not only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: upstream
+    attributes:
+      label: Why this belongs in DSH Desktop
+      description: Explain why this is a desktop-host concern rather than a Harness core feature.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/DolphinMiner/dsh-desktop/security/advisories/new
+    about: Report security issues privately. Do not include credentials in a public issue.
+  - name: DeepSeek Harness issue
+    url: https://github.com/deepseek-ai/deepseek-harness/issues/new/choose
+    about: Report agent, model, tool, session, or upstream Web UI problems to Harness.

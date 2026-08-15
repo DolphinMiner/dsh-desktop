@@ -1,0 +1,94 @@
+{
+  "name": "dsh-desktop",
+  "version": "0.1.0",
+  "description": "A macOS desktop host for the official DeepSeek Harness web application.",
+  "main": "dist/main.js",
+  "private": true,
+  "license": "Apache-2.0",
+  "author": "DolphinMiner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DolphinMiner/dsh-desktop.git"
+  },
+  "homepage": "https://github.com/DolphinMiner/dsh-desktop#readme",
+  "bugs": {
+    "url": "https://github.com/DolphinMiner/dsh-desktop/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "electron",
+    "agent",
+    "macos"
+  ],
+  "engines": {
+    "node": ">=22.19.0",
+    "npm": ">=10.0.0"
+  },
+  "packageManager": "npm@10.9.2",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/desktop-security.test.js dist/harness-output.test.js dist/harness-service.test.js",
+    "start": "npm run build && electron .",
+    "dev": "npm run start",
+    "prepare:electron-licenses": "node -e \"require('electron')\"",
+    "package:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dir --arm64",
+    "dist:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dmg zip --arm64"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.9",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "6.0.3"
+  },
+  "build": {
+    "appId": "com.dolphinminer.dsh-desktop",
+    "productName": "DSH Desktop",
+    "artifactName": "DSH-Desktop-${version}-${arch}.${ext}",
+    "asar": false,
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.test.js",
+      "!dist/**/*.test.js.map",
+      "renderer/**/*",
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "node_modules/electron/LICENSE",
+        "to": "THIRD_PARTY/Electron-LICENSE.txt"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSES.chromium.html",
+        "to": "THIRD_PARTY/Chromium-LICENSES.html"
+      },
+      {
+        "from": "node_modules/@img/sharp-libvips-darwin-arm64/README.md",
+        "to": "THIRD_PARTY/sharp-libvips-darwin-arm64-README.md"
+      },
+      {
+        "from": "licenses/LGPL-3.0.txt",
+        "to": "THIRD_PARTY/LGPL-3.0.txt"
+      }
+    ],
+    "mac": {
+      "identity": null,
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}
