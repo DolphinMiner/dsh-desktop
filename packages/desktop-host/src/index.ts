@@ -1,4 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import { basename } from 'node:path'
 import type {} from '@deepseek-ai/dsh-session'
 import {
   ConnectionRuntimeStatusParams,
@@ -96,13 +97,24 @@ export async function apply(ctx: Context): Promise<void> {
   await supervisor.reconcile()
 
   ctx.on('session/event', (session, event) => {
+    if (event.type === 'turn/start' || event.type === 'turn/end') {
+      void bridge.call('desktop.reportSessionActivity', {
+        sessionId: session.id,
+        eventSeq: event.seq,
+        running: event.type === 'turn/start',
+        ...(session.header.cwd === undefined ? {} : { workspacePath: session.header.cwd }),
+      }).catch(() => undefined)
+    }
     if (event.type !== 'turn/end') return
     const kind = event.data.reason.kind
     if (kind !== 'completed' && kind !== 'error') return
     const success = kind === 'completed'
+    const workspace = session.header.cwd === undefined ? undefined : basename(session.header.cwd)
     void bridge.call('desktop.notify', {
       title: success ? 'DSH task completed' : 'DSH task failed',
-      body: success ? 'The agent finished its current turn.' : 'The agent turn ended with an error.',
+      body: success
+        ? `The agent finished${workspace === undefined ? '' : ` in ${workspace}`}.`
+        : `The agent stopped with an error${workspace === undefined ? '' : ` in ${workspace}`}.`,
       sessionId: session.id,
       level: success ? 'success' : 'error',
     }).catch(() => undefined)

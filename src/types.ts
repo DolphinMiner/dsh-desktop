@@ -16,7 +16,9 @@ export interface DesktopBridge {
   getHarnessState(): Promise<HarnessState>
   retryHarness(): Promise<void>
   showHarnessLog(): Promise<void>
+  pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
+  onCommand(listener: (command: DesktopRendererCommand) => void): () => void
   connections: {
     list(): Promise<ConnectionSnapshot>
     connectApiKey(input: ConnectApiKeyInput): Promise<ConnectionSnapshot>
@@ -34,4 +36,5 @@ import type {
   ConnectApiKeyInput,
   ConnectionSnapshot,
   DisconnectConnectionInput,
+  DesktopRendererCommand,
 } from '@dolphinminer/dsh-desktop-protocol'

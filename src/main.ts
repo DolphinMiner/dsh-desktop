@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   Notification,
@@ -14,6 +15,7 @@ import {
 } from 'electron'
 import {
   createEvent,
+  DesktopRendererCommand,
   parseBeginOAuthInput,
   parseCancelOAuthInput,
   parseConnectApiKeyInput,
@@ -25,6 +27,8 @@ import { ConnectionRegistry } from './connection-registry'
 import { CredentialVault, safeStorageBackend } from './credential-vault'
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
+import { DesktopActivitySnapshot, DesktopActivityTracker } from './desktop-activity'
+import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
@@ -52,6 +56,20 @@ let state: HarnessState = {
   logPath: '',
 }
 const pendingOAuthLinks: string[] = []
+const commandQueue = new DesktopCommandQueue()
+let activitySnapshot: DesktopActivitySnapshot = { runningSessionIds: [], workspacePaths: {} }
+
+function updateDesktopActivity(snapshot: DesktopActivitySnapshot): void {
+  activitySnapshot = snapshot
+  const count = snapshot.runningSessionIds.length
+  const title = count === 0
+    ? 'DSH Desktop'
+    : `DSH Desktop (${String(count)} ${count === 1 ? 'task' : 'tasks'} running)`
+  if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.setTitle(title)
+  if (process.platform === 'darwin') app.dock?.setBadge(count === 0 ? '' : String(count))
+}
+
+const activityTracker = new DesktopActivityTracker(updateDesktopActivity)
 
 function registerDesktopProtocol(): boolean {
   if (process.defaultApp && process.argv[1] !== undefined) {
@@ -93,9 +111,46 @@ function receiveOAuthLink(url: string): void {
   })
 }
 
+function canDeliverRendererCommand(): boolean {
+  if (mainWindow === undefined || mainWindow.isDestroyed() || state.phase !== 'ready' ||
+    harnessOrigin === undefined) return false
+  return safeOrigin(mainWindow.webContents.getURL()) === harnessOrigin
+}
+
+function flushRendererCommands(): void {
+  if (!canDeliverRendererCommand()) return
+  commandQueue.drain(command => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+    mainWindow.webContents.send('desktop:command', command)
+    return true
+  })
+}
+
+function focusMainWindow(): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function dispatchRendererCommand(command: DesktopRendererCommand): void {
+  commandQueue.enqueue(command)
+  focusMainWindow()
+  flushRendererCommands()
+}
+
+function receiveDesktopLink(url: string): void {
+  if (isOAuthLink(url)) {
+    receiveOAuthLink(url)
+    return
+  }
+  const command = parseDesktopDeepLink(url)
+  if (command !== undefined) dispatchRendererCommand(command)
+}
+
 app.on('open-url', (event, url) => {
   event.preventDefault()
-  receiveOAuthLink(url)
+  receiveDesktopLink(url)
 })
 
 function resolveDshBin(): string {
@@ -128,6 +183,7 @@ function openExternalUrl(url: string): void {
 
 function publishState(next: HarnessState): void {
   state = next
+  if (next.phase !== 'ready') activityTracker.clear()
   if (mainWindow === undefined || mainWindow.isDestroyed()) return
 
   mainWindow.webContents.send('desktop:harness-state', next)
@@ -175,6 +231,11 @@ function createWindow(): BrowserWindow {
   })
 
   window.once('ready-to-show', () => window.show())
+  window.webContents.on('did-finish-load', flushRendererCommands)
+  window.on('page-title-updated', event => {
+    event.preventDefault()
+    updateDesktopActivity(activitySnapshot)
+  })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) openExternalUrl(url)
@@ -200,11 +261,8 @@ function createWindow(): BrowserWindow {
 
 if (isPrimaryInstance) {
   app.on('second-instance', (_event, argv) => {
-    for (const argument of argv) receiveOAuthLink(argument)
-    if (mainWindow === undefined || mainWindow.isDestroyed()) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    for (const argument of argv) receiveDesktopLink(argument)
+    focusMainWindow()
   })
 }
 
@@ -248,6 +306,16 @@ function installIpcHandlers(connections: ConnectionManager): void {
     assertTrustedSender(event)
     if (state.logPath !== '') shell.showItemInFolder(state.logPath)
   })
+  ipcMain.handle('desktop:pick-project-directory', async event => {
+    assertTrustedSender(event)
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Open Project',
+      buttonLabel: 'Open',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
   ipcMain.handle('desktop:connections:list', event => {
     assertTrustedSender(event)
     return connections.snapshot()
@@ -284,6 +352,11 @@ function installMenu(): void {
       label: app.name,
       submenu: [
         { role: 'about' },
+        {
+          label: 'Settings...',
+          accelerator: 'CommandOrControl+,',
+          click: () => dispatchRendererCommand({ type: 'settings.open' }),
+        },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -292,6 +365,23 @@ function installMenu(): void {
         { role: 'unhide' },
         { type: 'separator' },
         { role: 'quit' },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Session',
+          accelerator: 'CommandOrControl+N',
+          click: () => dispatchRendererCommand({ type: 'session.new' }),
+        },
+        {
+          label: 'Open Project...',
+          accelerator: 'CommandOrControl+O',
+          click: () => dispatchRendererCommand({ type: 'project.open' }),
+        },
+        { type: 'separator' },
+        { role: 'close' },
       ],
     },
     {
@@ -304,6 +394,44 @@ function installMenu(): void {
         { role: 'copy' },
         { role: 'paste' },
         { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'Session',
+      submenu: [
+        {
+          label: 'Stop Current Task',
+          accelerator: 'CommandOrControl+.',
+          click: () => dispatchRendererCommand({ type: 'session.stop' }),
+        },
+        { type: 'separator' },
+        {
+          label: 'Show Harness Log',
+          click: () => {
+            if (state.logPath !== '') shell.showItemInFolder(state.logPath)
+          },
+        },
+        {
+          label: 'Restart Harness',
+          click: () => { void startHarness() },
+        },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Toggle Sidebar',
+          accelerator: 'CommandOrControl+Shift+S',
+          click: () => dispatchRendererCommand({ type: 'sidebar.toggle' }),
+        },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'togglefullscreen' },
+        ...(!app.isPackaged ? [
+          { type: 'separator' as const },
+          { role: 'toggleDevTools' as const },
+        ] : []),
       ],
     },
     {
@@ -364,14 +492,16 @@ app.whenReady().then(async () => {
       show: params => {
         const notification = new Notification({ title: params.title, body: params.body ?? '' })
         notification.on('click', () => {
-          if (mainWindow === undefined || mainWindow.isDestroyed()) return
-          if (mainWindow.isMinimized()) mainWindow.restore()
-          mainWindow.show()
-          mainWindow.focus()
+          if (params.sessionId !== undefined) {
+            dispatchRendererCommand({ type: 'session.open', sessionId: params.sessionId })
+          } else {
+            focusMainWindow()
+          }
         })
         notification.show()
       },
     },
+    sessionActivity: { report: params => activityTracker.report(params) },
     connections: {
       snapshot: () => connections.snapshot(),
       resolveMcpTransport: (connectionId, signal) =>
@@ -392,7 +522,7 @@ app.whenReady().then(async () => {
     await connections.completeOAuth(completion)
   })
   for (const link of pendingOAuthLinks.splice(0)) receiveOAuthLink(link)
-  for (const argument of process.argv) receiveOAuthLink(argument)
+  for (const argument of process.argv) receiveDesktopLink(argument)
   harness = new HarnessService({
     dshBin: resolveDshBin(),
     dshHome,
@@ -401,7 +531,10 @@ app.whenReady().then(async () => {
     nodeExecutable: process.execPath,
     profileName: 'desktop',
     capabilityBroker,
-    onDisconnect: () => connections.hostDisconnected(),
+    onDisconnect: () => {
+      activityTracker.clear()
+      connections.hostDisconnected()
+    },
     onState: publishState,
   })
 

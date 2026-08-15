@@ -22,6 +22,7 @@ test('suppresses native notifications while the app is focused', async () => {
       isSupported: () => true,
       show: () => { shown += 1 },
     },
+    sessionActivity: { report: () => true },
     connections,
   })
 
@@ -44,6 +45,7 @@ test('reports unsupported notifications and dispatches supported notifications o
       isSupported: () => supported,
       show: params => shown.push(params.title),
     },
+    sessionActivity: { report: () => true },
     connections,
   })
   const context = { requestId: 'notify-2', signal: new AbortController().signal }
@@ -58,4 +60,29 @@ test('reports unsupported notifications and dispatches supported notifications o
     { delivered: true },
   )
   assert.deepEqual(shown, ['Second'])
+})
+
+test('projects session activity through the desktop-owned tracker', async () => {
+  const reported: string[] = []
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: {
+      report: params => {
+        reported.push(`${params.sessionId}:${String(params.running)}`)
+        return true
+      },
+    },
+    connections,
+  })
+
+  assert.deepEqual(await handlers['desktop.reportSessionActivity']({
+    sessionId: 'session-1',
+    eventSeq: 4,
+    running: true,
+  }, {
+    requestId: 'activity-1',
+    signal: new AbortController().signal,
+  }), { accepted: true })
+  assert.deepEqual(reported, ['session-1:true'])
 })

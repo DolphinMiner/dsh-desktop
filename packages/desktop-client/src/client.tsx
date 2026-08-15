@@ -1,7 +1,7 @@
 import type { CSSProperties, FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   Button,
   IconCloseOutline16,
@@ -10,9 +10,12 @@ import {
   IconRefreshOutline16,
   IconTrashOutline16,
   Input,
+  Modal,
   Pill,
   StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {
   BeginOAuthInput,
@@ -23,6 +26,7 @@ import type {
   ConnectionSnapshot,
   ConnectionSummary,
   DisconnectConnectionInput,
+  DesktopRendererCommand,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { canReconnect, connectionStateDot, connectionStatusLabel } from './view-model.js'
@@ -45,6 +49,8 @@ interface DesktopConnectionsBridge {
 declare global {
   interface Window {
     dshDesktop?: {
+      onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+      pickProjectDirectory(): Promise<string | null>
       connections: DesktopConnectionsBridge
     }
   }
@@ -137,6 +143,19 @@ const styles: Record<string, CSSProperties> = {
     overflowWrap: 'anywhere',
   },
   confirm: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
+  footerButton: {
+    alignItems: 'center',
+    background: 'transparent',
+    border: 0,
+    borderRadius: 4,
+    color: 'inherit',
+    cursor: 'pointer',
+    display: 'flex',
+    font: 'inherit',
+    gap: 8,
+    minHeight: 32,
+    padding: '6px 8px',
+  },
 }
 
 interface PendingOAuth {
@@ -517,13 +536,146 @@ function ConnectionsSection(): React.JSX.Element {
   )
 }
 
-export const inject = ['slots']
+const settingsListeners = new Set<(sectionId?: string) => void>()
+
+function openDesktopSettings(sectionId?: string): void {
+  for (const listener of settingsListeners) listener(sectionId)
+}
+
+function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    const listener = (sectionId?: string): void => {
+      if (sectionId === undefined || sectionId === 'connections') setOpen(true)
+    }
+    settingsListeners.add(listener)
+    return () => { settingsListeners.delete(listener) }
+  }, [])
+
+  return (
+    <>
+      <button
+        type="button"
+        style={styles.footerButton}
+        aria-label="Connections"
+        title="Connections"
+        onClick={() => setOpen(true)}
+      >
+        <IconLinkOutline16 size={wide ? 14 : 18} />
+        {wide && <span>Connections</span>}
+      </button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Desktop settings"
+        closeLabel="Close desktop settings"
+      >
+        <ConnectionsSection />
+      </Modal>
+    </>
+  )
+}
+
+interface SnapshotSource<T> {
+  getSnapshot(): T
+  subscribe(listener: () => void): () => void
+}
+
+function waitForSnapshot<T>(
+  source: SnapshotSource<T>,
+  ready: (snapshot: T) => boolean,
+  timeoutMs = 10_000,
+): Promise<T> {
+  const current = source.getSnapshot()
+  if (ready(current)) return Promise.resolve(current)
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    let unsubscribe = (): void => undefined
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const finish = (result: () => void): void => {
+      if (settled) return
+      settled = true
+      if (timeout !== undefined) clearTimeout(timeout)
+      unsubscribe()
+      result()
+    }
+    const removeSubscription = source.subscribe(() => {
+      const snapshot = source.getSnapshot()
+      if (ready(snapshot)) finish(() => resolve(snapshot))
+    })
+    unsubscribe = removeSubscription
+    if (settled) {
+      removeSubscription()
+      return
+    }
+    timeout = setTimeout(() => {
+      finish(() => reject(new Error('Harness state did not become ready in time.')))
+    }, timeoutMs)
+  })
+}
+
+async function runDesktopCommand(ctx: ClientContext, command: DesktopRendererCommand): Promise<void> {
+  if (command.type === 'project.open') {
+    const path = await window.dshDesktop?.pickProjectDirectory()
+    if (path === undefined) throw new Error('The desktop directory picker is unavailable.')
+    if (path === null) return
+    const workspace = await ctx.workspaces.create({ path })
+    ctx.workspaces.startSession(workspace.workspaceId)
+    return
+  }
+  if (command.type === 'session.new') {
+    ctx.workspaces.startSession()
+    return
+  }
+  if (command.type === 'session.open') {
+    const sessions = await waitForSnapshot(ctx.sessions.list, snapshot => snapshot.phase === 'ready')
+    const sessionId = command.sessionId as SessionId
+    if (sessions.byId[sessionId] === undefined) throw new Error('The requested session no longer exists.')
+    ctx.sessions.open(sessionId)
+    return
+  }
+  if (command.type === 'workspace.open') {
+    const workspaces = await waitForSnapshot(ctx.workspaces.list, snapshot => snapshot.phase === 'ready')
+    const workspace = workspaces.items.find(item => item.workspaceId === command.workspaceId)
+    if (workspace === undefined) throw new Error('The requested workspace no longer exists.')
+    ctx.workspaces.startSession(workspace.workspaceId)
+    return
+  }
+  if (command.type === 'session.stop') {
+    const sessionId = command.sessionId as SessionId | undefined ?? ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) return
+    const result = await ctx.sessions.binding(sessionId)?.session.cancel()
+    if (result !== undefined && !result.ok) throw new Error(result.error.message)
+    return
+  }
+  if (command.type === 'settings.open') {
+    openDesktopSettings(command.sectionId)
+    return
+  }
+  ctx.layout.toggleSidebar()
+}
+
+export const inject = ['slots', 'sessions', 'workspaces', 'layout']
 
 export function apply(ctx: ClientContext): void {
+  const bridge = window.dshDesktop
+  if (bridge !== undefined) {
+    ctx.effect(() => bridge.onCommand(command => {
+      void runDesktopCommand(ctx, command).catch(error => {
+        console.warn('Desktop command failed:', error instanceof Error ? error.message : String(error))
+      })
+    }), 'dsh-desktop: native command bridge')
+  }
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'connections',
     order: 12,
     label: 'Connections',
   }, ConnectionsSection))
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
+    id: 'desktop-connections',
+    order: 10,
+  }, DesktopSettingsLauncher))
 }

@@ -9,6 +9,7 @@ import {
   parseCapabilityResult,
   parseConnectApiKeyInput,
   parseDesktopProtocolMessage,
+  parseRendererCommand,
   isLikelyReadOnlyMcpTool,
 } from './index'
 
@@ -57,4 +58,35 @@ test('rejects malformed envelopes and capability payloads', () => {
   }), undefined)
   assert.equal(parseCapabilityParams('desktop.notify', { title: '' }), undefined)
   assert.equal(parseCapabilityResult('desktop.notify', { delivered: 'yes' }), undefined)
+})
+
+test('validates desktop commands and session activity reports', () => {
+  assert.deepEqual(parseRendererCommand({ type: 'session.open', sessionId: 'session-1' }), {
+    type: 'session.open',
+    sessionId: 'session-1',
+  })
+  assert.deepEqual(parseRendererCommand({ type: 'settings.open', sectionId: 'connections' }), {
+    type: 'settings.open',
+    sectionId: 'connections',
+  })
+  assert.equal(parseRendererCommand({ type: 'session.open', sessionId: '' }), undefined)
+  assert.deepEqual(parseCapabilityParams('desktop.reportSessionActivity', {
+    sessionId: 'session-1',
+    eventSeq: 17,
+    running: true,
+    workspacePath: '/tmp/project',
+  }), {
+    sessionId: 'session-1',
+    eventSeq: 17,
+    running: true,
+    workspacePath: '/tmp/project',
+  })
+  assert.equal(parseCapabilityParams('desktop.reportSessionActivity', {
+    sessionId: 'session-1',
+    eventSeq: -1,
+    running: true,
+  }), undefined)
+  assert.deepEqual(parseCapabilityResult('desktop.reportSessionActivity', { accepted: true }), {
+    accepted: true,
+  })
 })

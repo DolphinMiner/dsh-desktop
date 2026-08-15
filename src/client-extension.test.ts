@@ -5,7 +5,7 @@ import test from 'node:test'
 
 const root = process.cwd()
 
-test('packages the desktop settings client through the official Harness loader', async () => {
+test('packages desktop settings and navigation through the official Harness loader', async () => {
   const [manifestSource, patch, bundle] = await Promise.all([
     readFile(join(root, 'packages/desktop-client/package.json'), 'utf8'),
     readFile(join(root, 'packages/desktop-bundle/cordis.patch.yml'), 'utf8'),
@@ -20,10 +20,14 @@ test('packages the desktop settings client through the official Harness loader',
   assert.equal(manifest.dsh?.client?.platform, 'web')
   assert.deepEqual(manifest.dsh?.client?.inject, [
     '@deepseek-ai/dsh-client-runtime',
+    '@deepseek-ai/dsh-client-ui-layout',
+    '@deepseek-ai/dsh-client-ui-sidebar',
     '@deepseek-ai/dsh-client-ui-settings',
   ])
   assert.match(patch, /name: '@dolphinminer\/dsh-desktop-client'/)
   assert.match(bundle, /^window\.__ModuleLoader__\.load\(\{/)
   assert.match(bundle, /id: "@dolphinminer\/dsh-desktop-client"/)
   assert.match(bundle, /id: "connections"/)
+  assert.match(bundle, /id: "desktop-connections"/)
+  assert.match(bundle, /project\.open/)
 })

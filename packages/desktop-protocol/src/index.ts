@@ -1,5 +1,5 @@
 export const DESKTOP_PROTOCOL_CHANNEL = 'dsh-desktop' as const
-export const DESKTOP_PROTOCOL_VERSION = 2 as const
+export const DESKTOP_PROTOCOL_VERSION = 3 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -96,6 +96,22 @@ export interface DesktopNotificationResult {
   reason?: 'foreground' | 'unsupported'
 }
 
+export type DesktopRendererCommand =
+  | { type: 'project.open' }
+  | { type: 'session.new' }
+  | { type: 'session.open'; sessionId: string }
+  | { type: 'session.stop'; sessionId?: string }
+  | { type: 'workspace.open'; workspaceId: string }
+  | { type: 'settings.open'; sectionId?: string }
+  | { type: 'sidebar.toggle' }
+
+export interface DesktopSessionActivityParams {
+  sessionId: string
+  eventSeq: number
+  running: boolean
+  workspacePath?: string
+}
+
 export interface ConnectionCredential {
   kind: ConnectionAuthKind
   accessToken: string
@@ -132,6 +148,10 @@ export interface DesktopCapabilityMap {
   'desktop.notify': {
     params: DesktopNotificationParams
     result: DesktopNotificationResult
+  }
+  'desktop.reportSessionActivity': {
+    params: DesktopSessionActivityParams
+    result: { accepted: boolean }
   }
   'connections.list': {
     params: Record<string, never>
@@ -407,6 +427,33 @@ export function parseCancelOAuthInput(value: unknown): CancelOAuthInput | undefi
   return { requestId: value.requestId, flowId: value.flowId }
 }
 
+export function parseRendererCommand(value: unknown): DesktopRendererCommand | undefined {
+  if (!isRecord(value) || !isBoundedString(value.type, 64)) return undefined
+  if (value.type === 'project.open' || value.type === 'session.new' ||
+    value.type === 'sidebar.toggle') return { type: value.type }
+  if (value.type === 'session.open') {
+    return isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH)
+      ? { type: value.type, sessionId: value.sessionId }
+      : undefined
+  }
+  if (value.type === 'workspace.open') {
+    return isBoundedString(value.workspaceId, MAX_ID_LENGTH)
+      ? { type: value.type, workspaceId: value.workspaceId }
+      : undefined
+  }
+  if (value.type === 'session.stop') {
+    return value.sessionId === undefined || isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH)
+      ? { type: value.type, ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }) }
+      : undefined
+  }
+  if (value.type === 'settings.open') {
+    return value.sectionId === undefined || isBoundedString(value.sectionId, MAX_ID_LENGTH)
+      ? { type: value.type, ...(value.sectionId === undefined ? {} : { sectionId: value.sectionId }) }
+      : undefined
+  }
+  return undefined
+}
+
 export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMessage | undefined {
   if (!isRecord(value) || !hasEnvelope(value)) return undefined
 
@@ -460,6 +507,18 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
       ...(value.level === undefined ? {} : { level: value.level }),
     } as DesktopCapabilityParams<M>
   }
+  if (method === 'desktop.reportSessionActivity') {
+    if (!isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH) ||
+      !Number.isSafeInteger(value.eventSeq) || Number(value.eventSeq) < 0 ||
+      typeof value.running !== 'boolean' ||
+      (value.workspacePath !== undefined && !isBoundedString(value.workspacePath, 4_096))) return undefined
+    return {
+      sessionId: value.sessionId,
+      eventSeq: Number(value.eventSeq),
+      running: value.running,
+      ...(value.workspacePath === undefined ? {} : { workspacePath: value.workspacePath }),
+    } as DesktopCapabilityParams<M>
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -502,6 +561,11 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
       delivered: value.delivered,
       ...(value.reason === undefined ? {} : { reason: value.reason }),
     } as DesktopCapabilityResult<M>
+  }
+  if (method === 'desktop.reportSessionActivity') {
+    return typeof value.accepted === 'boolean'
+      ? { accepted: value.accepted } as DesktopCapabilityResult<M>
+      : undefined
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined

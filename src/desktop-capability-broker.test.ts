@@ -18,6 +18,7 @@ function testHandlers() {
       isSupported: () => true,
       show: () => undefined,
     },
+    sessionActivity: { report: () => true },
     connections: {
       snapshot: () => ({
         revision: 0,

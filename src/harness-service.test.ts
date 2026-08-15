@@ -122,6 +122,7 @@ test('routes a child-process capability request through the desktop broker', asy
   const handlers = createDesktopCapabilityHandlers({
     isAppFocused: () => false,
     notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
     connections: {
       snapshot: () => ({
         revision: 0,
