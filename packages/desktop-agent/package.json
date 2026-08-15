@@ -1,6 +1,6 @@
 {
   "name": "@dolphinminer/dsh-desktop-agent",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Agent-plane extension point for DSH Desktop tools.",
   "private": true,
   "license": "Apache-2.0",
@@ -24,12 +24,12 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
-    "@dolphinminer/dsh-desktop-host": "0.5.0"
+    "@dolphinminer/dsh-desktop-host": "0.6.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
-    "@dolphinminer/dsh-desktop-host": "0.5.0"
+    "@dolphinminer/dsh-desktop-host": "0.6.0"
   }
 }

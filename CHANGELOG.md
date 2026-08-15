@@ -41,6 +41,10 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Read-only `computer_get_permissions`, `computer_list_apps`, and
   `computer_observe` agent tools plus Computer settings for permission state,
   target selection, observation status, refresh, and stop.
+- Snapshot-bound Computer Act support for semantic click, type, key, and scroll
+  operations, with capture-relative points kept as explicit fallbacks.
+- Approved Harness computer-action tools, session-scoped application grants,
+  pause/resume/revoke controls, and a recent action audit surface.
 
 ### Security
 
@@ -61,3 +65,9 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The native computer helper has bounded input/output, execution time, and
   accessibility-tree depth, with crash, cancellation, stale-target, and
   permission-denial handling.
+- Every computer action revalidates the foreground application, surface bounds,
+  display topology, and accessibility target before emitting an input event.
+- Computer action intent, approval, dispatch, and outcome are persisted without
+  typed payloads; dispatched actions with uncertain results are never replayed.
+- Secure fields are refused, and type-action results omit OCR and control values
+  that could echo the entered text.

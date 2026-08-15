@@ -100,8 +100,28 @@ renderer unrestricted desktop access:
 - temporary captures use a private directory and files, bounded retention, and
   explicit cleanup when observation stops or the application exits.
 
-Observe cannot click, type, press keys, or scroll. Those actions belong to the
-separately approved Computer Act lifecycle planned for v0.6.
+Observe itself cannot click, type, press keys, or scroll. v0.6 adds those
+operations through the separately approved Computer Act lifecycle below.
+
+## Computer Act
+
+v0.6 adds bounded macOS actions without giving the Harness renderer generic
+input-control APIs:
+
+- every action is tied to the latest observation from the same running agent
+  session and is rejected if the application, window, displays, or target
+  identity changed;
+- semantic accessibility elements are preferred for click, type, and scroll,
+  while capture-relative points remain explicit fallback tools;
+- the user grants one foreground application to one agent session, and can
+  pause, resume, revoke, or stop actions from the Computer settings page;
+- every action tool receives one-shot Harness approval before Electron records
+  intent, approval, dispatch, and the observed outcome in a durable audit log;
+- secure text fields are refused, typed payloads are excluded from the audit,
+  and type results omit OCR and control values that could echo entered text; and
+- every successful action is followed by a fresh observation. A timeout,
+  helper crash, cancellation after dispatch, or failed verification is treated
+  as ambiguous and is never retried automatically.
 
 ## Architecture
 
@@ -172,10 +192,10 @@ Signing and notarization are deliberately outside the first MVP.
 - Releases are not yet code signed or notarized.
 - Releases do not yet have an automatic updater.
 - Linear OAuth requires a separately configured Linear application.
-- Computer Act actions such as click, type, key, and scroll are not yet
-  implemented.
-- Rich accessibility-tree observations require the user to grant macOS
-  Accessibility permission to the signed application.
+- Computer Observe requires Screen Recording permission. Computer Act also
+  requires Accessibility permission for the exact installed application.
+- Computer Act targets explicitly selected applications or windows; display
+  targets remain observation-only.
 
 ## Local Data
 
@@ -190,6 +210,9 @@ Desktop connection metadata and encrypted credential envelopes are stored under:
 ```text
 ~/Library/Application Support/DSH Desktop/desktop
 ```
+
+The same private desktop directory contains the computer-action audit. It stores
+action summaries and lifecycle outcomes, never typed payloads.
 
 Runtime logs are stored under:
 
@@ -241,13 +264,12 @@ payloads, responses, request IDs, timeouts, cancellation, and disconnects. The
 plugin does not own prompts, sessions, model calls, tools, or persistence;
 those remain in Harness as the single source of truth.
 
-Computer Observe is implemented as a separate native-helper capability with
-explicit target selection, permission reporting, secure-value redaction,
-bounded capture retention, and read-only Harness tools. Computer Act remains a
-separate lifecycle: every click, key, type, or scroll operation will require a
-compatible observation, scoped authorization, cancellation and audit rules,
-and approval for sensitive effects. Merely displaying Harness inside Electron
-does not grant either capability.
+Computer Observe and Computer Act are separate native-helper capabilities.
+Observe owns explicit target selection, permission reporting, secure-value
+redaction, bounded capture retention, and read-only Harness tools. Act adds
+snapshot compatibility checks, scoped session grants, one-shot approvals,
+durable audit, post-action observation, and no-replay ambiguous outcomes.
+Merely displaying Harness inside Electron does not grant either capability.
 
 ## Contributing
 

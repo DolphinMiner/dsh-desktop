@@ -13,7 +13,7 @@ test('packages desktop file tools through the product Harness bundle', async () 
   ])
   const manifest = JSON.parse(manifestSource) as { peerDependencies?: Record<string, string> }
 
-  assert.equal(manifest.peerDependencies?.['@dolphinminer/dsh-desktop-host'], '0.5.0')
+  assert.equal(manifest.peerDependencies?.['@dolphinminer/dsh-desktop-host'], '0.6.0')
   assert.match(patch, /id: desktop-agent\s+name: '@dolphinminer\/dsh-desktop-agent'/)
   assert.match(agent, /desktop_reveal_file/)
   assert.match(agent, /desktop_open_file/)
