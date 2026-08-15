@@ -18,8 +18,15 @@ it. We aim to acknowledge a complete report within five business days.
 Issues in the agent loop, model adapters, tools, sessions, or upstream Web UI
 should be reported to the
 [DeepSeek Harness project](https://github.com/deepseek-ai/deepseek-harness/security).
-Desktop process management, navigation, packaging, and Electron IPC belong in
-this repository.
+Desktop process management, navigation, packaging, Electron IPC, connection
+credentials, OAuth, and the loopback MCP proxy belong in this repository.
+
+Linear credentials and OAuth recovery state must remain encrypted through the
+platform credential store. They must not be added to profile YAML, logs,
+renderer storage, tool results, screenshots, fixtures, or issue reports. A
+desktop client plugin may submit a credential directly to the allowlisted
+preload bridge, but Harness plugins and model-visible tools must receive only
+the ephemeral loopback MCP transport.
 
 Repository maintainers must keep GitHub private vulnerability reporting
 enabled so the reporting link remains available.

@@ -1,6 +1,6 @@
 {
   "name": "@dolphinminer/dsh-desktop-host",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Cordis host integration for DSH Desktop native capabilities.",
   "private": true,
   "license": "Apache-2.0",
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-mcp-client": "^0.1.0-rc.6",
-    "@dolphinminer/dsh-desktop-protocol": "0.2.0"
+    "@dolphinminer/dsh-desktop-protocol": "0.3.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

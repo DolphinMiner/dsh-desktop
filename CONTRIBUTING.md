@@ -1,7 +1,7 @@
 # Contributing
 
 Thanks for helping improve DSH Desktop. This repository is intentionally a
-small desktop host around DeepSeek Harness. Agent behavior, model adapters,
+bounded desktop integration layer around DeepSeek Harness. Agent behavior, model adapters,
 tools, sessions, and the upstream Web UI should normally be changed in the
 [DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness).
 
@@ -36,6 +36,10 @@ information.
 For a visible change, include sanitized before and after screenshots. For a
 new desktop capability, document its permissions and keep the Electron IPC
 surface explicit and allowlisted.
+
+Connection integrations must keep long-lived credentials in the platform
+credential store. Do not place tokens in Harness configuration, model-visible
+results, process arguments, URLs exposed outside loopback, or browser storage.
 
 ## Reporting Problems
 

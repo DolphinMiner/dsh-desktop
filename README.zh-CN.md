@@ -5,11 +5,12 @@
 
 [English](README.md)
 
-DSH Desktop 是一个独立的社区项目，用 Electron 在 macOS 桌面端托管官方
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI。
+DSH Desktop 是一个独立的社区项目，基于 Electron 把官方
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI
+做成 macOS 桌面产品。
 
 > [!IMPORTANT]
-> 当前版本是面向 Apple Silicon 的早期 MVP，尚未签名和公证。本项目与
+> 当前版本是面向 Apple Silicon 的早期预览版，尚未签名和公证。本项目与
 > DeepSeek 没有关联，也未获得 DeepSeek 官方背书。
 
 ## 功能展示
@@ -27,6 +28,29 @@ DSH Desktop 是一个独立的社区项目，用 Electron 在 macOS 桌面端托
 
 项目不 fork 或修改 Harness 的 Agent 循环、模型适配器、会话存储、工具和
 Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React Native。
+
+## Connections
+
+Connections 页面通过官方 Harness client slot 注入。v0.3 支持用 API Key 或
+由发行方配置的 OAuth 应用连接多个 Linear 工作区。
+
+- API Key、OAuth Token、Refresh Token 和 PKCE 恢复状态通过 Electron
+  `safeStorage` 加密，macOS 上由 Keychain 提供保护。
+- Harness 只拿到临时的本机回环 MCP 地址；Electron 仅在最终发往 Linear 的
+  请求上附加凭据。
+- 只读连接使用 Linear 的只读 MCP 端点；可能产生写入的工具需要 Harness
+  单次审批，结果不明确时不会自动重放。
+- UI 真实展示连接中、已连接、授权过期、错误和已断开状态。
+
+API Key 无需额外配置。要在本地启用 OAuth，请创建 Linear OAuth 应用并把
+回调地址设为 `dsh-desktop://oauth/linear/callback`，然后运行：
+
+```bash
+DSH_DESKTOP_LINEAR_CLIENT_ID=your_client_id npm start
+```
+
+仅在 OAuth 客户端要求时设置 `DSH_DESKTOP_LINEAR_CLIENT_SECRET`，不要提交
+这两个值。
 
 ## 架构边界
 
@@ -86,20 +110,24 @@ Harness 数据保存在：
 ```
 
 Electron 层不会读取或复制模型凭据。官方 Harness 的凭据提供器会把凭据
-保存在它自己的数据目录中。日志和本地数据都应视为敏感信息。
+保存在它自己的数据目录中。Linear 连接数据保存在
+`~/Library/Application Support/DSH Desktop/desktop`，其中凭据使用 Keychain
+加密，不会以明文写入 Profile、日志或浏览器存储。日志和本地数据都应视为
+敏感信息。
 
 ## 安全模型
 
 Harness 仅监听 `127.0.0.1`。Electron 渲染进程启用沙箱并关闭 Node.js
-集成；外部导航会被拦截；桌面 IPC 只接受来自内置启动页精确地址的调用。
-安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+集成；外部导航会被拦截；桌面 IPC 只接受来自内置启动页或当前 Harness 本机
+回环地址的调用。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
 ## 当前限制
 
 - 仅提供 Apple Silicon 构建。
 - 尚未进行代码签名和 Apple 公证。
 - 暂无自动更新。
-- Connections、Dock 集成、Keychain 和 Computer Use 尚未实现。
+- Linear OAuth 需要单独配置 OAuth 应用。
+- Dock 活动状态和 Computer Use 尚未实现。
 
 ## 桌面集成边界
 
