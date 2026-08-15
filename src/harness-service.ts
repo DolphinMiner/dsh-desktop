@@ -18,6 +18,7 @@ interface HarnessServiceOptions {
   startupTimeoutMs?: number
   capabilityBroker?: DesktopCapabilityBroker
   onDisconnect?: () => void
+  onUnexpectedFailure?: (state: HarnessState) => void
   onState: (state: HarnessState) => void
 }
 
@@ -47,6 +48,7 @@ export class HarnessService {
   private logClosing?: Promise<void>
   private startupTimer?: NodeJS.Timeout
   private runId = 0
+  private failedRunId?: number
   private stopping = false
   private readyCandidate = false
 
@@ -117,7 +119,7 @@ export class HarnessService {
 
     child.once('error', error => {
       if (runId !== this.runId || this.stopping) return
-      this.fail(`Harness could not start: ${error.message}`)
+      this.fail(`Harness could not start: ${error.message}`, runId)
       void this.stop()
     })
 
@@ -153,7 +155,7 @@ export class HarnessService {
 
       if (runId === this.runId && !this.stopping) {
         const detail = signal === null ? `exit code ${String(code)}` : `signal ${signal}`
-        this.fail(`Harness stopped unexpectedly (${detail}).`)
+        this.fail(`Harness stopped unexpectedly (${detail}).`, runId)
       }
       void this.closeLog()
     })
@@ -161,7 +163,7 @@ export class HarnessService {
     const startupTimeoutMs = this.options.startupTimeoutMs ?? 60_000
     this.startupTimer = setTimeout(() => {
       if (runId !== this.runId || this.stopping) return
-      this.fail(`Harness did not become ready within ${formatDuration(startupTimeoutMs)}.`)
+      this.fail(`Harness did not become ready within ${formatDuration(startupTimeoutMs)}.`, runId)
       void this.stop()
     }, startupTimeoutMs)
   }
@@ -230,7 +232,7 @@ export class HarnessService {
     } catch (error) {
       if (runId !== this.runId || this.stopping) return
       const detail = error instanceof Error ? error.message : String(error)
-      this.fail(`Harness announced a URL but did not become healthy: ${detail}`)
+      this.fail(`Harness announced a URL but did not become healthy: ${detail}`, runId)
       void this.stop()
       return
     }
@@ -246,9 +248,13 @@ export class HarnessService {
     })
   }
 
-  private fail(message: string): void {
+  private fail(message: string, runId: number): void {
+    if (runId !== this.runId || this.stopping || this.failedRunId === runId) return
+    this.failedRunId = runId
     this.writeDesktopLog(message)
-    this.publish({ phase: 'error', message, logPath: this.options.logPath })
+    const state: HarnessState = { phase: 'error', message, logPath: this.options.logPath }
+    this.publish(state)
+    this.options.onUnexpectedFailure?.(state)
   }
 
   private publish(state: HarnessState): void {

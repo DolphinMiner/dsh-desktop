@@ -5,6 +5,11 @@ export interface HarnessState {
   message: string
   url?: string
   logPath: string
+  recovery?: {
+    attempt: number
+    maxAttempts: number
+    retryAt: string
+  }
 }
 
 export interface OAuthResultNotice {

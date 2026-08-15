@@ -1,6 +1,18 @@
 import { createServer } from 'node:http'
 
-const mode = process.env.DSH_TEST_MODE
+let mode = process.env.DSH_TEST_MODE
+
+if (mode === 'recover-once' || mode === 'capability-exit-once') {
+  const { existsSync, writeFileSync } = await import('node:fs')
+  const markerPath = process.env.DSH_TEST_RECOVERY_MARKER
+  if (!markerPath) process.exit(4)
+  if (existsSync(markerPath)) {
+    mode = 'ready'
+  } else {
+    writeFileSync(markerPath, 'failed once\n')
+    mode = mode === 'recover-once' ? 'exit' : 'capability-exit'
+  }
+}
 
 if (process.env.DSH_TEST_ARGV_PATH) {
   const { writeFileSync } = await import('node:fs')
@@ -44,6 +56,17 @@ if (mode === 'ready' || mode === 'capability') {
   stayAlive()
 } else if (mode === 'exit') {
   setTimeout(() => process.exit(7), 20)
+} else if (mode === 'capability-exit') {
+  if (typeof process.send !== 'function') process.exit(3)
+  process.send({
+    channel: 'dsh-desktop',
+    version: 3,
+    kind: 'request',
+    id: 'fixture-open',
+    method: 'desktop.openPath',
+    params: { sessionId: 'fixture-session', workspaceRoot: '/fixture', path: 'README.md' },
+  })
+  setTimeout(() => process.exit(8), 30)
 } else if (mode === 'silent') {
   stayAlive()
 } else {

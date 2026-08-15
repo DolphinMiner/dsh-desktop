@@ -11,6 +11,7 @@ import {
   Menu,
   Notification,
   safeStorage,
+  screen,
   shell,
 } from 'electron'
 import {
@@ -31,10 +32,12 @@ import { DesktopActivitySnapshot, DesktopActivityTracker } from './desktop-activ
 import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
+import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
+import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 
 app.setName('DSH Desktop')
@@ -46,7 +49,9 @@ if (!isPrimaryInstance) app.quit()
 
 let mainWindow: BrowserWindow | undefined
 let harness: HarnessService | undefined
+let harnessRecovery: HarnessRecoveryController | undefined
 let mcpProxy: McpCredentialProxy | undefined
+let windowStateStore: WindowStateStore | undefined
 let harnessOrigin: string | undefined
 let oauthCoordinator: LinearOAuthCoordinator | undefined
 let shuttingDown = false
@@ -194,6 +199,7 @@ function openExternalUrl(url: string): void {
 }
 
 function publishState(next: HarnessState): void {
+  const previousPhase = state.phase
   state = next
   if (next.phase !== 'ready') activityTracker.clear()
   if (mainWindow === undefined || mainWindow.isDestroyed()) return
@@ -221,13 +227,20 @@ function publishState(next: HarnessState): void {
     return
   }
 
-  if (next.phase === 'error') showLoadingPageSafely()
+  if (next.phase === 'error' && previousPhase !== 'error') showLoadingPageSafely()
 }
 
-function createWindow(): BrowserWindow {
+function captureWindowState(window: BrowserWindow): PersistedWindowState {
+  return {
+    version: 1,
+    bounds: window.getNormalBounds(),
+    maximized: window.isMaximized(),
+  }
+}
+
+function createWindow(restoredState?: PersistedWindowState): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    ...(restoredState?.bounds ?? { width: 1440, height: 920 }),
     minWidth: 1024,
     minHeight: 700,
     show: false,
@@ -242,7 +255,10 @@ function createWindow(): BrowserWindow {
     },
   })
 
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    if (restoredState?.maximized === true) window.maximize()
+    window.show()
+  })
   window.webContents.on('did-finish-load', flushRendererCommands)
   window.on('page-title-updated', event => {
     event.preventDefault()
@@ -263,6 +279,15 @@ function createWindow(): BrowserWindow {
     event.preventDefault()
     if (url.startsWith('https://')) openExternalUrl(url)
   })
+
+  const saveWindowState = (): void => {
+    if (!window.isDestroyed()) windowStateStore?.schedule(captureWindowState(window))
+  }
+  window.on('move', saveWindowState)
+  window.on('resize', saveWindowState)
+  window.on('maximize', saveWindowState)
+  window.on('unmaximize', saveWindowState)
+  window.on('close', saveWindowState)
 
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined
@@ -286,10 +311,51 @@ function safeOrigin(value: string): string | undefined {
   }
 }
 
-async function startHarness(): Promise<void> {
+async function launchHarness(): Promise<void> {
   harnessOrigin = undefined
   await showLoadingPage()
   await harness?.start()
+}
+
+async function restartHarness(): Promise<void> {
+  if (harnessRecovery === undefined) {
+    await launchHarness()
+    return
+  }
+  await harnessRecovery.restartNow()
+}
+
+function formatRecoveryDelay(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${String(milliseconds)} milliseconds`
+  const seconds = Math.ceil(milliseconds / 1_000)
+  return `${String(seconds)} ${seconds === 1 ? 'second' : 'seconds'}`
+}
+
+function publishRecoverySchedule(schedule: HarnessRecoverySchedule): void {
+  const failed = state.phase === 'error'
+    ? state
+    : { phase: 'error' as const, message: 'Harness stopped unexpectedly.', logPath: state.logPath }
+  publishState({
+    ...failed,
+    message: `${failed.message} Restarting automatically in ${formatRecoveryDelay(schedule.delayMs)} ` +
+      `(attempt ${String(schedule.attempt)} of ${String(schedule.maxAttempts)}).`,
+    recovery: {
+      attempt: schedule.attempt,
+      maxAttempts: schedule.maxAttempts,
+      retryAt: schedule.retryAt,
+    },
+  })
+}
+
+function publishRecoveryExhausted(maxAttempts: number): void {
+  const failed = state.phase === 'error'
+    ? state
+    : { phase: 'error' as const, message: 'Harness stopped unexpectedly.', logPath: state.logPath }
+  publishState({
+    phase: 'error',
+    message: `${failed.message} Automatic recovery paused after ${String(maxAttempts)} attempts.`,
+    logPath: failed.logPath,
+  })
 }
 
 function installIpcHandlers(connections: ConnectionManager): void {
@@ -312,7 +378,7 @@ function installIpcHandlers(connections: ConnectionManager): void {
   })
   ipcMain.handle('desktop:retry-harness', async event => {
     assertTrustedSender(event)
-    await startHarness()
+    await restartHarness()
   })
   ipcMain.handle('desktop:show-harness-log', event => {
     assertTrustedSender(event)
@@ -425,7 +491,7 @@ function installMenu(): void {
         },
         {
           label: 'Restart Harness',
-          click: () => { void startHarness() },
+          click: () => { void restartHarness() },
         },
       ],
     },
@@ -487,7 +553,13 @@ app.whenReady().then(async () => {
   installMenu()
   installIpcHandlers(connections)
 
-  mainWindow = createWindow()
+  windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {
+    onError: error => console.error('Could not persist the desktop window state.', error),
+  })
+  const restoredWindowState = await windowStateStore.load(
+    screen.getAllDisplays().map(display => display.workArea),
+  )
+  mainWindow = createWindow(restoredWindowState)
   await showLoadingPage()
 
   const logPath = join(app.getPath('logs'), 'harness.log')
@@ -564,10 +636,23 @@ app.whenReady().then(async () => {
       activityTracker.clear()
       connections.hostDisconnected()
     },
+    onUnexpectedFailure: () => harnessRecovery?.handleUnexpectedFailure(),
     onState: publishState,
   })
+  harnessRecovery = new HarnessRecoveryController({
+    start: launchHarness,
+    onSchedule: publishRecoverySchedule,
+    onExhausted: publishRecoveryExhausted,
+    onStartError: error => {
+      publishState({
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        logPath,
+      })
+    },
+  })
 
-  await startHarness()
+  await harnessRecovery.restartNow()
 }).catch(error => {
   state = {
     phase: 'error',
@@ -584,9 +669,14 @@ app.on('before-quit', event => {
   if (shuttingDown) return
 
   shuttingDown = true
+  harnessRecovery?.stop()
+  if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+    windowStateStore?.schedule(captureWindowState(mainWindow))
+  }
   const stopServices = Promise.all([
     harness?.stop() ?? Promise.resolve(),
     mcpProxy?.stop() ?? Promise.resolve(),
+    windowStateStore?.flush() ?? Promise.resolve(),
   ])
   void stopServices
     .catch(error => {

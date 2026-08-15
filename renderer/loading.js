@@ -8,10 +8,11 @@ const logs = document.querySelector('#logs')
 
 function render(state) {
   const failed = state.phase === 'error'
+  const recovering = failed && state.recovery !== undefined
   indicator.className = failed ? 'indicator is-error' : 'indicator is-starting'
-  title.textContent = failed ? 'Harness could not start' : 'Starting Harness'
+  title.textContent = recovering ? 'Restarting Harness' : failed ? 'Harness could not start' : 'Starting Harness'
   message.textContent = state.message
-  progress.hidden = failed
+  progress.hidden = failed && !recovering
   actions.hidden = !failed
 }
 

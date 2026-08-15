@@ -8,6 +8,7 @@ import { DESKTOP_PROTOCOL_VERSION } from '@dolphinminer/dsh-desktop-protocol'
 
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
+import { HarnessRecoveryController } from './harness-recovery'
 import { HarnessService } from './harness-service'
 import { HarnessPhase, HarnessState } from './types'
 
@@ -245,4 +246,75 @@ test('times out a Harness that never announces readiness', async () => {
     },
     50,
   )
+})
+
+test('cancels pending desktop work and recovers without replay after a Harness crash', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-recovery-test-'))
+  const observer = observePhase('ready')
+  let openCalls = 0
+  let resolveCancelled: () => void
+  const cancelled = new Promise<void>(resolve => { resolveCancelled = resolve })
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles: {
+      reveal: () => Promise.reject(new Error('not configured')),
+      open: (_params, signal) => {
+        openCalls += 1
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            resolveCancelled()
+            const error = new Error('cancelled')
+            error.name = 'AbortError'
+            reject(error)
+          }, { once: true })
+        })
+      },
+    },
+    connections: {
+      snapshot: () => ({
+        revision: 0,
+        vault: { available: true },
+        oauth: { linear: { available: false } },
+        connections: [],
+      }),
+      resolveMcpTransport: () => Promise.reject(new Error('not configured')),
+      reportStatus: () => ({ accepted: false, revision: 0 }),
+    },
+  })
+  let recovery: HarnessRecoveryController
+  const service = new HarnessService({
+    dshBin: FIXTURE_PATH,
+    dshHome: join(root, 'home'),
+    cwd: root,
+    logPath: join(root, 'logs', 'harness.log'),
+    nodeExecutable: process.execPath,
+    env: {
+      DSH_TEST_MODE: 'capability-exit-once',
+      DSH_TEST_RECOVERY_MARKER: join(root, 'failed-once'),
+    },
+    capabilityBroker: new DesktopCapabilityBroker(handlers),
+    onUnexpectedFailure: () => recovery.handleUnexpectedFailure(),
+    onState: state => observer.onState(state),
+  })
+  recovery = new HarnessRecoveryController({
+    start: () => service.start(),
+    onSchedule: () => undefined,
+    onExhausted: () => assert.fail('recovery should not be exhausted'),
+    delaysMs: [5],
+  })
+
+  try {
+    await recovery.restartNow()
+    await Promise.all([observer.reached, cancelled])
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    assert.equal(openCalls, 1)
+    assert.deepEqual(observer.states.map(item => item.phase), ['starting', 'error', 'starting', 'ready'])
+  } finally {
+    recovery.stop()
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
 })
