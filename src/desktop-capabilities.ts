@@ -3,6 +3,9 @@ import {
   ConnectionRuntimeStatusParams,
   ConnectionSnapshot,
   ConnectionSummary,
+  ComputerApplicationList,
+  ComputerObservation,
+  ComputerPermissions,
   McpTransportDescriptor,
   DesktopNotificationParams,
   DesktopSessionActivityParams,
@@ -35,6 +38,18 @@ export interface DesktopCapabilityDependencies {
     }>
     reportStatus(params: ConnectionRuntimeStatusParams): { accepted: boolean; revision: number }
   }
+  computer?: {
+    getPermissions(signal: AbortSignal): Promise<ComputerPermissions>
+    listApplications(signal: AbortSignal): Promise<ComputerApplicationList>
+    observe(sessionId: string, signal: AbortSignal): Promise<ComputerObservation>
+  }
+}
+
+function unsupportedComputer(): never {
+  throw {
+    code: 'UNSUPPORTED',
+    message: 'Computer observation is unavailable on this platform or build.',
+  }
 }
 
 export function createDesktopCapabilityHandlers(
@@ -58,6 +73,12 @@ export function createDesktopCapabilityHandlers(
     }),
     'desktop.revealPath': (params, context) => dependencies.workspaceFiles.reveal(params, context.signal),
     'desktop.openPath': (params, context) => dependencies.workspaceFiles.open(params, context.signal),
+    'computer.getPermissions': (_params, context) =>
+      dependencies.computer?.getPermissions(context.signal) ?? unsupportedComputer(),
+    'computer.listApps': (_params, context) =>
+      dependencies.computer?.listApplications(context.signal) ?? unsupportedComputer(),
+    'computer.observe': (params, context) =>
+      dependencies.computer?.observe(params.sessionId, context.signal) ?? unsupportedComputer(),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

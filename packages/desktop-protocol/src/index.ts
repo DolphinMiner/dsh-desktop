@@ -1,5 +1,17 @@
 export const DESKTOP_PROTOCOL_CHANNEL = 'dsh-desktop' as const
-export const DESKTOP_PROTOCOL_VERSION = 3 as const
+import {
+  ComputerApplicationList,
+  ComputerObservation,
+  ComputerObserveParams,
+  ComputerPermissions,
+  parseComputerApplicationList,
+  parseComputerObservation,
+  parseComputerPermissions,
+} from './computer.js'
+
+export * from './computer.js'
+
+export const DESKTOP_PROTOCOL_VERSION = 4 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -172,6 +184,18 @@ export interface DesktopCapabilityMap {
     params: DesktopWorkspacePathParams
     result: DesktopWorkspacePathResult
   }
+  'computer.getPermissions': {
+    params: Record<string, never>
+    result: ComputerPermissions
+  }
+  'computer.listApps': {
+    params: Record<string, never>
+    result: ComputerApplicationList
+  }
+  'computer.observe': {
+    params: ComputerObserveParams
+    result: ComputerObservation
+  }
   'connections.list': {
     params: Record<string, never>
     result: ConnectionSnapshot
@@ -210,7 +234,10 @@ export interface DesktopProtocolError {
     | 'METHOD_NOT_FOUND'
     | 'NOT_FOUND'
     | 'OAUTH_UNAVAILABLE'
+    | 'PERMISSION_DENIED'
+    | 'TARGET_CHANGED'
     | 'TIMEOUT'
+    | 'UNSUPPORTED'
     | 'VAULT_UNAVAILABLE'
   message: string
   ambiguous?: boolean
@@ -273,8 +300,8 @@ const MAX_LIST_ITEMS = 1_000
 
 const ERROR_CODES: readonly DesktopProtocolError['code'][] = [
   'AUTH_EXPIRED', 'BAD_MESSAGE', 'CANCELLED', 'CONFLICT', 'DESKTOP_UNAVAILABLE', 'DUPLICATE_REQUEST',
-  'INTERNAL_ERROR', 'METHOD_NOT_FOUND', 'NOT_FOUND', 'OAUTH_UNAVAILABLE', 'TIMEOUT',
-  'VAULT_UNAVAILABLE',
+  'INTERNAL_ERROR', 'METHOD_NOT_FOUND', 'NOT_FOUND', 'OAUTH_UNAVAILABLE', 'PERMISSION_DENIED',
+  'TARGET_CHANGED', 'TIMEOUT', 'UNSUPPORTED', 'VAULT_UNAVAILABLE',
 ]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -547,6 +574,14 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
       path: value.path,
     } as DesktopCapabilityParams<M>
   }
+  if (method === 'computer.getPermissions' || method === 'computer.listApps') {
+    return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
+  }
+  if (method === 'computer.observe') {
+    return isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH)
+      ? { sessionId: value.sessionId } as DesktopCapabilityParams<M>
+      : undefined
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -598,6 +633,15 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'desktop.revealPath' || method === 'desktop.openPath') {
     if (value.opened !== true || !isBoundedString(value.path, 4_096)) return undefined
     return { opened: true, path: value.path } as DesktopCapabilityResult<M>
+  }
+  if (method === 'computer.getPermissions') {
+    return parseComputerPermissions(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'computer.listApps') {
+    return parseComputerApplicationList(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'computer.observe') {
+    return parseComputerObservation(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined
@@ -681,7 +725,7 @@ export function createEvent<E extends DesktopEventName>(
 }
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
-  return method === 'connections.resolveMcpTransport'
+  return method === 'connections.resolveMcpTransport' || method === 'computer.observe'
 }
 
 const READ_ONLY_MCP_TOOL_PREFIXES = [

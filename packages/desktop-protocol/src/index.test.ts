@@ -11,6 +11,8 @@ import {
   parseDesktopProtocolMessage,
   parseRendererCommand,
   isLikelyReadOnlyMcpTool,
+  parseComputerObservation,
+  parseComputerPermissions,
 } from './index'
 
 test('round-trips a valid capability request', () => {
@@ -110,4 +112,57 @@ test('validates desktop commands and session activity reports', () => {
     opened: true,
     path: '/tmp/project/README.md',
   })
+})
+
+test('validates bounded computer permissions and observations', () => {
+  assert.deepEqual(parseComputerPermissions({
+    supported: true,
+    screenRecording: 'granted',
+    accessibility: 'denied',
+    canObserve: true,
+  }), {
+    supported: true,
+    screenRecording: 'granted',
+    accessibility: 'denied',
+    canObserve: true,
+  })
+  assert.equal(parseComputerPermissions({
+    supported: true,
+    screenRecording: 'denied',
+    accessibility: 'granted',
+    canObserve: true,
+  }), undefined)
+
+  const observation = {
+    version: 1,
+    snapshotId: 'snapshot-1',
+    observedAt: '2026-08-16T12:00:00.000Z',
+    target: { id: 'window:7', kind: 'window', name: 'Editor' },
+    capture: {
+      bounds: { x: 10, y: 20, width: 800, height: 600 },
+      displayScale: 2,
+      pixelWidth: 1600,
+      pixelHeight: 1200,
+      screenshotCaptured: true,
+      ocrText: 'README.md',
+    },
+    elements: [{
+      id: 'ax:0',
+      role: 'AXTextField',
+      actions: ['AXPress'],
+      secure: false,
+      value: 'README.md',
+    }],
+    truncated: false,
+    warnings: [],
+  }
+  assert.deepEqual(parseComputerObservation(observation), observation)
+  assert.equal(parseComputerObservation({
+    ...observation,
+    elements: [{ id: 'ax:0', role: 'AXSecureTextField', actions: [], secure: true, value: 'secret' }],
+  }), undefined)
+  assert.deepEqual(parseCapabilityParams('computer.observe', { sessionId: 'session-1' }), {
+    sessionId: 'session-1',
+  })
+  assert.deepEqual(parseCapabilityResult('computer.observe', observation), observation)
 })
