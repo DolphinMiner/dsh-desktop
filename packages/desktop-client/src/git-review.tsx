@@ -1,14 +1,17 @@
 import type { CSSProperties, FormEvent } from 'react'
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
   IconBranchOutline16,
+  IconCloseOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
   IconSendOutline16,
   IconTrashOutline16,
+  IconWarningOutline16,
   Input,
   Pill,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -17,6 +20,8 @@ import type {
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DesktopGitIndexMutationInput,
+  DesktopGitRevertConfirmInput,
+  DesktopGitRevertPreviewInput,
   DeleteGitReviewCommentInput,
   GitReviewFile,
   GitReviewComment,
@@ -26,6 +31,8 @@ import type {
   GitReviewScope,
   GitReviewSnapshot,
   GitIndexMutationResult,
+  GitRevertPreview,
+  GitRevertResult,
   ReviewDiffLine,
   ReviewPatchFile,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -41,6 +48,8 @@ import {
 export interface DesktopGitBridge {
   review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
   mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
+  previewRevert(input: DesktopGitRevertPreviewInput): Promise<GitRevertPreview>
+  confirmRevert(input: DesktopGitRevertConfirmInput): Promise<GitRevertResult>
   comments: {
     list(input: DesktopGitReviewCommentsInput): Promise<GitReviewCommentSnapshot>
     add(input: AddGitReviewCommentInput): Promise<GitReviewCommentSnapshot>
@@ -187,6 +196,69 @@ const styles: Record<string, CSSProperties> = {
     background: 'var(--dsw-alias-button-primary-bg, #1f6feb)',
     color: 'var(--dsw-alias-button-primary-label, #fff)',
   },
+  confirmationOverlay: {
+    alignItems: 'center',
+    background: 'rgba(24, 26, 29, 0.42)',
+    display: 'flex',
+    inset: 0,
+    justifyContent: 'center',
+    padding: 24,
+    position: 'fixed',
+    zIndex: 1000,
+  },
+  confirmationDialog: {
+    background: 'var(--dsw-alias-bg-base, #fff)',
+    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    borderRadius: 8,
+    boxShadow: '0 18px 48px rgba(24, 26, 29, 0.24)',
+    color: 'var(--dsw-alias-label-primary, #25272a)',
+    maxHeight: 'min(560px, calc(100vh - 48px))',
+    maxWidth: 520,
+    overflow: 'auto',
+    width: '100%',
+  },
+  confirmationHeader: {
+    alignItems: 'flex-start',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'flex',
+    gap: 12,
+    padding: '16px 16px 14px 18px',
+  },
+  confirmationTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: 600,
+    lineHeight: '22px',
+    margin: 0,
+    minWidth: 0,
+    overflowWrap: 'anywhere',
+  },
+  confirmationBody: { display: 'grid', gap: 14, padding: 18 },
+  confirmationWarning: {
+    alignItems: 'flex-start',
+    background: 'var(--dsw-alias-state-warning-secondary, #fff8e6)',
+    borderRadius: 6,
+    display: 'flex',
+    fontSize: 13,
+    gap: 10,
+    lineHeight: '19px',
+    padding: 12,
+  },
+  confirmationAcknowledge: {
+    alignItems: 'flex-start',
+    cursor: 'pointer',
+    display: 'flex',
+    fontSize: 13,
+    gap: 9,
+    lineHeight: '19px',
+  },
+  confirmationFooter: {
+    borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'flex',
+    gap: 8,
+    justifyContent: 'flex-end',
+    padding: '12px 16px',
+  },
   lineNumber: {
     borderRight: '1px solid var(--dsw-alias-border-l2, #deded9)',
     color: 'var(--dsw-alias-label-tertiary, #8a8d91)',
@@ -285,6 +357,11 @@ const statusLabels: Record<GitReviewFile['status'], string> = {
   untracked: '?',
 }
 
+function canRevert(file: GitReviewFile): boolean {
+  return file.patchAvailable &&
+    (file.status === 'modified' || file.status === 'deleted' || file.status === 'type-changed')
+}
+
 function lineStyle(line: ReviewDiffLine): CSSProperties {
   if (line.kind === 'addition') return { background: 'var(--dsw-alias-state-success-secondary, #ecf8ef)' }
   if (line.kind === 'deletion') return { background: 'var(--dsw-alias-state-error-secondary, #fef0ef)' }
@@ -312,6 +389,117 @@ function anchorKey(anchor: GitReviewCommentAnchor): string {
 
 function commentLocation(comment: GitReviewComment): string {
   return `${comment.anchor.path}:${String(comment.anchor.line)} (${comment.anchor.side})`
+}
+
+function RevertConfirmation({
+  preview,
+  acknowledged,
+  disabled,
+  onAcknowledgedChange,
+  onCancel,
+  onConfirm,
+}: {
+  preview?: GitRevertPreview
+  acknowledged: boolean
+  disabled: boolean
+  onAcknowledgedChange: (value: boolean) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element | null {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (preview === undefined) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    return () => {
+      if (previousFocus?.isConnected === true) previousFocus.focus()
+    }
+  }, [preview])
+  if (preview === undefined) return null
+  const title = `Revert ${preview.path}?`
+  return createPortal(
+    <div
+      style={styles.confirmationOverlay}
+      role="presentation"
+      onMouseDown={event => {
+        if (event.currentTarget === event.target && !disabled) onCancel()
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Escape') {
+          event.stopPropagation()
+          if (!disabled) onCancel()
+          return
+        }
+        if (event.key !== 'Tab') return
+        const dialog = dialogRef.current
+        const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled])',
+        ) ?? [])
+        if (dialog === null || focusable.length === 0) {
+          event.preventDefault()
+          return
+        }
+        const first = focusable[0]!
+        const last = focusable.at(-1)!
+        const current = document.activeElement
+        if (event.shiftKey && (current === first || !dialog.contains(current))) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && (current === last || !dialog.contains(current))) {
+          event.preventDefault()
+          first.focus()
+        }
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        aria-describedby="git-revert-description"
+        style={styles.confirmationDialog}
+      >
+        <div style={styles.confirmationHeader}>
+          <h2 style={styles.confirmationTitle}>{title}</h2>
+          <button
+            type="button"
+            style={styles.iconButton}
+            aria-label="Close revert confirmation"
+            title="Close"
+            disabled={disabled}
+            onClick={onCancel}
+          >
+            <IconCloseOutline16 />
+          </button>
+        </div>
+        <div style={styles.confirmationBody}>
+          <div id="git-revert-description" style={styles.confirmationWarning}>
+            <IconWarningOutline16 />
+            <span>
+              This restores the exact unstaged file shown in Review from the Git index. The approval expires at{' '}
+              {new Date(preview.expiresAt).toLocaleTimeString()}.
+            </span>
+          </div>
+          <label style={styles.confirmationAcknowledge}>
+            <input
+              autoFocus
+              type="checkbox"
+              checked={acknowledged}
+              disabled={disabled}
+              onChange={event => onAcknowledgedChange(event.currentTarget.checked)}
+            />
+            <span>I understand these unstaged changes cannot be recovered by DSH Desktop.</span>
+          </label>
+        </div>
+        <div style={styles.confirmationFooter}>
+          <Button size="sm" variant="outline" disabled={disabled} onClick={onCancel}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={disabled || !acknowledged} onClick={onConfirm}>
+            Revert file
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 function CommentDeleteButton({
@@ -419,6 +607,9 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   const [pendingComment, setPendingComment] = useState<string>()
   const [pendingMutation, setPendingMutation] = useState<'stage' | 'unstage'>()
   const [mutationError, setMutationError] = useState<string>()
+  const [revertPreview, setRevertPreview] = useState<GitRevertPreview>()
+  const [revertAcknowledged, setRevertAcknowledged] = useState(false)
+  const [pendingRevert, setPendingRevert] = useState<'preview' | 'confirm'>()
 
   useEffect(() => {
     let current = true
@@ -522,6 +713,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     setCommentDraft(undefined)
     setCommentBody('')
     setMutationError(undefined)
+    setRevertPreview(undefined)
+    setRevertAcknowledged(false)
     setRequestedScope({ ...scope })
   }
 
@@ -544,6 +737,45 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       setMutationError(reviewErrorMessage(cause))
       setRequestedScope({ ...snapshot.scope })
     }).finally(() => setPendingMutation(undefined))
+  }
+
+  const previewSelectedRevert = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || snapshot?.scope.kind !== 'unstaged' ||
+      selected === undefined || !canRevert(selected)) return
+    setPendingRevert('preview')
+    setMutationError(undefined)
+    void bridge.previewRevert({ sessionId, workspaceRoot, path: selected.path }).then(preview => {
+      setSnapshot(preview.review)
+      setSelectedPath(preview.path)
+      setRevertPreview(preview)
+      setRevertAcknowledged(false)
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setRequestedScope({ ...snapshot.scope })
+    }).finally(() => setPendingRevert(undefined))
+  }
+
+  const confirmSelectedRevert = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || revertPreview === undefined ||
+      !revertAcknowledged) return
+    setPendingRevert('confirm')
+    setMutationError(undefined)
+    void bridge.confirmRevert({
+      sessionId,
+      workspaceRoot,
+      previewId: revertPreview.previewId,
+      confirmed: true,
+    }).then(() => {
+      setMutationError(undefined)
+      setRevertPreview(undefined)
+      setRevertAcknowledged(false)
+      setRequestedScope({ kind: 'unstaged' })
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setRevertPreview(undefined)
+      setRevertAcknowledged(false)
+      setRequestedScope({ kind: 'unstaged' })
+    }).finally(() => setPendingRevert(undefined))
   }
 
   const beginComment = (anchor: GitReviewCommentAnchor): void => {
@@ -641,6 +873,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       {error === undefined && !loading && snapshot?.files.length === 0 && (
         <div style={{ minHeight: 0, overflow: 'auto' }}>
           <div style={styles.state}>No changes in this scope.</div>
+          {mutationError !== undefined && <div role="alert" style={styles.state}>{mutationError}</div>}
           {commentError !== undefined && <div role="alert" style={styles.state}>{commentError}</div>}
           <UnresolvedComments
             comments={unresolvedComments}
@@ -685,11 +918,23 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     size="sm"
                     variant="toolbar"
                     icon={<IconBranchOutline16 />}
-                    disabled={loading || pendingMutation !== undefined}
+                    disabled={loading || pendingMutation !== undefined || pendingRevert !== undefined}
                     title={snapshot.scope.kind === 'unstaged' ? 'Stage selected file' : 'Unstage selected file'}
                     onClick={mutateSelected}
                   >
                     {snapshot.scope.kind === 'unstaged' ? 'Stage' : 'Unstage'}
+                  </Button>
+                )}
+                {snapshot.scope.kind === 'unstaged' && canRevert(selected) && (
+                  <Button
+                    size="sm"
+                    variant="toolbar"
+                    icon={<IconTrashOutline16 />}
+                    disabled={loading || pendingMutation !== undefined || pendingRevert !== undefined}
+                    title="Preview reverting the selected file"
+                    onClick={previewSelectedRevert}
+                  >
+                    Revert
                   </Button>
                 )}
               </div>
@@ -797,6 +1042,18 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           </div>
         </div>
       )}
+      <RevertConfirmation
+        preview={revertPreview}
+        acknowledged={revertAcknowledged}
+        disabled={pendingRevert === 'confirm'}
+        onAcknowledgedChange={setRevertAcknowledged}
+        onCancel={() => {
+          if (pendingRevert === 'confirm') return
+          setRevertPreview(undefined)
+          setRevertAcknowledged(false)
+        }}
+        onConfirm={confirmSelectedRevert}
+      />
     </section>
   )
 }

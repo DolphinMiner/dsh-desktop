@@ -24,6 +24,8 @@ import {
   parseDeleteGitReviewCommentInput,
   parseDisconnectConnectionInput,
   parseDesktopGitIndexMutationInput,
+  parseDesktopGitRevertConfirmInput,
+  parseDesktopGitRevertPreviewInput,
   parseDesktopGitReviewInput,
   parseDesktopGitReviewCommentsInput,
   parseSelectComputerTargetInput,
@@ -43,8 +45,9 @@ import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
 import { GitReviewCommentController } from './git-review-comment-controller'
 import { GitReviewCommentStore } from './git-review-comments'
-import { GitIndexController } from './git-index-controller'
+import { GitIndexController, GitRepositoryMutationQueue } from './git-index-controller'
 import { GitMutationJournal } from './git-mutation-journal'
+import { GitRevertController } from './git-revert-controller'
 import { GitService } from './git-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
@@ -113,6 +116,13 @@ function assertKnownWorkspace(sessionId: string, workspaceRoot: string, signal: 
   if (signal.aborted) throw new DOMException('The desktop Git request was cancelled.', 'AbortError')
   if (!activityTracker.isKnownInWorkspace(sessionId, workspaceRoot)) {
     throw new WorkspacePathError('BAD_MESSAGE', 'The workspace does not belong to this Harness session.')
+  }
+}
+
+function assertIdleWorkspace(sessionId: string, workspaceRoot: string, signal: AbortSignal): void {
+  assertKnownWorkspace(sessionId, workspaceRoot, signal)
+  if (activityTracker.isRunning(sessionId)) {
+    throw new WorkspacePathError('CONFLICT', 'Wait for the agent task to stop before changing Git state.')
   }
 }
 
@@ -407,6 +417,7 @@ function installIpcHandlers(
   computer: ComputerObserver,
   git: WorkspaceGitCapabilityService,
   gitIndex: GitIndexController,
+  gitRevert: GitRevertController,
   comments: GitReviewCommentController,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
@@ -455,6 +466,16 @@ function installIpcHandlers(
     assertTrustedSender(event)
     const input = validInput(parseDesktopGitIndexMutationInput(value))
     return gitIndex.mutate(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:revert:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitRevertPreviewInput(value))
+    return gitRevert.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:revert:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitRevertConfirmInput(value))
+    return gitRevert.confirm(input, new AbortController().signal)
   })
   ipcMain.handle('desktop:git:comments:list', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -689,6 +710,7 @@ app.whenReady().then(async () => {
   const gitService = new GitService()
   const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
   const reviewWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertKnownWorkspace)
+  const mutationWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertIdleWorkspace)
   const reviewComments = new GitReviewCommentStore(join(desktopDataPath, 'git-review-comments.v1.json'), {
     onChange: event => {
       if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
@@ -697,13 +719,31 @@ app.whenReady().then(async () => {
     },
   })
   const gitMutations = new GitMutationJournal(join(desktopDataPath, 'git-mutations.v1.json'))
+  const gitMutationQueue = new GitRepositoryMutationQueue()
 
   installMenu()
   installIpcHandlers(
     connections,
     computerObserver,
     reviewWorkspaceGit,
-    new GitIndexController(reviewWorkspaceGit, gitMutations),
+    new GitIndexController(mutationWorkspaceGit, gitMutations, gitMutationQueue),
+    new GitRevertController(mutationWorkspaceGit, gitMutations, gitMutationQueue, {
+      approve: async details => {
+        if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Revert unstaged changes?',
+          message: `Revert ${details.path}?`,
+          detail: `This restores the reviewed file from the Git index in ${details.repositoryRoot}. ` +
+            'DSH Desktop cannot recover the discarded unstaged changes.',
+          buttons: ['Cancel', 'Revert File'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      },
+    }),
     new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
   )
 

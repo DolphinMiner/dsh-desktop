@@ -66,7 +66,7 @@ export function selectGitIndexMutationPaths(
   return [...selected]
 }
 
-class RepositoryMutationQueue {
+export class GitRepositoryMutationQueue {
   private readonly tails = new Map<string, Promise<void>>()
 
   run<T>(repositoryRoot: string, task: () => Promise<T>): Promise<T> {
@@ -96,11 +96,10 @@ function duplicateMessage(record: GitMutationRecord): string {
 }
 
 export class GitIndexController {
-  private readonly queue = new RepositoryMutationQueue()
-
   constructor(
     private readonly git: GitIndexWorkspace,
     private readonly journal: GitMutationJournal,
+    private readonly queue = new GitRepositoryMutationQueue(),
   ) {}
 
   async mutate(input: DesktopGitIndexMutationInput, signal: AbortSignal): Promise<GitIndexMutationResult> {

@@ -77,6 +77,65 @@ test('keeps recovery timestamps valid when the system clock moves backwards', as
   assert.equal(new GitMutationJournal(path).status().available, true)
 })
 
+test('migrates the published v1 index journal before accepting destructive operations', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 1,
+    revision: 7,
+    operations: [{
+      ...input,
+      events: [
+        { phase: 'intent', at: '2026-08-16T12:00:00.000Z' },
+        { phase: 'dispatch', at: '2026-08-16T12:00:01.000Z' },
+        { phase: 'succeeded', reason: 'completed', at: '2026-08-16T12:00:02.000Z' },
+      ],
+    }],
+  }, null, 2)}\n`)
+
+  const journal = new GitMutationJournal(path)
+  assert.equal(journal.status().available, true)
+  assert.equal(journal.status().revision, 8)
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2)
+  assert.equal(gitMutationPhase(journal.get(operationId)!), 'succeeded')
+
+  const revertId = '22222222-2222-4222-8222-222222222222'
+  assert.equal(journal.begin({
+    ...input,
+    operationId: revertId,
+    kind: 'revert',
+    approval: { id: revertId, fingerprint: 'a'.repeat(64) },
+  }).created, true)
+})
+
+test('fails closed instead of overflowing the revision during v1 migration', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const original = `${JSON.stringify({
+    schemaVersion: 1,
+    revision: Number.MAX_SAFE_INTEGER,
+    operations: [],
+  })}\n`
+  await writeFile(path, original)
+
+  const journal = new GitMutationJournal(path)
+  assert.equal(journal.status().available, false)
+  assert.equal(await readFile(path, 'utf8'), original)
+})
+
+test('requires immutable approval evidence only for destructive revert intents', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const journal = new GitMutationJournal(path)
+
+  assert.throws(() => journal.begin({ ...input, kind: 'revert' }),
+    (error: GitMutationJournalError) => error.code === 'BAD_MESSAGE')
+  assert.throws(() => journal.begin({
+    ...input,
+    approval: { id: operationId, fingerprint: 'a'.repeat(64) },
+  }), (error: GitMutationJournalError) => error.code === 'BAD_MESSAGE')
+})
+
 test('fails closed on corrupt state and persistence failure', async t => {
   const corrupt = await fixture()
   t.after(() => rm(corrupt.root, { recursive: true, force: true }))

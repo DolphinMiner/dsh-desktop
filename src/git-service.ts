@@ -519,6 +519,34 @@ export class GitService {
     return this.statusBefore(repository, signal, deadline)
   }
 
+  async revertWorktree(
+    repositoryRoot: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<GitStatusSnapshot> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const [safePath] = boundedMutationPaths([path])
+    await this.run([
+      '--no-optional-locks',
+      '--literal-pathspecs',
+      '-C', repository.root,
+      '-c', 'core.fsmonitor=false',
+      'restore',
+      '--worktree',
+      '--',
+      safePath!,
+    ], signal, deadline)
+    return this.statusBefore(repository, signal, deadline)
+  }
+
   private async statusBefore(
     repository: GitRepositoryIdentity,
     signal: AbortSignal | undefined,

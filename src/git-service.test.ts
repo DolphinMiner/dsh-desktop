@@ -250,6 +250,25 @@ test('rejects traversal and duplicate Git mutation paths before invocation', asy
     (error: GitServiceError) => error.code === 'INVALID_INPUT')
 })
 
+test('reverts only the selected unstaged worktree change and preserves the index', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'README.md'), 'staged version\n')
+  await git(root, 'add', 'README.md')
+  await writeFile(join(root, 'README.md'), 'unstaged version\n')
+
+  const status = await new GitService().revertWorktree(canonicalRoot, 'README.md')
+  assert.deepEqual(status.entries, [{
+    kind: 'ordinary',
+    path: 'README.md',
+    indexStatus: 'M',
+    worktreeStatus: '.',
+  }])
+  assert.equal(await gitOutput(root, 'show', ':README.md'), 'staged version')
+  assert.equal(await gitOutput(root, 'diff', '--', 'README.md'), '')
+})
+
 test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {
   const entries = parseGitWorktreeList(Buffer.from([
     'worktree /repo',

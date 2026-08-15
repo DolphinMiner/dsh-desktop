@@ -4,13 +4,14 @@ import type { GitIndexMutationKind } from '@dolphinminer/dsh-desktop-protocol'
 
 import { readJsonFile, writeJsonAtomically } from './atomic-json'
 
-export const GIT_MUTATION_JOURNAL_SCHEMA_VERSION = 1 as const
+export const GIT_MUTATION_JOURNAL_SCHEMA_VERSION = 2 as const
 const MAX_OPERATIONS = 10_000
 const MAX_PATH_LENGTH = 4_096
 const MAX_PATHS = 256
 const MAX_TOTAL_PATH_LENGTH = 65_536
 
 export type GitMutationPhase = 'intent' | 'dispatch' | 'succeeded' | 'failed' | 'cancelled' | 'ambiguous'
+export type GitMutationKind = GitIndexMutationKind | 'revert'
 export type GitMutationReason =
   | 'completed'
   | 'git-rejected'
@@ -24,15 +25,21 @@ export interface GitMutationEvent {
   reason?: GitMutationReason
 }
 
+export interface GitMutationApproval {
+  id: string
+  fingerprint: string
+}
+
 export interface GitMutationRecord {
   operationId: string
   sessionId: string
   workspaceRoot: string
   repositoryRoot: string
   repositoryCommonDir: string
-  kind: GitIndexMutationKind
+  kind: GitMutationKind
   requestedPaths: string[]
   paths: string[]
+  approval?: GitMutationApproval
   events: GitMutationEvent[]
 }
 
@@ -42,15 +49,21 @@ export interface BeginGitMutationInput {
   workspaceRoot: string
   repositoryRoot: string
   repositoryCommonDir: string
-  kind: GitIndexMutationKind
+  kind: GitMutationKind
   requestedPaths: string[]
   paths: string[]
+  approval?: GitMutationApproval
 }
 
 interface GitMutationJournalDocument {
   schemaVersion: typeof GIT_MUTATION_JOURNAL_SCHEMA_VERSION
   revision: number
   operations: GitMutationRecord[]
+}
+
+interface ParsedGitMutationJournalDocument {
+  document: GitMutationJournalDocument
+  migrated: boolean
 }
 
 export interface GitMutationJournalOptions {
@@ -94,8 +107,14 @@ function isCanonicalAbsolutePath(value: unknown): value is string {
   return isBoundedString(value, MAX_PATH_LENGTH) && isAbsolute(value) && normalize(value) === value
 }
 
-function isKind(value: unknown): value is GitIndexMutationKind {
-  return value === 'stage' || value === 'unstage'
+function isKind(value: unknown): value is GitMutationKind {
+  return value === 'stage' || value === 'unstage' || value === 'revert'
+}
+
+function parseApproval(value: unknown): GitMutationApproval | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'fingerprint']) || !isUuid(value.id) ||
+    typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)) return undefined
+  return { id: value.id, fingerprint: value.fingerprint }
 }
 
 function isPhase(value: unknown): value is GitMutationPhase {
@@ -151,15 +170,17 @@ function parsePaths(value: unknown): string[] | undefined {
 function parseRecord(value: unknown): GitMutationRecord | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'operationId', 'sessionId', 'workspaceRoot', 'repositoryRoot', 'repositoryCommonDir', 'kind', 'requestedPaths',
-    'paths', 'events',
+    'paths', 'approval', 'events',
   ]) || !isUuid(value.operationId) || !isBoundedString(value.sessionId) ||
     !isBoundedString(value.workspaceRoot, MAX_PATH_LENGTH) || !isCanonicalAbsolutePath(value.repositoryRoot) ||
     !isCanonicalAbsolutePath(value.repositoryCommonDir) || !isKind(value.kind) ||
     !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 8) return undefined
   const requestedPaths = parsePaths(value.requestedPaths)
   const paths = parsePaths(value.paths)
+  const approval = value.approval === undefined ? undefined : parseApproval(value.approval)
   const events = value.events.map(parseEvent)
-  if (requestedPaths === undefined || paths === undefined || events.some(event => event === undefined)) {
+  if (requestedPaths === undefined || paths === undefined || events.some(event => event === undefined) ||
+    (value.kind === 'revert' ? approval === undefined || approval.id !== value.operationId : approval !== undefined)) {
     return undefined
   }
   const parsedEvents = events as GitMutationEvent[]
@@ -177,6 +198,7 @@ function parseRecord(value: unknown): GitMutationRecord | undefined {
     kind: value.kind,
     requestedPaths,
     paths,
+    ...(approval === undefined ? {} : { approval }),
     events: parsedEvents,
   }
 }
@@ -185,10 +207,11 @@ function emptyDocument(): GitMutationJournalDocument {
   return { schemaVersion: GIT_MUTATION_JOURNAL_SCHEMA_VERSION, revision: 0, operations: [] }
 }
 
-function parseDocument(value: unknown): GitMutationJournalDocument {
-  if (value === undefined) return emptyDocument()
+function parseDocument(value: unknown): ParsedGitMutationJournalDocument {
+  if (value === undefined) return { document: emptyDocument(), migrated: false }
   if (!isRecord(value) || !hasOnlyKeys(value, ['schemaVersion', 'revision', 'operations']) ||
-    value.schemaVersion !== GIT_MUTATION_JOURNAL_SCHEMA_VERSION || !Number.isSafeInteger(value.revision) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== GIT_MUTATION_JOURNAL_SCHEMA_VERSION) ||
+    !Number.isSafeInteger(value.revision) ||
     Number(value.revision) < 0 || !Array.isArray(value.operations) || value.operations.length > MAX_OPERATIONS) {
     throw new Error('The Git mutation journal uses an unsupported or invalid document shape.')
   }
@@ -200,10 +223,21 @@ function parseDocument(value: unknown): GitMutationJournalDocument {
   if (new Set(parsed.map(operation => operation.operationId)).size !== parsed.length) {
     throw new Error('The Git mutation journal contains duplicate operation identifiers.')
   }
+  if (value.schemaVersion === 1 && parsed.some(operation => operation.kind === 'revert' ||
+    operation.approval !== undefined)) {
+    throw new Error('The legacy Git mutation journal contains unsupported operation data.')
+  }
+  const migrated = value.schemaVersion === 1
+  if (migrated && Number(value.revision) === Number.MAX_SAFE_INTEGER) {
+    throw new Error('The legacy Git mutation journal revision cannot be migrated safely.')
+  }
   return {
-    schemaVersion: GIT_MUTATION_JOURNAL_SCHEMA_VERSION,
-    revision: Number(value.revision),
-    operations: parsed,
+    migrated,
+    document: {
+      schemaVersion: GIT_MUTATION_JOURNAL_SCHEMA_VERSION,
+      revision: Number(value.revision) + (migrated ? 1 : 0),
+      operations: parsed,
+    },
   }
 }
 
@@ -212,6 +246,7 @@ function cloneRecord(record: GitMutationRecord): GitMutationRecord {
     ...record,
     requestedPaths: [...record.requestedPaths],
     paths: [...record.paths],
+    ...(record.approval === undefined ? {} : { approval: { ...record.approval } }),
     events: record.events.map(event => ({ ...event })),
   }
 }
@@ -228,7 +263,10 @@ function matches(record: GitMutationRecord, input: BeginGitMutationInput): boole
     record.kind === input.kind && record.requestedPaths.length === input.requestedPaths.length &&
     record.requestedPaths.every((path, index) => path === input.requestedPaths[index]) &&
     record.paths.length === input.paths.length &&
-    record.paths.every((path, index) => path === input.paths[index])
+    record.paths.every((path, index) => path === input.paths[index]) &&
+    (record.approval === undefined) === (input.approval === undefined) &&
+    (record.approval === undefined || (record.approval.id === input.approval?.id &&
+      record.approval.fingerprint === input.approval.fingerprint))
 }
 
 export function gitMutationPhase(record: GitMutationRecord): GitMutationPhase {
@@ -251,7 +289,9 @@ export class GitMutationJournal {
     this.maxOperations = Math.max(1, Math.min(options.maxOperations ?? MAX_OPERATIONS, MAX_OPERATIONS))
     this.write = options.write ?? writeJsonAtomically
     try {
-      this.state = parseDocument(readJsonFile(path))
+      const loaded = parseDocument(readJsonFile(path))
+      this.state = loaded.document
+      if (loaded.migrated) this.write(this.path, this.state)
       this.recoverInterrupted()
     } catch {
       this.available = false
