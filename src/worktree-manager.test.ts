@@ -904,6 +904,116 @@ test('forgets an externally removed real Git worktree while preserving its branc
   assert.deepEqual(manager.snapshot().worktrees, [])
 })
 
+test('stops tracking only an exact external identity without invoking Git mutations', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-stop-tracking-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const checkout = join(root, 'changed-checkout')
+  await mkdir(checkout)
+  await writeFile(join(checkout, 'owned-by-user.txt'), 'keep me\n')
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'stop-tracking', checkout)
+  registry.requireRecovery(record.id, 'external-change')
+  let observedCheckout: GitRepositoryIdentity = {
+    root: checkout,
+    gitDir: join(checkout, '.git'),
+    commonDir: join(checkout, '.git'),
+  }
+  let mutationCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    discoverRepository: async path => path === record.repository.root ? record.repository : observedCheckout,
+    listWorktrees: async () => [],
+    createWorktree: async () => {
+      mutationCalls += 1
+      throw new Error('must not create a worktree')
+    },
+    removeWorktree: async () => { mutationCalls += 1 },
+    moveWorktree: async () => { mutationCalls += 1 },
+    transferWorktreeHandoff: async () => {
+      mutationCalls += 1
+      throw new Error('must not transfer a handoff')
+    },
+  }), registry, join(root, 'managed'), () => undefined)
+
+  const stale = await manager.inspectExternalChangeWorktree(record.id, new AbortController().signal)
+  assert.equal(stale.inspection.repositoryRootObservation.state, 'matching')
+  assert.equal(stale.inspection.checkoutObservation.state, 'changed')
+  assert.equal(stale.inspection.registrationObservation.state, 'missing')
+  observedCheckout = { ...observedCheckout, gitDir: join(checkout, '.git-2'), commonDir: join(checkout, '.git-2') }
+  await assert.rejects(manager.stopTrackingExternalChange(
+    record.id,
+    'stop-tracking-stale',
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && !error.ambiguous)
+  assert.equal(registry.get(record.id)?.recoveryReason, 'external-change')
+
+  const fresh = await manager.inspectExternalChangeWorktree(record.id, new AbortController().signal)
+  const stopped = await manager.stopTrackingExternalChange(
+    record.id,
+    'stop-tracking-operation',
+    fresh.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(stopped.lifecycle, 'removed')
+  assert.deepEqual(manager.snapshot().worktrees, [])
+  assert.equal(manager.getByStopTrackingOperation('stop-tracking-operation')?.id, record.id)
+  assert.equal(await readFile(join(checkout, 'owned-by-user.txt'), 'utf8'), 'keep me\n')
+  assert.equal(mutationCalls, 0)
+  assert.equal(new WorktreeRegistry(registryPath).get(record.id)?.lifecycle, 'removed')
+})
+
+test('leaves a replacement repository and the original managed branch untouched when tracking stops', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-stop-tracking-real-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const repositoryRoot = await repositoryFixture(root)
+  const registryPath = join(root, 'data', 'worktrees.v1.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const manager = new WorktreeManager(
+    new GitService(),
+    registry,
+    join(root, 'managed-worktrees'),
+    () => undefined,
+  )
+  const created = (await manager.provision(input({
+    operationId: 'provision-stop-tracking-real',
+    requestedBySessionId: 'session-stop-tracking-real',
+    workspaceRoot: repositoryRoot,
+  }), new AbortController().signal)).record
+
+  await git(repositoryRoot, 'worktree', 'unlock', created.worktreePath!)
+  await git(repositoryRoot, 'worktree', 'remove', created.worktreePath!)
+  await mkdir(created.worktreePath!)
+  await git(created.worktreePath!, 'init', '-b', 'replacement')
+  await git(created.worktreePath!, 'config', 'user.name', 'Replacement Test')
+  await git(created.worktreePath!, 'config', 'user.email', 'replacement@example.invalid')
+  await writeFile(join(created.worktreePath!, 'replacement.txt'), 'replacement repository\n')
+  await git(created.worktreePath!, 'add', 'replacement.txt')
+  await git(created.worktreePath!, 'commit', '-m', 'replacement')
+
+  const reconciled = await manager.reconcile(new AbortController().signal)
+  assert.equal(reconciled.snapshot.worktrees[0]?.recoveryReason, 'external-change')
+  const preview = await manager.inspectExternalChangeWorktree(created.id, new AbortController().signal)
+  assert.equal(preview.inspection.repositoryRootObservation.state, 'matching')
+  assert.equal(preview.inspection.checkoutObservation.state, 'changed')
+  assert.equal(preview.inspection.registrationObservation.state, 'missing')
+  const replacementHead = await git(created.worktreePath!, 'rev-parse', 'HEAD')
+
+  const stopped = await manager.stopTrackingExternalChange(
+    created.id,
+    'stop-tracking-real-operation',
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(stopped.lifecycle, 'removed')
+  assert.equal(await readFile(join(created.worktreePath!, 'replacement.txt'), 'utf8'), 'replacement repository\n')
+  assert.equal(await git(created.worktreePath!, 'rev-parse', 'HEAD'), replacementHead)
+  assert.equal(await git(repositoryRoot, 'rev-parse', created.branch!), created.baseCommit)
+  assert.equal(new WorktreeRegistry(registryPath).getByStopTrackingOperation(
+    'stop-tracking-real-operation',
+  )?.id, created.id)
+})
+
 test('does not claim an interrupted cleanup completed when a non-repository path remains', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-replaced-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

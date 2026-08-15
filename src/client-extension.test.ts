@@ -54,6 +54,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /does not delete files or the Git branch/)
   assert.match(bundle, /Restore moved worktree/)
   assert.match(bundle, /preserving its branch, commit, and checkout files/)
+  assert.match(bundle, /Stop tracking changed checkout/)
+  assert.match(bundle, /without deleting or modifying its directory, files, Git metadata, or branch/)
   assert.match(bundle, /Ignored files stay only in this checkout/)
   assert.match(bundle, /Git review/)
   assert.match(bundle, /Last agent turn/)

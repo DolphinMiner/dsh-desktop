@@ -4,6 +4,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
   DesktopProtocolError,
+  ExternalChangeRepositoryObservation,
+  ExternalChangeWorktreeEntry,
+  ExternalChangeWorktreeRecoveryInspection,
+  ExternalChangeWorktreeRegistrationObservation,
   GitRepositoryIdentity,
   MissingWorktreeRecoveryInspection,
   MovedWorktreeRecoveryInspection,
@@ -122,6 +126,11 @@ export interface MissingWorktreeRecoveryState {
 export interface MovedWorktreeRecoveryState {
   record: WorktreeRecord
   inspection: MovedWorktreeRecoveryInspection
+}
+
+export interface ExternalChangeWorktreeRecoveryState {
+  record: WorktreeRecord
+  inspection: ExternalChangeWorktreeRecoveryInspection
 }
 
 export interface ManagedWorktreeHandoffExpectation {
@@ -266,6 +275,64 @@ function sameMovedWorktreeInspection(
     sameCleanupInspection(left.current, right.current)
 }
 
+function sameRepositoryIdentity(left: GitRepositoryIdentity, right: GitRepositoryIdentity): boolean {
+  return left.root === right.root && left.gitDir === right.gitDir && left.commonDir === right.commonDir
+}
+
+function sameRepositoryObservation(
+  left: ExternalChangeRepositoryObservation,
+  right: ExternalChangeRepositoryObservation,
+): boolean {
+  if (left.state !== right.state) return false
+  if (left.state === 'not-a-repository' || right.state === 'not-a-repository') return true
+  return sameRepositoryIdentity(left.identity, right.identity)
+}
+
+function sameExternalChangeEntry(left: ExternalChangeWorktreeEntry, right: ExternalChangeWorktreeEntry): boolean {
+  return left.path === right.path && left.head === right.head && left.branch === right.branch &&
+    left.detached === right.detached && left.bare === right.bare && left.locked === right.locked &&
+    left.lockReason === right.lockReason && left.prunable === right.prunable &&
+    left.pruneReason === right.pruneReason
+}
+
+function sameRegistrationObservation(
+  left: ExternalChangeWorktreeRegistrationObservation,
+  right: ExternalChangeWorktreeRegistrationObservation,
+): boolean {
+  if (left.state !== right.state) return false
+  if ((left.state === 'matching' || left.state === 'changed') &&
+    (right.state === 'matching' || right.state === 'changed')) {
+    return sameExternalChangeEntry(left.entry, right.entry)
+  }
+  return true
+}
+
+function sameExternalChangeInspection(
+  left: ExternalChangeWorktreeRecoveryInspection,
+  right: ExternalChangeWorktreeRecoveryInspection,
+): boolean {
+  return sameRepositoryIdentity(left.registeredRepository, right.registeredRepository) &&
+    left.registeredPath === right.registeredPath && left.registeredBranch === right.registeredBranch &&
+    left.checkoutPathPresent === right.checkoutPathPresent &&
+    sameRepositoryObservation(left.repositoryRootObservation, right.repositoryRootObservation) &&
+    sameRepositoryObservation(left.checkoutObservation, right.checkoutObservation) &&
+    sameRegistrationObservation(left.registrationObservation, right.registrationObservation)
+}
+
+function externalChangeEntry(entry: GitWorktreeEntry): ExternalChangeWorktreeEntry {
+  return {
+    path: entry.path,
+    ...(entry.head === undefined ? {} : { head: entry.head }),
+    ...(entry.branch === undefined ? {} : { branch: entry.branch }),
+    detached: entry.detached,
+    bare: entry.bare,
+    locked: entry.locked,
+    ...(entry.lockReason === undefined ? {} : { lockReason: entry.lockReason }),
+    prunable: entry.prunable,
+    ...(entry.pruneReason === undefined ? {} : { pruneReason: entry.pruneReason }),
+  }
+}
+
 function assertCleanupRecord(record: WorktreeRecord, action = 'cleanup'): asserts record is WorktreeRecord & {
   executionMode: 'worktree'
   worktreePath: string
@@ -314,6 +381,13 @@ export class WorktreeManager {
       throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree identifier is invalid.')
     }
     return withMappedErrorSync(() => this.registry.get(id))
+  }
+
+  getByStopTrackingOperation(operationId: string): WorktreeRecord | undefined {
+    if (!isBoundedString(operationId, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The stop-tracking resolution identifier is invalid.')
+    }
+    return withMappedErrorSync(() => this.registry.getByStopTrackingOperation(operationId))
   }
 
   async inspectCleanup(id: string, signal: AbortSignal): Promise<WorktreeCleanupState> {
@@ -613,6 +687,139 @@ export class WorktreeManager {
     }
     return withMappedErrorSync(() =>
       this.registry.resolveRecovery(id, record.sessionId === undefined ? 'orphaned' : 'ready'), true)
+  }
+
+  async inspectExternalChangeWorktree(
+    id: string,
+    signal: AbortSignal,
+  ): Promise<ExternalChangeWorktreeRecoveryState> {
+    const record = this.get(id)
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    if (record.executionMode !== 'worktree' || record.worktreePath === undefined || record.branch === undefined ||
+      record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'external-change' ||
+      record.pendingOperation !== undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'This worktree does not have an identity change to stop tracking.')
+    }
+    const pathState = await checkoutPathState(record.worktreePath)
+    if (pathState === 'absent') {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The registered checkout path is now absent. Recheck it before choosing a recovery action.',
+        true,
+      )
+    }
+    if (pathState === 'unknown') {
+      throw new WorktreeManagerError(
+        'DESKTOP_UNAVAILABLE',
+        'The registered checkout path could not be inspected.',
+        true,
+      )
+    }
+
+    const [repositoryRootObservation, checkoutObservation] = await Promise.all([
+      this.observeRepositoryIdentity(
+        record.repository.root,
+        identity => sameRepositoryIdentity(identity, record.repository),
+        signal,
+      ),
+      this.observeRepositoryIdentity(
+        record.worktreePath,
+        identity => identity.root === record.worktreePath &&
+          identity.commonDir === record.repository.commonDir,
+        signal,
+      ),
+    ])
+
+    let registrationObservation: ExternalChangeWorktreeRegistrationObservation = { state: 'unavailable' }
+    if (repositoryRootObservation.state === 'matching') {
+      const entries = await withMappedError(() =>
+        this.git.listWorktrees(repositoryRootObservation.identity.root, signal), true)
+      const pathEntries = entries.filter(entry => entry.path === record.worktreePath)
+      if (pathEntries.length > 1) {
+        throw new WorktreeManagerError('CONFLICT', 'Git returned conflicting registrations for this checkout.', true)
+      }
+      const entry = pathEntries[0]
+      if (entry === undefined) {
+        if (entries.some(candidate => candidate.branch === record.branch)) {
+          throw new WorktreeManagerError(
+            'CONFLICT',
+            'The managed branch is now registered at another path. Recheck it as a moved checkout.',
+            true,
+          )
+        }
+        registrationObservation = { state: 'missing' }
+      } else {
+        if (entry.prunable) {
+          throw new WorktreeManagerError(
+            'CONFLICT',
+            'Git now marks this checkout registration as prunable. Recheck it before resolving recovery.',
+            true,
+          )
+        }
+        const summarized = externalChangeEntry(entry)
+        registrationObservation = {
+          state: !entry.bare && !entry.detached && entry.branch === record.branch ? 'matching' : 'changed',
+          entry: summarized,
+        }
+      }
+    }
+
+    if (repositoryRootObservation.state === 'matching' && checkoutObservation.state === 'matching' &&
+      registrationObservation.state === 'matching') {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The registered repository and checkout identity now match. Recheck instead of stopping tracking.',
+      )
+    }
+    return {
+      record,
+      inspection: {
+        registeredRepository: { ...record.repository },
+        registeredPath: record.worktreePath,
+        registeredBranch: record.branch,
+        checkoutPathPresent: true,
+        repositoryRootObservation,
+        checkoutObservation,
+        registrationObservation,
+      },
+    }
+  }
+
+  async stopTrackingExternalChange(
+    id: string,
+    resolutionOperationId: string,
+    expected: ExternalChangeWorktreeRecoveryInspection,
+    signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    if (!isBoundedString(resolutionOperationId, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The stop-tracking resolution identifier is invalid.')
+    }
+    const current = await this.inspectExternalChangeWorktree(id, signal)
+    if (!sameExternalChangeInspection(current.inspection, expected)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The repository or checkout identity changed after approval. Inspect it again.',
+      )
+    }
+    beforeCommit?.(current.record)
+    return withMappedErrorSync(() =>
+      this.registry.stopTrackingExternalChange(id, resolutionOperationId), true)
+  }
+
+  private async observeRepositoryIdentity(
+    path: string,
+    matches: (identity: GitRepositoryIdentity) => boolean,
+    signal: AbortSignal,
+  ): Promise<ExternalChangeRepositoryObservation> {
+    try {
+      const identity = await this.git.discoverRepository(path, signal)
+      return { state: matches(identity) ? 'matching' : 'changed', identity }
+    } catch (error) {
+      throwIfCancelled(error)
+      if (isUnavailableCheckout(error)) return { state: 'not-a-repository' }
+      mapError(error, true)
+    }
   }
 
   async inspectHandoff(

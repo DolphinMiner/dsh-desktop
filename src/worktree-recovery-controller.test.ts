@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import type {
+  ExternalChangeWorktreeRecoveryInspection,
   MissingWorktreeRecoveryInspection,
   MovedWorktreeRecoveryInspection,
   WorktreeCleanupInspection,
@@ -16,6 +17,7 @@ import {
   type WorktreeRecoveryOperations,
 } from './worktree-recovery-controller'
 import type {
+  ExternalChangeWorktreeRecoveryState,
   InterruptedRemovalRecoveryState,
   MissingWorktreeRecoveryState,
   MovedWorktreeRecoveryState,
@@ -107,6 +109,34 @@ class FakeRecovery implements WorktreeRecoveryOperations {
   moveGate?: Promise<void>
   moveStarted?: () => void
   beforeMoveDispatch?: () => void
+  externalInspection: ExternalChangeWorktreeRecoveryInspection = {
+    registeredRepository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    registeredPath: '/managed/worktree',
+    registeredBranch: 'refs/heads/dsh/session-123456789012345678901234',
+    checkoutPathPresent: true,
+    repositoryRootObservation: {
+      state: 'matching',
+      identity: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    },
+    checkoutObservation: {
+      state: 'changed',
+      identity: {
+        root: '/managed/worktree',
+        gitDir: '/managed/worktree/.git',
+        commonDir: '/managed/worktree/.git',
+      },
+    },
+    registrationObservation: { state: 'missing' },
+  }
+  stopTrackingCalls = 0
+  stopTrackingOperationId?: string
+  stopTrackingGate?: Promise<void>
+
+  getByStopTrackingOperation(operationId: string): WorktreeRecord | undefined {
+    return this.stopTrackingOperationId === operationId && this.current.lifecycle === 'removed'
+      ? cloneRecord(this.current)
+      : undefined
+  }
 
   get(id: string): WorktreeRecord | undefined {
     return id === worktreeId ? cloneRecord(this.current) : undefined
@@ -228,6 +258,38 @@ class FakeRecovery implements WorktreeRecoveryOperations {
     delete this.current.recoveryReason
     return cloneRecord(this.current)
   }
+
+  async inspectExternalChangeWorktree(id: string): Promise<ExternalChangeWorktreeRecoveryState> {
+    assert.equal(id, worktreeId)
+    return {
+      record: cloneRecord(this.current),
+      inspection: structuredClone(this.externalInspection),
+    }
+  }
+
+  async stopTrackingExternalChange(
+    id: string,
+    resolutionOperationId: string,
+    expected: ExternalChangeWorktreeRecoveryInspection,
+    _signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    assert.equal(id, worktreeId)
+    assert.deepEqual(expected, this.externalInspection)
+    this.beforeCommit?.()
+    beforeCommit?.(cloneRecord(this.current))
+    await this.stopTrackingGate
+    this.stopTrackingCalls += 1
+    this.stopTrackingOperationId = resolutionOperationId
+    this.current = {
+      ...this.current,
+      lifecycle: 'removed',
+      removalOperationId: `stop-tracking:${resolutionOperationId}`,
+    }
+    delete this.current.pendingOperation
+    delete this.current.recoveryReason
+    return cloneRecord(this.current)
+  }
 }
 
 async function relocationFixture() {
@@ -237,6 +299,11 @@ async function relocationFixture() {
 
 function prepareMoved(worktrees: FakeRecovery): void {
   worktrees.current.recoveryReason = 'moved'
+  delete worktrees.current.pendingOperation
+}
+
+function prepareExternalChange(worktrees: FakeRecovery): void {
+  worktrees.current.recoveryReason = 'external-change'
   delete worktrees.current.pendingOperation
 }
 
@@ -405,6 +472,93 @@ test('rejects missing-checkout drift and an active-session race before forgettin
   await assert.rejects(racedController.confirm({ previewId, confirmed: true }, signal),
     (error: WorktreeRecoveryControllerError) => error.code === 'CONFLICT' && /active Harness session/i.test(error.message))
   assert.equal(raced.forgetCalls, 0)
+})
+
+test('stops tracking an exact external identity after dual approval and deduplicates the tombstone', async () => {
+  const worktrees = new FakeRecovery()
+  prepareExternalChange(worktrees)
+  let approval: object | undefined
+  let releaseStop: (() => void) | undefined
+  let signalStarted: (() => void) | undefined
+  worktrees.stopTrackingGate = new Promise(resolve => { releaseStop = resolve })
+  const started = new Promise<void>(resolve => { signalStarted = resolve })
+  worktrees.beforeCommit = signalStarted
+  const controller = new WorktreeRecoveryController(worktrees, {
+    now: () => new Date('2026-08-16T12:00:00.000Z'),
+    randomId: () => previewId,
+    approve: async details => {
+      approval = details
+      return true
+    },
+  })
+
+  const preview = await controller.preview({ worktreeId, action: 'stop-tracking' }, signal)
+  if (preview.action !== 'stop-tracking') assert.fail('Expected an external-change preview.')
+  assert.equal(preview.inspection.checkoutObservation.state, 'changed')
+  const first = controller.confirm({ previewId, confirmed: true }, signal)
+  await started
+  const concurrent = controller.confirm({ previewId, confirmed: true }, signal)
+  releaseStop?.()
+  const [result, concurrentResult] = await Promise.all([first, concurrent])
+  assert.deepEqual(concurrentResult, result)
+  assert.equal(result.action, 'stop-tracking')
+  assert.equal(result.worktree.lifecycle, 'removed')
+  assert.equal(worktrees.stopTrackingCalls, 1)
+  assert.deepEqual(approval, {
+    action: 'stop-tracking',
+    repositoryRoot: '/repo',
+    worktreePath: '/managed/worktree',
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+    repositoryState: 'matching',
+    checkoutState: 'changed',
+    registrationState: 'missing',
+  })
+  assert.deepEqual(await controller.confirm({ previewId, confirmed: true }, signal), result)
+  assert.deepEqual(await new WorktreeRecoveryController(worktrees).confirm({
+    previewId,
+    confirmed: true,
+  }, signal), result)
+  assert.equal(worktrees.stopTrackingCalls, 1)
+})
+
+test('rejects external identity drift and an active-session race before stopping tracking', async () => {
+  const drifted = new FakeRecovery()
+  prepareExternalChange(drifted)
+  const driftController = new WorktreeRecoveryController(drifted, {
+    randomId: () => previewId,
+    approve: async () => true,
+  })
+  await driftController.preview({ worktreeId, action: 'stop-tracking' }, signal)
+  drifted.externalInspection = {
+    ...drifted.externalInspection,
+    checkoutObservation: {
+      state: 'changed',
+      identity: {
+        root: '/managed/worktree',
+        gitDir: '/replacement/.git',
+        commonDir: '/replacement/.git',
+      },
+    },
+  }
+  await assert.rejects(driftController.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeRecoveryControllerError) => error.code === 'CONFLICT' && /after preview/i.test(error.message))
+  assert.equal(drifted.stopTrackingCalls, 0)
+
+  const raced = new FakeRecovery()
+  prepareExternalChange(raced)
+  raced.current.sessionId = 'harness-session'
+  let running = false
+  raced.beforeCommit = () => { running = true }
+  const racedController = new WorktreeRecoveryController(raced, {
+    randomId: () => previewId,
+    approve: async () => true,
+    isSessionRunning: sessionId => sessionId === 'harness-session' && running,
+  })
+  await racedController.preview({ worktreeId, action: 'stop-tracking' }, signal)
+  await assert.rejects(racedController.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeRecoveryControllerError) => error.code === 'CONFLICT' && /active Harness session/i.test(error.message))
+  assert.equal(raced.stopTrackingCalls, 0)
+  assert.equal(raced.current.lifecycle, 'recovery-required')
 })
 
 test('restores a moved checkout after exact renderer and native approval and deduplicates the result', async t => {

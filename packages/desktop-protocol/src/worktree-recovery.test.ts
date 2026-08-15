@@ -52,6 +52,10 @@ test('validates the supported worktree recovery actions and explicit confirmatio
     worktreeId,
     action: 'restore-moved',
   }), { worktreeId, action: 'restore-moved' })
+  assert.deepEqual(parseDesktopWorktreeRecoveryPreviewInput({
+    worktreeId,
+    action: 'stop-tracking',
+  }), { worktreeId, action: 'stop-tracking' })
   assert.equal(parseDesktopWorktreeRecoveryPreviewInput({
     worktreeId,
     action: 'retry-removal',
@@ -192,5 +196,89 @@ test('binds restoring a moved checkout to both exact paths and preserved Git sta
   assert.equal(parseWorktreeRecoveryResult({
     ...result,
     worktree: { ...recoveredWorktree, lifecycle: 'recovery-required' },
+  }), undefined)
+})
+
+test('binds stop tracking to exact external repository and checkout identity evidence', () => {
+  const changedWorktree = {
+    ...worktree,
+    recoveryReason: 'external-change' as const,
+  }
+  const registeredRepository = {
+    root: changedWorktree.repositoryRoot,
+    gitDir: '/repo/.git',
+    commonDir: '/repo/.git',
+  }
+  const changedInspection = {
+    registeredRepository,
+    registeredPath: changedWorktree.worktreePath,
+    registeredBranch: changedWorktree.branch,
+    checkoutPathPresent: true as const,
+    repositoryRootObservation: {
+      state: 'matching' as const,
+      identity: registeredRepository,
+    },
+    checkoutObservation: {
+      state: 'changed' as const,
+      identity: {
+        root: changedWorktree.worktreePath,
+        gitDir: `${changedWorktree.worktreePath}/.git`,
+        commonDir: `${changedWorktree.worktreePath}/.git`,
+      },
+    },
+    registrationObservation: { state: 'missing' as const },
+  }
+  const preview = {
+    previewId,
+    expiresAt: '2026-08-16T12:05:00.000Z',
+    action: 'stop-tracking' as const,
+    worktree: changedWorktree,
+    inspection: changedInspection,
+  }
+  assert.deepEqual(parseWorktreeRecoveryPreview(preview), preview)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: {
+      ...changedInspection,
+      checkoutObservation: {
+        state: 'matching',
+        identity: {
+          root: changedWorktree.worktreePath,
+          gitDir: '/repo/.git/worktrees/managed',
+          commonDir: registeredRepository.commonDir,
+        },
+      },
+      registrationObservation: {
+        state: 'matching',
+        entry: {
+          path: changedWorktree.worktreePath,
+          head: changedWorktree.baseCommit,
+          branch: changedWorktree.branch,
+          detached: false,
+          bare: false,
+          locked: true,
+          prunable: false,
+        },
+      },
+    },
+  }), undefined)
+  assert.equal(parseWorktreeRecoveryPreview({
+    ...preview,
+    inspection: {
+      ...changedInspection,
+      checkoutObservation: { ...changedInspection.checkoutObservation, unexpected: true },
+    },
+  }), undefined)
+
+  const { recoveryReason: _recoveryReason, ...stoppedWorktree } = changedWorktree
+  const result = {
+    resolutionId: previewId,
+    action: 'stop-tracking' as const,
+    worktree: { ...stoppedWorktree, lifecycle: 'removed' as const },
+  }
+  assert.deepEqual(parseWorktreeRecoveryResult(result), result)
+  assert.equal(parseWorktreeRecoveryResult({
+    ...result,
+    worktree: { ...stoppedWorktree, lifecycle: 'orphaned' },
   }), undefined)
 })

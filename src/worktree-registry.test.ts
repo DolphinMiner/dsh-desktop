@@ -295,6 +295,48 @@ test('forgets only an exact missing worktree record and deduplicates its resolut
     (error: WorktreeRegistryError) => error.code === 'DUPLICATE_REQUEST')
 })
 
+test('stores an idempotent stop-tracking tombstone only for an external identity change', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-stop-tracking-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.json')
+  const registry = new WorktreeRegistry(path)
+  const reserved = registry.reserve(reservation({ operationId: 'create-stop-tracking' }))
+  registry.markReady(reserved.id, 'create-stop-tracking')
+  registry.requireRecovery(reserved.id, 'external-change')
+
+  const stopped = registry.stopTrackingExternalChange(reserved.id, 'stop-tracking-operation')
+  assert.equal(stopped.lifecycle, 'removed')
+  assert.equal(stopped.removalOperationId, 'stop-tracking:stop-tracking-operation')
+  assert.equal(stopped.recoveryReason, undefined)
+  assert.equal(registry.getByStopTrackingOperation('stop-tracking-operation')?.id, reserved.id)
+  const revision = registry.status().revision
+  assert.equal(registry.stopTrackingExternalChange(reserved.id, 'stop-tracking-operation').lifecycle, 'removed')
+  assert.equal(registry.status().revision, revision)
+  assert.equal(new WorktreeRegistry(path).getByStopTrackingOperation('stop-tracking-operation')?.lifecycle, 'removed')
+
+  const second = registry.reserve(reservation({
+    operationId: 'create-stop-tracking-second',
+    requestedBySessionId: 'session-2',
+    worktreePath: '/worktrees/session-2',
+    branch: 'refs/heads/dsh/session-2',
+  }))
+  registry.markReady(second.id, 'create-stop-tracking-second')
+  registry.requireRecovery(second.id, 'external-change')
+  assert.throws(() => registry.stopTrackingExternalChange(second.id, 'stop-tracking-operation'),
+    (error: WorktreeRegistryError) => error.code === 'DUPLICATE_REQUEST')
+
+  const missing = registry.reserve(reservation({
+    operationId: 'create-stop-tracking-missing',
+    requestedBySessionId: 'session-3',
+    worktreePath: '/worktrees/session-3',
+    branch: 'refs/heads/dsh/session-3',
+  }))
+  registry.markReady(missing.id, 'create-stop-tracking-missing')
+  registry.requireRecovery(missing.id, 'missing')
+  assert.throws(() => registry.stopTrackingExternalChange(missing.id, 'stop-tracking-missing-operation'),
+    (error: WorktreeRegistryError) => error.code === 'CONFLICT')
+})
+
 test('keeps persisted timestamps valid when the system clock moves backwards', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-clock-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

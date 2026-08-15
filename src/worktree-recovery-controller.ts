@@ -4,6 +4,7 @@ import type {
   DesktopProtocolError,
   DesktopWorktreeRecoveryConfirmInput,
   DesktopWorktreeRecoveryPreviewInput,
+  ExternalChangeWorktreeRecoveryInspection,
   MissingWorktreeRecoveryInspection,
   MovedWorktreeRecoveryInspection,
   WorktreeCleanupInspection,
@@ -14,6 +15,7 @@ import type {
 import { GitRepositoryMutationQueue } from './git-index-controller'
 import type {
   InterruptedRemovalRecoveryState,
+  ExternalChangeWorktreeRecoveryState,
   MissingWorktreeRecoveryState,
   MovedWorktreeRecoveryState,
 } from './worktree-manager'
@@ -31,6 +33,7 @@ const MAX_PENDING_PREVIEWS = 128
 
 export interface WorktreeRecoveryOperations {
   get(id: string): WorktreeRecord | undefined
+  getByStopTrackingOperation(operationId: string): WorktreeRecord | undefined
   inspectInterruptedRemoval(id: string, signal: AbortSignal): Promise<InterruptedRemovalRecoveryState>
   keepInterruptedRemoval(
     id: string,
@@ -64,6 +67,14 @@ export interface WorktreeRecoveryOperations {
     expected: MovedWorktreeRecoveryInspection,
     signal: AbortSignal,
   ): Promise<WorktreeRecord>
+  inspectExternalChangeWorktree(id: string, signal: AbortSignal): Promise<ExternalChangeWorktreeRecoveryState>
+  stopTrackingExternalChange(
+    id: string,
+    resolutionOperationId: string,
+    expected: ExternalChangeWorktreeRecoveryInspection,
+    signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord>
 }
 
 export interface WorktreeRecoveryControllerOptions {
@@ -94,6 +105,14 @@ export interface WorktreeRecoveryControllerOptions {
     head: string
     clean: boolean
     changeCount: number
+  } | {
+    action: 'stop-tracking'
+    repositoryRoot: string
+    worktreePath: string
+    branch: string
+    repositoryState: ExternalChangeWorktreeRecoveryInspection['repositoryRootObservation']['state']
+    checkoutState: ExternalChangeWorktreeRecoveryInspection['checkoutObservation']['state']
+    registrationState: ExternalChangeWorktreeRecoveryInspection['registrationObservation']['state']
   }) => Promise<boolean>
   isSessionRunning?: (sessionId: string) => boolean
 }
@@ -121,10 +140,16 @@ interface PendingMovedWorktreePreview extends PendingRecoveryPreviewBase {
   state: MovedWorktreeRecoveryState
 }
 
+interface PendingExternalChangePreview extends PendingRecoveryPreviewBase {
+  action: 'stop-tracking'
+  inspection: ExternalChangeWorktreeRecoveryInspection
+}
+
 type PendingRecoveryPreview =
   | PendingInterruptedRemovalPreview
   | PendingMissingWorktreePreview
   | PendingMovedWorktreePreview
+  | PendingExternalChangePreview
 
 export class WorktreeRecoveryControllerError extends Error {
   constructor(
@@ -161,6 +186,15 @@ function missingWorktreeFingerprint(state: MissingWorktreeRecoveryState): string
 }
 
 function movedWorktreeFingerprint(state: MovedWorktreeRecoveryState): string {
+  return createHash('sha256').update(JSON.stringify({
+    worktree: summarizeWorktreeRecord(state.record),
+    repository: state.record.repository,
+    creationOperationId: state.record.creationOperationId,
+    inspection: state.inspection,
+  })).digest('hex')
+}
+
+function externalChangeFingerprint(state: ExternalChangeWorktreeRecoveryState): string {
   return createHash('sha256').update(JSON.stringify({
     worktree: summarizeWorktreeRecord(state.record),
     repository: state.record.repository,
@@ -254,6 +288,24 @@ export class WorktreeRecoveryController {
         inspection: state.inspection,
       }
     }
+    if (input.action === 'stop-tracking') {
+      const state = await this.worktrees.inspectExternalChangeWorktree(input.worktreeId, signal)
+      this.assertInactive(state.record)
+      const identity = this.createPreviewIdentity(input.worktreeId)
+      this.previews.set(identity.previewId, {
+        ...identity,
+        worktreeId: input.worktreeId,
+        action: input.action,
+        fingerprint: externalChangeFingerprint(state),
+        inspection: state.inspection,
+      })
+      return {
+        ...identity,
+        action: input.action,
+        worktree: summarizeWorktreeRecord(state.record),
+        inspection: state.inspection,
+      }
+    }
     if (this.relocations === undefined) {
       throw new WorktreeRecoveryControllerError(
         'DESKTOP_UNAVAILABLE',
@@ -301,6 +353,15 @@ export class WorktreeRecoveryController {
     }
     if (pending.action === 'forget-missing') {
       return this.confirmMissingWorktree(input.previewId, pending, signal)
+    }
+    if (pending.action === 'stop-tracking') {
+      const operation = this.confirmExternalChange(input.previewId, pending, signal)
+      this.inFlight.set(input.previewId, operation)
+      try {
+        return await operation
+      } finally {
+        if (this.inFlight.get(input.previewId) === operation) this.inFlight.delete(input.previewId)
+      }
     }
     const operation = this.mutationQueue.run(pending.state.record.repository.root, () =>
       this.confirmMovedWorktree(input.previewId, pending, signal))
@@ -493,10 +554,66 @@ export class WorktreeRecoveryController {
     return { resolutionId, action: 'restore-moved', worktree: summarizeWorktreeRecord(restored) }
   }
 
+  private async confirmExternalChange(
+    resolutionId: string,
+    pending: PendingExternalChangePreview,
+    signal: AbortSignal,
+  ): Promise<WorktreeRecoveryResult> {
+    const beforeApproval = await this.worktrees.inspectExternalChangeWorktree(pending.worktreeId, signal)
+    this.assertInactive(beforeApproval.record)
+    if (externalChangeFingerprint(beforeApproval) !== pending.fingerprint) {
+      throw new WorktreeRecoveryControllerError(
+        'CONFLICT',
+        'The repository or checkout identity changed after preview. Inspect it again.',
+      )
+    }
+    const approved = await this.approve({
+      action: 'stop-tracking',
+      repositoryRoot: beforeApproval.record.repository.root,
+      worktreePath: beforeApproval.inspection.registeredPath,
+      branch: beforeApproval.inspection.registeredBranch,
+      repositoryState: beforeApproval.inspection.repositoryRootObservation.state,
+      checkoutState: beforeApproval.inspection.checkoutObservation.state,
+      registrationState: beforeApproval.inspection.registrationObservation.state,
+    })
+    if (!approved) {
+      throw new WorktreeRecoveryControllerError('CANCELLED', 'Stopping worktree tracking was cancelled.')
+    }
+    this.assertNotExpiredAfterApproval(pending)
+
+    const afterApproval = await this.worktrees.inspectExternalChangeWorktree(pending.worktreeId, signal)
+    this.assertInactive(afterApproval.record)
+    if (externalChangeFingerprint(afterApproval) !== pending.fingerprint) {
+      throw new WorktreeRecoveryControllerError(
+        'CONFLICT',
+        'The repository or checkout identity changed during approval. Inspect it again.',
+      )
+    }
+    const stopped = await this.worktrees.stopTrackingExternalChange(
+      pending.worktreeId,
+      resolutionId,
+      pending.inspection,
+      signal,
+      record => this.assertInactive(record),
+    )
+    return { resolutionId, action: 'stop-tracking', worktree: summarizeWorktreeRecord(stopped) }
+  }
+
   private async resolveDuplicate(
     resolutionId: string,
     signal: AbortSignal,
   ): Promise<WorktreeRecoveryResult> {
+    const stopped = this.worktrees.getByStopTrackingOperation(resolutionId)
+    if (stopped !== undefined) {
+      if (stopped.executionMode !== 'worktree' || stopped.lifecycle !== 'removed') {
+        throw new WorktreeRecoveryControllerError(
+          'CONFLICT',
+          'The stop-tracking result no longer matches the worktree registry.',
+          true,
+        )
+      }
+      return { resolutionId, action: 'stop-tracking', worktree: summarizeWorktreeRecord(stopped) }
+    }
     let operation: WorktreeRelocationRecord | undefined
     try {
       operation = this.relocations?.get(resolutionId)

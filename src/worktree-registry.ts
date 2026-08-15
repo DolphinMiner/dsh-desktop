@@ -13,6 +13,7 @@ import { readJsonFile, writeJsonAtomically } from './atomic-json'
 
 export const WORKTREE_REGISTRY_SCHEMA_VERSION = 1 as const
 const MISSING_RESOLUTION_OPERATION_PREFIX = 'forget-missing:'
+const EXTERNAL_CHANGE_RESOLUTION_OPERATION_PREFIX = 'stop-tracking:'
 const MAX_RECORDS = 10_000
 const MAX_ID_LENGTH = 256
 const MAX_PATH_LENGTH = 4_096
@@ -375,6 +376,14 @@ export class WorktreeRegistry {
     return record === undefined ? undefined : cloneRecord(record)
   }
 
+  getByStopTrackingOperation(operationId: string): WorktreeRecord | undefined {
+    const storedOperationId = `${EXTERNAL_CHANGE_RESOLUTION_OPERATION_PREFIX}${operationId}`
+    if (!isBoundedString(operationId) || !isBoundedString(storedOperationId)) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The stop-tracking resolution identifier is invalid.')
+    }
+    return this.getByOperation(storedOperationId)
+  }
+
   getByCheckoutPath(path: string): WorktreeRecord | undefined {
     this.assertAvailable()
     const record = this.state.records.find(item => isActive(item) && effectiveCheckoutPath(item) === path)
@@ -555,6 +564,39 @@ export class WorktreeRegistry {
         throw new WorktreeRegistryError(
           'CONFLICT',
           'The worktree no longer has the reviewed missing-checkout state.',
+        )
+      }
+      record.lifecycle = 'removed'
+      record.removalOperationId = storedOperationId
+      delete record.recoveryReason
+      return true
+    })
+  }
+
+  stopTrackingExternalChange(id: string, resolutionOperationId: string): WorktreeRecord {
+    const storedOperationId = `${EXTERNAL_CHANGE_RESOLUTION_OPERATION_PREFIX}${resolutionOperationId}`
+    if (!isBoundedString(resolutionOperationId) || !isBoundedString(storedOperationId)) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The stop-tracking resolution identifier is invalid.')
+    }
+    this.assertAvailable()
+    const operationOwner = this.state.records.find(record => operationIds(record).includes(storedOperationId))
+    if (operationOwner !== undefined) {
+      const sameResolution = operationOwner.id === id && operationOwner.lifecycle === 'removed' &&
+        operationOwner.removalOperationId === storedOperationId
+      if (!sameResolution) {
+        throw new WorktreeRegistryError(
+          'DUPLICATE_REQUEST',
+          'The worktree operation identifier has already been used.',
+        )
+      }
+    }
+    return this.transition(id, record => {
+      if (record.lifecycle === 'removed' && record.removalOperationId === storedOperationId) return false
+      if (record.executionMode !== 'worktree' || record.lifecycle !== 'recovery-required' ||
+        record.recoveryReason !== 'external-change' || record.pendingOperation !== undefined) {
+        throw new WorktreeRegistryError(
+          'CONFLICT',
+          'The worktree no longer has the reviewed external-change state.',
         )
       }
       record.lifecycle = 'removed'

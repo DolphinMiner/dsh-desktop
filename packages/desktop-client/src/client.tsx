@@ -781,6 +781,19 @@ function worktreeRecoveryLabel(reason: WorktreeSummary['recoveryReason']): strin
   return labels[reason]
 }
 
+function repositoryIdentityStateLabel(state: 'matching' | 'changed' | 'not-a-repository'): string {
+  if (state === 'matching') return 'Matches original repository'
+  if (state === 'changed') return 'Different repository identity'
+  return 'Not a Git repository'
+}
+
+function worktreeRegistrationStateLabel(state: 'matching' | 'changed' | 'missing' | 'unavailable'): string {
+  if (state === 'matching') return 'Matches registered checkout'
+  if (state === 'changed') return 'Registration identity changed'
+  if (state === 'missing') return 'Registration missing'
+  return 'Unavailable because the original repository changed'
+}
+
 function handoffBlockerLabel(blocker: WorktreeHandoffBlocker): string {
   const labels: Record<WorktreeHandoffBlocker, string> = {
     'source-detached': 'The source checkout is detached.',
@@ -970,6 +983,8 @@ function WorktreesSection(): React.JSX.Element {
       setRecoveryAcknowledged(false)
       setNotice(action === 'forget-missing'
         ? 'The stale missing-worktree record was forgotten. No files or Git branches were changed.'
+        : action === 'stop-tracking'
+          ? 'DSH Desktop stopped tracking the changed checkout. Its directory, files, Git metadata, and branch were left untouched.'
         : action === 'restore-moved'
           ? result.worktree.lifecycle === 'orphaned'
             ? 'The checkout was restored to its registered path with its files and branch intact. It is now orphaned.'
@@ -1079,6 +1094,8 @@ function WorktreesSection(): React.JSX.Element {
             worktree.recoveryReason === 'missing'
           const restoreMoved = worktree.lifecycle === 'recovery-required' &&
             worktree.recoveryReason === 'moved'
+          const stopTracking = worktree.lifecycle === 'recovery-required' &&
+            worktree.recoveryReason === 'external-change'
           const operationsBusy = cleanupPreviewingId !== undefined || recoveryPreviewingId !== undefined ||
             handoffPreviewingKey !== undefined || cleaning || recovering || transferring
           return (
@@ -1142,6 +1159,17 @@ function WorktreesSection(): React.JSX.Element {
                       onClick={() => void inspectRecovery(worktree.id, 'restore-moved')}
                     >
                       Restore path
+                    </Button>
+                  )}
+                  {stopTracking && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconTrashOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectRecovery(worktree.id, 'stop-tracking')}
+                    >
+                      Stop tracking
                     </Button>
                   )}
                   {handoffAvailable && (
@@ -1275,12 +1303,16 @@ function WorktreesSection(): React.JSX.Element {
         onClose={closeRecoveryPreview}
         title={recoveryPreview?.action === 'forget-missing'
           ? 'Forget missing worktree'
+          : recoveryPreview?.action === 'stop-tracking'
+            ? 'Stop tracking changed checkout'
           : recoveryPreview?.action === 'restore-moved'
             ? 'Restore moved worktree'
             : 'Keep interrupted worktree'}
         closeLabel="Close recovery preview"
         description={recoveryPreview?.action === 'forget-missing'
           ? 'Remove a stale desktop record only after Git metadata and the checkout path are both absent.'
+          : recoveryPreview?.action === 'stop-tracking'
+            ? 'Remove only the DSH Desktop assignment after the registered repository or checkout identity changed.'
           : recoveryPreview?.action === 'restore-moved'
             ? 'Move the exact managed checkout back to its registered path without changing its branch or files.'
             : 'Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged.'}
@@ -1289,7 +1321,7 @@ function WorktreesSection(): React.JSX.Element {
             <Button variant="outline" disabled={recovering} onClick={closeRecoveryPreview}>Cancel</Button>
             <Button
               variant="primary"
-              icon={recoveryPreview?.action === 'forget-missing'
+              icon={recoveryPreview?.action === 'forget-missing' || recoveryPreview?.action === 'stop-tracking'
                 ? <IconTrashOutline16 />
                 : recoveryPreview?.action === 'restore-moved'
                   ? <IconRefreshOutline16 />
@@ -1299,6 +1331,8 @@ function WorktreesSection(): React.JSX.Element {
             >
               {recoveryPreview?.action === 'forget-missing'
                 ? 'Forget record'
+                : recoveryPreview?.action === 'stop-tracking'
+                  ? 'Stop tracking'
                 : recoveryPreview?.action === 'restore-moved'
                   ? 'Restore path'
                   : 'Keep checkout'}
@@ -1315,12 +1349,18 @@ function WorktreesSection(): React.JSX.Element {
               </div>
               <div style={styles.worktreeDetail}>
                 <span style={styles.label}>
-                  {recoveryPreview.action === 'restore-moved' ? 'Current checkout' : 'Checkout'}
+                  {recoveryPreview.action === 'restore-moved'
+                    ? 'Current checkout'
+                    : recoveryPreview.action === 'stop-tracking'
+                      ? 'Registered checkout'
+                      : 'Checkout'}
                 </span>
                 <span style={styles.metadata}>
                   {recoveryPreview.action === 'restore-moved'
                     ? recoveryPreview.inspection.current.worktreePath
-                    : recoveryPreview.inspection.worktreePath}
+                    : recoveryPreview.action === 'stop-tracking'
+                      ? recoveryPreview.inspection.registeredPath
+                      : recoveryPreview.inspection.worktreePath}
                 </span>
               </div>
               {recoveryPreview.action === 'keep-interrupted-removal' ? (
@@ -1348,6 +1388,82 @@ function WorktreesSection(): React.JSX.Element {
                     <span style={styles.label}>Checkout path</span>
                     <span style={styles.metadata}>Absent</span>
                   </div>
+                </>
+              ) : recoveryPreview.action === 'stop-tracking' ? (
+                <>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Original repository</span>
+                    <span style={styles.metadata}>
+                      {repositoryIdentityStateLabel(recoveryPreview.inspection.repositoryRootObservation.state)}
+                    </span>
+                  </div>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Checkout identity</span>
+                    <span style={styles.metadata}>
+                      {repositoryIdentityStateLabel(recoveryPreview.inspection.checkoutObservation.state)}
+                    </span>
+                  </div>
+                  <div style={styles.worktreeDetail}>
+                    <span style={styles.label}>Git registration</span>
+                    <span style={styles.metadata}>
+                      {worktreeRegistrationStateLabel(recoveryPreview.inspection.registrationObservation.state)}
+                    </span>
+                  </div>
+                  {recoveryPreview.inspection.repositoryRootObservation.state === 'changed' && (
+                    <>
+                      <div style={styles.worktreeDetail}>
+                        <span style={styles.label}>Observed repository</span>
+                        <span style={styles.metadata}>
+                          {recoveryPreview.inspection.repositoryRootObservation.identity.root}
+                        </span>
+                      </div>
+                      <div style={styles.worktreeDetail}>
+                        <span style={styles.label}>Observed common directory</span>
+                        <span style={styles.metadata}>
+                          {recoveryPreview.inspection.repositoryRootObservation.identity.commonDir}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {recoveryPreview.inspection.checkoutObservation.state === 'changed' && (
+                    <>
+                      <div style={styles.worktreeDetail}>
+                        <span style={styles.label}>Checkout repository</span>
+                        <span style={styles.metadata}>
+                          {recoveryPreview.inspection.checkoutObservation.identity.root}
+                        </span>
+                      </div>
+                      <div style={styles.worktreeDetail}>
+                        <span style={styles.label}>Checkout common directory</span>
+                        <span style={styles.metadata}>
+                          {recoveryPreview.inspection.checkoutObservation.identity.commonDir}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {recoveryPreview.inspection.registrationObservation.state === 'changed' && (
+                    <>
+                      <div style={styles.worktreeDetail}>
+                        <span style={styles.label}>Observed branch</span>
+                        <span style={styles.metadata}>
+                          {recoveryPreview.inspection.registrationObservation.entry.branch ??
+                            (recoveryPreview.inspection.registrationObservation.entry.detached
+                              ? 'Detached HEAD'
+                              : recoveryPreview.inspection.registrationObservation.entry.bare
+                                ? 'Bare repository'
+                                : 'No branch')}
+                        </span>
+                      </div>
+                      {recoveryPreview.inspection.registrationObservation.entry.head !== undefined && (
+                        <div style={styles.worktreeDetail}>
+                          <span style={styles.label}>Observed commit</span>
+                          <span style={styles.metadata}>
+                            {recoveryPreview.inspection.registrationObservation.entry.head}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </>
               ) : (
                 <>
@@ -1415,6 +1531,8 @@ function WorktreesSection(): React.JSX.Element {
               <span>
                 {recoveryPreview.action === 'forget-missing'
                   ? 'I understand this forgets only the stale desktop record and does not delete files or the Git branch.'
+                  : recoveryPreview.action === 'stop-tracking'
+                    ? 'I understand DSH Desktop will stop managing this checkout without deleting or modifying its directory, files, Git metadata, or branch.'
                   : recoveryPreview.action === 'restore-moved'
                     ? 'I understand this moves the checkout directory while preserving its branch, commit, and checkout files.'
                     : 'I understand this cancels the interrupted cleanup and does not modify checkout files.'}

@@ -896,6 +896,23 @@ app.whenReady().then(async () => {
         })
         return result.response === 1
       }
+      if (details.action === 'stop-tracking') {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Stop tracking changed checkout?',
+          message: `Stop managing the checkout for ${branch}?`,
+          detail: `${details.worktreePath}\n\nRepository: ${details.repositoryRoot}\n` +
+            `Original repository: ${details.repositoryState}\n` +
+            `Checkout identity: ${details.checkoutState}\n` +
+            `Git registration: ${details.registrationState}\n\n` +
+            'This removes only the DSH Desktop assignment. It does not delete or modify the directory, files, Git metadata, or branch.',
+          buttons: ['Cancel', 'Stop Tracking'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      }
       if (details.action === 'restore-moved') {
         const count = details.changeCount
         const result = await dialog.showMessageBox(mainWindow, {
