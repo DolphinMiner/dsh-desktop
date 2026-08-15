@@ -640,6 +640,52 @@ test('preserves interrupted cleanup state while the checkout still exists', asyn
   assert.equal(removeCalls, 0)
 })
 
+test('keeps an exact interrupted cleanup without mutating Git or checkout files', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-keep-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const registryPath = join(root, 'registry.json')
+  const registry = new WorktreeRegistry(registryPath)
+  const record = readyWorktree(registry, 'cleanup-keep')
+  registry.beginRemoval(record.id, 'cleanup-keep-operation')
+  const recoveredRegistry = new WorktreeRegistry(registryPath)
+  let inspection = cleanupInspection(record)
+  let removeCalls = 0
+  const manager = new WorktreeManager(cleanupOperations(record, {
+    inspectWorktreeForRemoval: async () => inspection,
+    removeWorktree: async () => { removeCalls += 1 },
+  }), recoveredRegistry, '/managed', () => undefined)
+
+  const preview = await manager.inspectInterruptedRemoval(record.id, new AbortController().signal)
+  assert.equal(preview.removalOperationId, 'cleanup-keep-operation')
+  const kept = await manager.keepInterruptedRemoval(
+    record.id,
+    preview.removalOperationId,
+    preview.inspection,
+    new AbortController().signal,
+  )
+  assert.equal(kept.lifecycle, 'orphaned')
+  assert.equal(kept.pendingOperation, undefined)
+  assert.equal(removeCalls, 0)
+
+  const secondRegistry = new WorktreeRegistry(join(root, 'second-registry.json'))
+  const second = readyWorktree(secondRegistry, 'cleanup-keep-drift')
+  secondRegistry.beginRemoval(second.id, 'cleanup-keep-drift-operation')
+  const interrupted = new WorktreeRegistry(join(root, 'second-registry.json'))
+  inspection = cleanupInspection(second)
+  const driftManager = new WorktreeManager(cleanupOperations(second, {
+    inspectWorktreeForRemoval: async () => inspection,
+  }), interrupted, '/managed', () => undefined)
+  const stale = await driftManager.inspectInterruptedRemoval(second.id, new AbortController().signal)
+  inspection = cleanupInspection(second, 'b'.repeat(40))
+  await assert.rejects(driftManager.keepInterruptedRemoval(
+    second.id,
+    stale.removalOperationId,
+    stale.inspection,
+    new AbortController().signal,
+  ), (error: WorktreeManagerError) => error.code === 'CONFLICT' && !error.ambiguous)
+  assert.equal(interrupted.get(second.id)?.recoveryReason, 'interrupted-remove')
+})
+
 test('does not claim an interrupted cleanup completed when a non-repository path remains', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-cleanup-replaced-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

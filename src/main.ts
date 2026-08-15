@@ -34,6 +34,8 @@ import {
   parseDesktopGitReviewCommentsInput,
   parseDesktopWorktreeCleanupConfirmInput,
   parseDesktopWorktreeCleanupPreviewInput,
+  parseDesktopWorktreeRecoveryConfirmInput,
+  parseDesktopWorktreeRecoveryPreviewInput,
   parseDesktopWorktreeHandoffConfirmInput,
   parseDesktopWorktreeHandoffPreflightInput,
   parseSelectComputerTargetInput,
@@ -72,6 +74,7 @@ import { WorktreeCleanupController } from './worktree-cleanup-controller'
 import { WorktreeHandoffController } from './worktree-handoff-controller'
 import { WorktreeHandoffJournal } from './worktree-handoff-journal'
 import { WorktreeManager } from './worktree-manager'
+import { WorktreeRecoveryController } from './worktree-recovery-controller'
 import { summarizeWorktreeRecord, WorktreeRegistry } from './worktree-registry'
 
 app.setName('DSH Desktop')
@@ -437,6 +440,7 @@ function installIpcHandlers(
   comments: GitReviewCommentController,
   worktrees: WorktreeManager,
   worktreeCleanup: WorktreeCleanupController,
+  worktreeRecovery: WorktreeRecoveryController,
   worktreeHandoff: WorktreeHandoffController,
   publishWorktreeChange: (worktree: WorktreeSummary) => void,
   publishWorktreeReconciliation: (snapshot: ReturnType<WorktreeManager['snapshot']>) => void,
@@ -555,6 +559,18 @@ function installIpcHandlers(
     assertTrustedSender(event)
     const input = validInput(parseDesktopWorktreeCleanupConfirmInput(value))
     const result = await worktreeCleanup.confirm(input, new AbortController().signal)
+    publishWorktreeChange(result.worktree)
+    return result
+  })
+  ipcMain.handle('desktop:worktrees:recovery:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeRecoveryPreviewInput(value))
+    return worktreeRecovery.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:worktrees:recovery:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeRecoveryConfirmInput(value))
+    const result = await worktreeRecovery.confirm(input, new AbortController().signal)
     publishWorktreeChange(result.worktree)
     return result
   })
@@ -840,6 +856,29 @@ app.whenReady().then(async () => {
       return result.response === 1
     },
   })
+  const worktreeRecovery = new WorktreeRecoveryController(worktreeManager, {
+    isSessionRunning: sessionId => activityTracker.isRunning(sessionId),
+    approve: async details => {
+      if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+      const branch = details.branch.startsWith('refs/heads/')
+        ? details.branch.slice('refs/heads/'.length)
+        : details.branch
+      const count = details.changeCount
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Keep interrupted worktree?',
+        message: `Cancel the interrupted cleanup for ${branch}?`,
+        detail: `${details.worktreePath}\n\nRepository: ${details.repositoryRoot}\n` +
+          `Commit: ${details.head}\nCheckout changes: ${String(count)}\n\n` +
+          'This keeps the checkout and branch, clears the old removal intent, and does not modify any files.',
+        buttons: ['Cancel', 'Keep Worktree'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      })
+      return result.response === 1
+    },
+  })
   const worktreeHandoff = new WorktreeHandoffController(
     worktreeManager,
     new WorktreeHandoffJournal(join(desktopDataPath, 'worktree-handoffs.v1.json')),
@@ -918,6 +957,7 @@ app.whenReady().then(async () => {
     new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
     worktreeManager,
     worktreeCleanup,
+    worktreeRecovery,
     worktreeHandoff,
     publishWorktreeChange,
     publishWorktreeReconciliation,

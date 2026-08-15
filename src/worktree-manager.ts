@@ -3,7 +3,6 @@ import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
-  CleanWorktreeCleanupInspection,
   DesktopProtocolError,
   GitRepositoryIdentity,
   WorktreeCleanupInspection,
@@ -96,6 +95,10 @@ export interface WorktreeReconciliationOptions {
 export interface WorktreeCleanupState {
   record: WorktreeRecord
   inspection: WorktreeCleanupInspection
+}
+
+export interface InterruptedRemovalRecoveryState extends WorktreeCleanupState {
+  removalOperationId: string
 }
 
 export interface ManagedWorktreeHandoffExpectation {
@@ -209,11 +212,17 @@ function expectedLockReason(record: WorktreeRecord): string | undefined {
 }
 
 function sameCleanupInspection(
-  left: CleanWorktreeCleanupInspection,
-  right: CleanWorktreeCleanupInspection,
+  left: WorktreeCleanupInspection,
+  right: WorktreeCleanupInspection,
 ): boolean {
   return left.worktreePath === right.worktreePath && left.head === right.head && left.branch === right.branch &&
-    left.clean === right.clean && left.locked === right.locked
+    left.clean === right.clean && left.locked === right.locked && left.changes.length === right.changes.length &&
+    left.changes.every((change, index) => {
+      const other = right.changes[index]
+      return other !== undefined && change.kind === other.kind && change.path === other.path &&
+        change.originalPath === other.originalPath && change.indexStatus === other.indexStatus &&
+        change.worktreeStatus === other.worktreeStatus
+    })
 }
 
 function assertCleanupRecord(record: WorktreeRecord, action = 'cleanup'): asserts record is WorktreeRecord & {
@@ -277,6 +286,61 @@ export class WorktreeManager {
       lockReason,
     }, signal), true)
     return { record, inspection }
+  }
+
+  async inspectInterruptedRemoval(
+    id: string,
+    signal: AbortSignal,
+  ): Promise<InterruptedRemovalRecoveryState> {
+    if (!isBoundedString(id, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The worktree identifier is invalid.')
+    }
+    const record = withMappedErrorSync(() => this.registry.get(id))
+    if (record === undefined) throw new WorktreeManagerError('NOT_FOUND', 'The managed worktree was not found.')
+    if (record.executionMode !== 'worktree' || record.worktreePath === undefined || record.branch === undefined ||
+      record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'interrupted-remove' ||
+      record.pendingOperation?.kind !== 'remove') {
+      throw new WorktreeManagerError('CONFLICT', 'This worktree does not have an interrupted cleanup to keep.')
+    }
+    const worktreePath = record.worktreePath
+    const branch = record.branch
+    const lockReason = expectedLockReason(record)
+    if (lockReason === undefined) {
+      throw new WorktreeManagerError('CONFLICT', 'The managed worktree lock identity is invalid.', true)
+    }
+    const inspection = await withMappedError(() => this.git.inspectWorktreeForRemoval({
+      repositoryRoot: record.repository.root,
+      worktreePath,
+      branch,
+      lockReason,
+    }, signal), true)
+    return {
+      record,
+      inspection,
+      removalOperationId: record.pendingOperation.id,
+    }
+  }
+
+  async keepInterruptedRemoval(
+    id: string,
+    removalOperationId: string,
+    expected: WorktreeCleanupInspection,
+    signal: AbortSignal,
+    beforeCommit?: (record: WorktreeRecord) => void,
+  ): Promise<WorktreeRecord> {
+    if (!isBoundedString(removalOperationId, MAX_ID_LENGTH)) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'The interrupted remove operation identifier is invalid.')
+    }
+    const current = await this.inspectInterruptedRemoval(id, signal)
+    if (current.removalOperationId !== removalOperationId ||
+      !sameCleanupInspection(current.inspection, expected)) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The interrupted cleanup changed after approval. Inspect it again.',
+      )
+    }
+    beforeCommit?.(current.record)
+    return withMappedErrorSync(() => this.registry.keepInterruptedRemoval(id, removalOperationId), true)
   }
 
   async inspectHandoff(

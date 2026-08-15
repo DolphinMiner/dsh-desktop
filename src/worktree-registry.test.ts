@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -220,13 +220,47 @@ test('recovers interrupted create and remove operations without replaying them',
     (error: WorktreeRegistryError) => error.code === 'CONFLICT')
   assert.deepEqual(afterRemoveCrash.get(reserved.id)?.pendingOperation, { id: 'remove-1', kind: 'remove' })
 
-  const removed = afterRemoveCrash.markRemoved(reserved.id, 'remove-1')
+  const kept = afterRemoveCrash.keepInterruptedRemoval(reserved.id, 'remove-1')
+  assert.equal(kept.lifecycle, 'orphaned')
+  assert.equal(kept.pendingOperation, undefined)
+  assert.equal(kept.recoveryReason, undefined)
+  assert.throws(() => afterRemoveCrash.keepInterruptedRemoval(reserved.id, 'remove-1'),
+    (error: WorktreeRegistryError) => error.code === 'CONFLICT')
+  assert.equal(new WorktreeRegistry(path).get(reserved.id)?.lifecycle, 'orphaned')
+
+  afterRemoveCrash.beginRemoval(reserved.id, 'remove-2')
+  const interruptedAgain = new WorktreeRegistry(path)
+  const removed = interruptedAgain.markRemoved(reserved.id, 'remove-2')
   assert.equal(removed.lifecycle, 'removed')
-  assert.equal(removed.removalOperationId, 'remove-1')
-  const removedRevision = afterRemoveCrash.status().revision
-  assert.equal(afterRemoveCrash.markRemoved(reserved.id, 'remove-1').lifecycle, 'removed')
-  assert.equal(afterRemoveCrash.status().revision, removedRevision)
+  assert.equal(removed.removalOperationId, 'remove-2')
+  const removedRevision = interruptedAgain.status().revision
+  assert.equal(interruptedAgain.markRemoved(reserved.id, 'remove-2').lifecycle, 'removed')
+  assert.equal(interruptedAgain.status().revision, removedRevision)
   assert.equal(new WorktreeRegistry(path).get(reserved.id)?.lifecycle, 'removed')
+})
+
+test('leaves an interrupted removal durable when keeping it cannot be persisted', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-keep-failure-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const data = join(root, 'data')
+  const persisted = join(root, 'persisted-data')
+  const path = join(data, 'worktrees.json')
+  await mkdir(data)
+  const registry = new WorktreeRegistry(path)
+  const reserved = registry.reserve(reservation({ operationId: 'create-keep-failure' }))
+  registry.markReady(reserved.id, 'create-keep-failure')
+  registry.beginRemoval(reserved.id, 'remove-keep-failure')
+  const interrupted = new WorktreeRegistry(path)
+
+  await rename(data, persisted)
+  await writeFile(data, 'blocks atomic persistence')
+  assert.throws(() => interrupted.keepInterruptedRemoval(reserved.id, 'remove-keep-failure'),
+    (error: WorktreeRegistryError) => error.code === 'DESKTOP_UNAVAILABLE')
+
+  const durable = new WorktreeRegistry(join(persisted, 'worktrees.json')).get(reserved.id)
+  assert.equal(durable?.lifecycle, 'recovery-required')
+  assert.equal(durable?.recoveryReason, 'interrupted-remove')
+  assert.deepEqual(durable?.pendingOperation, { id: 'remove-keep-failure', kind: 'remove' })
 })
 
 test('keeps persisted timestamps valid when the system clock moves backwards', async t => {

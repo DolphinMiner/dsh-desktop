@@ -41,11 +41,15 @@ import type {
   DesktopRendererCommand,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
+  DesktopWorktreeRecoveryConfirmInput,
+  DesktopWorktreeRecoveryPreviewInput,
   DesktopWorktreeHandoffConfirmInput,
   DesktopWorktreeHandoffPreflightInput,
   SelectComputerTargetInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
+  WorktreeRecoveryPreview,
+  WorktreeRecoveryResult,
   WorktreeHandoffBlocker,
   WorktreeHandoffDirection,
   WorktreeHandoffPreview,
@@ -99,6 +103,8 @@ interface DesktopWorktreesBridge {
   reconcile(): Promise<WorktreeSnapshot>
   previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
   confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
+  previewRecovery(input: DesktopWorktreeRecoveryPreviewInput): Promise<WorktreeRecoveryPreview>
+  confirmRecovery(input: DesktopWorktreeRecoveryConfirmInput): Promise<WorktreeRecoveryResult>
   previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
   confirmHandoff(input: DesktopWorktreeHandoffConfirmInput): Promise<WorktreeHandoffResult>
   onChanged(listener: (snapshot: WorktreeSnapshot) => void): () => void
@@ -822,6 +828,10 @@ function WorktreesSection(): React.JSX.Element {
   const [cleanupPreview, setCleanupPreview] = useState<WorktreeCleanupPreview>()
   const [cleanupAcknowledged, setCleanupAcknowledged] = useState(false)
   const [cleaning, setCleaning] = useState(false)
+  const [recoveryPreviewingId, setRecoveryPreviewingId] = useState<string>()
+  const [recoveryPreview, setRecoveryPreview] = useState<WorktreeRecoveryPreview>()
+  const [recoveryAcknowledged, setRecoveryAcknowledged] = useState(false)
+  const [recovering, setRecovering] = useState(false)
   const [handoffPreviewingKey, setHandoffPreviewingKey] = useState<string>()
   const [handoffPreview, setHandoffPreview] = useState<WorktreeHandoffPreview>()
   const [handoffAcknowledged, setHandoffAcknowledged] = useState(false)
@@ -921,6 +931,52 @@ function WorktreesSection(): React.JSX.Element {
     void inspectHandoff(worktreeId, 'worktree-to-local')
   }
 
+  const inspectRecovery = async (worktreeId: string): Promise<void> => {
+    if (bridge === undefined) return
+    setRecoveryPreviewingId(worktreeId)
+    setError(undefined)
+    setNotice(undefined)
+    try {
+      setRecoveryPreview(await bridge.previewRecovery({
+        worktreeId,
+        action: 'keep-interrupted-removal',
+      }))
+      setRecoveryAcknowledged(false)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setRecoveryPreviewingId(undefined)
+    }
+  }
+
+  const closeRecoveryPreview = (): void => {
+    if (recovering) return
+    setRecoveryPreview(undefined)
+    setRecoveryAcknowledged(false)
+  }
+
+  const confirmRecovery = async (): Promise<void> => {
+    if (bridge === undefined || recoveryPreview === undefined || !recoveryAcknowledged) return
+    setRecovering(true)
+    setError(undefined)
+    setNotice(undefined)
+    try {
+      const result = await bridge.confirmRecovery({ previewId: recoveryPreview.previewId, confirmed: true })
+      setRecoveryPreview(undefined)
+      setRecoveryAcknowledged(false)
+      setNotice(result.worktree.lifecycle === 'orphaned'
+        ? 'The interrupted cleanup was cancelled. The unchanged checkout is now orphaned.'
+        : 'The interrupted cleanup was cancelled. The unchanged checkout is ready.')
+      applySnapshot(await bridge.list())
+    } catch (cause) {
+      setRecoveryPreview(undefined)
+      setRecoveryAcknowledged(false)
+      setError(errorMessage(cause))
+    } finally {
+      setRecovering(false)
+    }
+  }
+
   const inspectHandoff = async (
     worktreeId: string,
     direction: WorktreeHandoffDirection,
@@ -1007,8 +1063,10 @@ function WorktreesSection(): React.JSX.Element {
           const cleanupAvailable = worktree.executionMode === 'worktree' &&
             (worktree.lifecycle === 'ready' || worktree.lifecycle === 'orphaned')
           const handoffAvailable = cleanupAvailable
-          const operationsBusy = cleanupPreviewingId !== undefined || handoffPreviewingKey !== undefined ||
-            cleaning || transferring
+          const keepInterruptedRemoval = worktree.lifecycle === 'recovery-required' &&
+            worktree.recoveryReason === 'interrupted-remove'
+          const operationsBusy = cleanupPreviewingId !== undefined || recoveryPreviewingId !== undefined ||
+            handoffPreviewingKey !== undefined || cleaning || recovering || transferring
           return (
             <article key={worktree.id} style={styles.item}>
               <div style={styles.itemTop}>
@@ -1039,6 +1097,17 @@ function WorktreesSection(): React.JSX.Element {
                   {worktree.sessionState === 'bound' ? 'Session bound' : 'Awaiting session'}
                 </span>
                 <div style={styles.worktreeActions}>
+                  {keepInterruptedRemoval && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconCheckOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectRecovery(worktree.id)}
+                    >
+                      Keep checkout
+                    </Button>
+                  )}
                   {handoffAvailable && (
                     <Button
                       size="sm"
@@ -1161,6 +1230,81 @@ function WorktreesSection(): React.JSX.Element {
                 )}
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={recoveryPreview !== undefined}
+        onClose={closeRecoveryPreview}
+        title="Keep interrupted worktree"
+        closeLabel="Close recovery preview"
+        description="Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged."
+        footer={(
+          <div style={styles.formActions}>
+            <Button variant="outline" disabled={recovering} onClick={closeRecoveryPreview}>Cancel</Button>
+            <Button
+              variant="primary"
+              icon={<IconCheckOutline16 />}
+              disabled={!recoveryAcknowledged || recovering}
+              onClick={() => void confirmRecovery()}
+            >
+              Keep checkout
+            </Button>
+          </div>
+        )}
+      >
+        {recoveryPreview !== undefined && (
+          <div style={styles.worktreeConfirmBody}>
+            <div style={styles.worktreeConfirmDetails}>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Branch</span>
+                <span style={styles.metadata}>{worktreeBranch(recoveryPreview.worktree)}</span>
+              </div>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Checkout</span>
+                <span style={styles.metadata}>{recoveryPreview.inspection.worktreePath}</span>
+              </div>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Current commit</span>
+                <span style={styles.metadata}>{recoveryPreview.inspection.head}</span>
+              </div>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Checkout state</span>
+                <span style={styles.metadata}>
+                  {recoveryPreview.inspection.clean
+                    ? 'Clean'
+                    : `${String(recoveryPreview.inspection.changes.length)} preserved changes`}
+                </span>
+              </div>
+            </div>
+            {!recoveryPreview.inspection.clean && (
+              <div style={styles.field}>
+                <span style={styles.label}>
+                  Preserved checkout changes ({recoveryPreview.inspection.changes.length})
+                </span>
+                <div style={styles.handoffFiles}>
+                  {recoveryPreview.inspection.changes.map(change => (
+                    <div key={change.path} style={styles.handoffFile}>
+                      <span style={styles.label}>{cleanupChangeStatus(change)}</span>
+                      <span style={styles.metadata}>
+                        {change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <label style={styles.worktreeAcknowledge}>
+              <input
+                type="checkbox"
+                checked={recoveryAcknowledged}
+                disabled={recovering}
+                onChange={event => setRecoveryAcknowledged(event.currentTarget.checked)}
+                style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
+              />
+              <span>I understand this cancels the interrupted cleanup and does not modify checkout files.</span>
+            </label>
           </div>
         )}
       </Modal>

@@ -45,6 +45,8 @@ export interface DesktopBridge {
     reconcile(): Promise<WorktreeSnapshot>
     previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
     confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
+    previewRecovery(input: DesktopWorktreeRecoveryPreviewInput): Promise<WorktreeRecoveryPreview>
+    confirmRecovery(input: DesktopWorktreeRecoveryConfirmInput): Promise<WorktreeRecoveryResult>
     previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
     confirmHandoff(input: DesktopWorktreeHandoffConfirmInput): Promise<WorktreeHandoffResult>
     onChanged(listener: (snapshot: WorktreeSnapshot) => void): () => void
@@ -92,6 +94,8 @@ import type {
   DesktopGitReviewCommentsInput,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
+  DesktopWorktreeRecoveryConfirmInput,
+  DesktopWorktreeRecoveryPreviewInput,
   DesktopWorktreeHandoffConfirmInput,
   DesktopWorktreeHandoffPreflightInput,
   DeleteGitReviewCommentInput,
@@ -108,6 +112,8 @@ import type {
   SelectComputerTargetInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
+  WorktreeRecoveryPreview,
+  WorktreeRecoveryResult,
   WorktreeHandoffPreview,
   WorktreeHandoffResult,
   WorktreeSnapshot,

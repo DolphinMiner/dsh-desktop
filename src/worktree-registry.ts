@@ -511,6 +511,25 @@ export class WorktreeRegistry {
     })
   }
 
+  keepInterruptedRemoval(id: string, removalOperationId: string): WorktreeRecord {
+    if (!isBoundedString(removalOperationId)) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The interrupted remove operation identifier is invalid.')
+    }
+    return this.transition(id, record => {
+      if (record.lifecycle !== 'recovery-required' || record.recoveryReason !== 'interrupted-remove' ||
+        record.pendingOperation?.kind !== 'remove' || record.pendingOperation.id !== removalOperationId) {
+        throw new WorktreeRegistryError(
+          'CONFLICT',
+          'The worktree no longer has the reviewed interrupted removal.',
+        )
+      }
+      record.lifecycle = record.sessionId === undefined ? 'orphaned' : 'ready'
+      delete record.pendingOperation
+      delete record.recoveryReason
+      return true
+    })
+  }
+
   requireRecovery(id: string, reason: WorktreeRecoveryReason): WorktreeRecord {
     if (!isRecoveryReason(reason)) {
       throw new WorktreeRegistryError('BAD_MESSAGE', 'The worktree recovery reason is invalid.')

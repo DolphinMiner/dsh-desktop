@@ -56,6 +56,8 @@ const bridge: DesktopBridge = {
     reconcile: () => ipcRenderer.invoke('desktop:worktrees:reconcile'),
     previewCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:preview', input),
     confirmCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:confirm', input),
+    previewRecovery: input => ipcRenderer.invoke('desktop:worktrees:recovery:preview', input),
+    confirmRecovery: input => ipcRenderer.invoke('desktop:worktrees:recovery:confirm', input),
     previewHandoff: input => ipcRenderer.invoke('desktop:worktrees:handoff:preview', input),
     confirmHandoff: input => ipcRenderer.invoke('desktop:worktrees:handoff:confirm', input),
     onChanged(listener) {
