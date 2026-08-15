@@ -119,7 +119,19 @@ export class DesktopCapabilityBroker {
       value: typeof params,
       context: DesktopCapabilityContext,
     ) => unknown | Promise<unknown>
-    void Promise.resolve(handler(params, { requestId: message.id, signal: controller.signal }))
+    let result: unknown | Promise<unknown>
+    try {
+      result = handler(params, { requestId: message.id, signal: controller.signal })
+    } catch (error) {
+      this.settle(
+        message.id,
+        createFailureResponse(message.id, internalError(error)),
+        reply,
+        !isSensitiveCapabilityMethod(method),
+      )
+      return
+    }
+    void Promise.resolve(result)
       .then(result => {
         this.settle(
           message.id,

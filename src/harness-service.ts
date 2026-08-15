@@ -23,6 +23,15 @@ interface HarnessServiceOptions {
 
 const STOP_TIMEOUT_MS = 5_000
 
+function messageLabel(message: Serializable): string {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) return 'unknown'
+  const value = message as { id?: unknown; kind?: unknown; method?: unknown }
+  const kind = typeof value.kind === 'string' ? value.kind : 'unknown'
+  const method = typeof value.method === 'string' ? ` ${value.method}` : ''
+  const id = typeof value.id === 'string' ? ` (${value.id})` : ''
+  return `${kind}${method}${id}`
+}
+
 function formatDuration(milliseconds: number): string {
   if (milliseconds % 1_000 === 0) {
     const seconds = milliseconds / 1_000
@@ -114,8 +123,10 @@ export class HarnessService {
 
     child.on('message', message => {
       if (runId !== this.runId || this.stopping || this.child !== child) return
+      this.writeDesktopLog(`received desktop IPC ${messageLabel(message)}`)
       this.options.capabilityBroker?.receive(message, response => {
         if (runId !== this.runId || this.stopping || this.child !== child || !child.connected) return
+        this.writeDesktopLog(`sending desktop IPC ${messageLabel(response)}`)
         child.send(response, error => {
           if (error !== null) this.writeDesktopLog(`could not send desktop capability response: ${error.message}`)
         })

@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { CredentialEncryptionAdapter, CredentialVault, CredentialVaultError } from './credential-vault'
+import {
+  CredentialEncryptionAdapter,
+  CredentialVault,
+  CredentialVaultError,
+  safeStorageBackend,
+} from './credential-vault'
 
 class TestEncryption implements CredentialEncryptionAdapter {
   constructor(readonly enabled = true) {}
@@ -25,6 +30,20 @@ class TestEncryption implements CredentialEncryptionAdapter {
     return Buffer.from([...ciphertext].map(byte => byte ^ 0xa5)).toString('utf8')
   }
 }
+
+test('selects platform storage names without calling the Linux-only API on macOS or Windows', () => {
+  let linuxCalls = 0
+  const linuxBackend = (): string => {
+    linuxCalls += 1
+    return 'secret-service'
+  }
+
+  assert.equal(safeStorageBackend('darwin', linuxBackend), 'keychain')
+  assert.equal(safeStorageBackend('win32', linuxBackend), 'dpapi')
+  assert.equal(linuxCalls, 0)
+  assert.equal(safeStorageBackend('linux', linuxBackend), 'secret-service')
+  assert.equal(linuxCalls, 1)
+})
 
 test('stores only encrypted credential payloads and restores them after restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-vault-test-'))

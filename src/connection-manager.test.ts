@@ -28,7 +28,7 @@ class TestEncryption implements CredentialEncryptionAdapter {
 }
 
 class TestOAuth implements OAuthConnectionProvider {
-  readonly available = false
+  constructor(readonly available = false) {}
   begin(_input: BeginOAuthInput): Promise<BeginOAuthResult> { throw new Error('not configured') }
   cancel(_input: CancelOAuthInput): Promise<void> { return Promise.resolve() }
   resolve(value: ConnectionCredential): Promise<ConnectionCredential> { return Promise.resolve(value) }
@@ -37,12 +37,71 @@ class TestOAuth implements OAuthConnectionProvider {
   handleCallback(_url: string): Promise<void> { return Promise.reject(new Error('not configured')) }
 }
 
-function manager(root: string): ConnectionManager {
+function manager(root: string, oauth: OAuthConnectionProvider = new TestOAuth()): ConnectionManager {
   return new ConnectionManager(
     new ConnectionRegistry(join(root, 'connections.v1.json')),
     new CredentialVault(join(root, 'credentials.v1.json'), new TestEncryption()),
-    new TestOAuth(),
+    oauth,
   )
+}
+
+class RotatingOAuth extends TestOAuth {
+  refreshCalls = 0
+  revokedAccessToken?: string
+  private releaseRefresh?: () => void
+  private markRefreshStarted: () => void = () => undefined
+  private readonly refreshStarted = new Promise<void>(resolve => {
+    this.markRefreshStarted = resolve
+  })
+
+  constructor(private readonly pauseRefresh = false) {
+    super(true)
+  }
+
+  waitForRefresh(): Promise<void> {
+    return this.refreshStarted
+  }
+
+  continueRefresh(): void {
+    this.releaseRefresh?.()
+  }
+
+  override async resolve(value: ConnectionCredential): Promise<ConnectionCredential> {
+    if (value.accessToken !== 'old-access') return value
+    this.refreshCalls += 1
+    this.markRefreshStarted()
+    if (this.pauseRefresh) await new Promise<void>(resolve => { this.releaseRefresh = resolve })
+    return {
+      kind: 'oauth',
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      scopes: ['read'],
+    }
+  }
+
+  override revoke(value: ConnectionCredential): Promise<void> {
+    this.revokedAccessToken = value.accessToken
+    return Promise.resolve()
+  }
+}
+
+function expiredOAuthCompletion(flowId: string): OAuthCompletion {
+  return {
+    flowId,
+    input: {
+      requestId: `${flowId}-request`,
+      provider: 'linear',
+      access: 'read-only',
+    },
+    credential: {
+      kind: 'oauth',
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      expiresAt: '2020-01-01T00:00:00.000Z',
+      scopes: ['read'],
+    },
+  }
 }
 
 test('persists multiple workspaces, deduplicates submissions, and restores without exposing tokens', async () => {
@@ -127,6 +186,51 @@ test('commits an OAuth handoff idempotently across a cold restart', async () => 
     const recovered = await manager(root).completeOAuth(completion)
     assert.equal(recovered.connections.length, 1)
     assert.equal(recovered.connections[0].workspace, 'Acme')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('serializes concurrent refreshes and reuses the rotated credential', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-oauth-concurrency-test-'))
+  const oauth = new RotatingOAuth()
+  try {
+    const connections = manager(root, oauth)
+    const connected = await connections.completeOAuth(expiredOAuthCompletion('concurrent-flow'))
+    const id = connected.connections[0].id
+    const [first, second] = await Promise.all([
+      connections.resolveCredential(id),
+      connections.resolveCredential(id),
+    ])
+
+    assert.equal(oauth.refreshCalls, 1)
+    assert.equal(first.credential.accessToken, 'new-access')
+    assert.equal(second.credential.accessToken, 'new-access')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('waits for an in-flight refresh before revoking and disconnecting', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-oauth-disconnect-race-test-'))
+  const oauth = new RotatingOAuth(true)
+  try {
+    const connections = manager(root, oauth)
+    const connected = await connections.completeOAuth(expiredOAuthCompletion('disconnect-race-flow'))
+    const id = connected.connections[0].id
+    const refresh = connections.resolveCredential(id)
+    await oauth.waitForRefresh()
+    const disconnect = connections.disconnect({ requestId: 'disconnect-after-refresh', connectionId: id })
+    oauth.continueRefresh()
+
+    await refresh
+    const snapshot = await disconnect
+    assert.equal(oauth.revokedAccessToken, 'new-access')
+    assert.equal(snapshot.connections[0].status, 'disconnected')
+    const vault = JSON.parse(await readFile(join(root, 'credentials.v1.json'), 'utf8')) as {
+      entries: Record<string, unknown>
+    }
+    assert.deepEqual(vault.entries, {})
   } finally {
     await rm(root, { recursive: true, force: true })
   }

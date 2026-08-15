@@ -88,6 +88,24 @@ test('rejects unknown methods and replays one cached result for duplicate IDs', 
   if (replies[2]?.ok === false) assert.equal(replies[2].error.code, 'METHOD_NOT_FOUND')
 })
 
+test('returns a structured failure when a capability handler throws synchronously', async () => {
+  const handlers = testHandlers()
+  handlers['desktop.ping'] = () => {
+    throw new Error('synchronous failure')
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  broker.receive(createRequest('sync-failure', 'desktop.ping', { nonce: 'test' }), value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  const response = replies[0]
+  assert.ok(response)
+  assert.equal(response.ok, false)
+  if (response.ok) return
+  assert.equal(response.error.code, 'INTERNAL_ERROR')
+  assert.equal(response.error.ambiguous, true)
+})
+
 test('times out, cancels, and drops pending requests on disconnect', async () => {
   let aborted = false
   const handlers = testHandlers()

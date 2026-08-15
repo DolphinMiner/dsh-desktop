@@ -22,6 +22,16 @@ export interface CredentialEncryptionAdapter {
   decrypt(ciphertext: Buffer): string
 }
 
+export function safeStorageBackend(
+  platform: NodeJS.Platform,
+  selectedLinuxBackend: () => string,
+): string {
+  if (platform === 'darwin') return 'keychain'
+  if (platform === 'win32') return 'dpapi'
+  if (platform === 'linux') return selectedLinuxBackend()
+  return 'safe-storage'
+}
+
 export class CredentialVaultError extends Error {
   readonly code = 'VAULT_UNAVAILABLE' as const
 

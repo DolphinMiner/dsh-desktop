@@ -22,7 +22,7 @@ import {
 
 import { ConnectionManager } from './connection-manager'
 import { ConnectionRegistry } from './connection-registry'
-import { CredentialVault } from './credential-vault'
+import { CredentialVault, safeStorageBackend } from './credential-vault'
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
@@ -325,7 +325,7 @@ app.whenReady().then(async () => {
   const desktopDataPath = join(app.getPath('userData'), 'desktop')
   const encryption = {
     isAvailable: () => safeStorage.isEncryptionAvailable(),
-    backend: () => safeStorage.getSelectedStorageBackend(),
+    backend: () => safeStorageBackend(process.platform, () => safeStorage.getSelectedStorageBackend()),
     encrypt: (plaintext: string) => safeStorage.encryptString(plaintext),
     decrypt: (ciphertext: Buffer) => safeStorage.decryptString(ciphertext),
   }
