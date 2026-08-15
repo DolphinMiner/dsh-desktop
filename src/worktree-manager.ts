@@ -82,6 +82,7 @@ export interface WorktreeReconciliationResult {
   repositories: number
   inspected: number
   healthy: number
+  recovered: number
   recoveryRequired: number
   orphaned: number
   snapshot: WorktreeSnapshot
@@ -441,6 +442,7 @@ export class WorktreeManager {
     }
     const recovery = new Map<string, WorktreeRecoveryReason>()
     const completedRemovals = new Map<string, string>()
+    const recovered = new Map<string, 'ready' | 'orphaned'>()
     const orphaned = new Set<string>()
     let healthy = 0
 
@@ -532,6 +534,12 @@ export class WorktreeManager {
           }
         }
         healthy += 1
+        if (record.lifecycle === 'recovery-required' && record.pendingOperation?.kind !== 'remove') {
+          recovered.set(record.id, options.orphanUnboundReady === true &&
+            record.executionMode === 'worktree' && record.sessionId === undefined
+            ? 'orphaned'
+            : 'ready')
+        }
         if (options.orphanUnboundReady === true && record.executionMode === 'worktree' &&
           record.lifecycle === 'ready' && record.sessionId === undefined) {
           orphaned.add(record.id)
@@ -548,6 +556,11 @@ export class WorktreeManager {
         [...recovery].map(([id, reason]) => ({ id, reason })),
       ), true)
     }
+    if (recovered.size > 0) {
+      withMappedErrorSync(() => this.registry.resolveRecoveryBatch(
+        [...recovered].map(([id, lifecycle]) => ({ id, lifecycle })),
+      ), true)
+    }
     if (orphaned.size > 0) {
       withMappedErrorSync(() => this.registry.markOrphanedBatch([...orphaned]), true)
     }
@@ -556,6 +569,7 @@ export class WorktreeManager {
       repositories: groups.size,
       inspected: records.length,
       healthy,
+      recovered: recovered.size,
       recoveryRequired: snapshot.worktrees.filter(worktree => worktree.lifecycle === 'recovery-required').length,
       orphaned: snapshot.worktrees.filter(worktree => worktree.lifecycle === 'orphaned').length,
       snapshot,

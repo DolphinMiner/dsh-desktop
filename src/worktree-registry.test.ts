@@ -143,6 +143,14 @@ test('persists a recovery inspection batch atomically in one revision', async t 
     { id: 'missing-record', reason: 'missing' },
   ]), (error: WorktreeRegistryError) => error.code === 'NOT_FOUND')
   assert.equal(registry.get(first.id)?.recoveryReason, 'missing')
+
+  const resolutionRevision = registry.status().revision
+  const resolved = registry.resolveRecoveryBatch([
+    { id: first.id, lifecycle: 'ready' },
+    { id: second.id, lifecycle: 'ready' },
+  ])
+  assert.deepEqual(resolved.map(record => record.lifecycle), ['ready', 'ready'])
+  assert.equal(registry.status().revision, resolutionRevision + 1)
 })
 
 test('marks ready unbound managed checkouts orphaned in one durable revision', async t => {
@@ -208,6 +216,9 @@ test('recovers interrupted create and remove operations without replaying them',
   assert.equal(removeRecovery.lifecycle, 'recovery-required')
   assert.equal(removeRecovery.recoveryReason, 'interrupted-remove')
   assert.deepEqual(removeRecovery.pendingOperation, { id: 'remove-1', kind: 'remove' })
+  assert.throws(() => afterRemoveCrash.resolveRecovery(reserved.id, 'ready'),
+    (error: WorktreeRegistryError) => error.code === 'CONFLICT')
+  assert.deepEqual(afterRemoveCrash.get(reserved.id)?.pendingOperation, { id: 'remove-1', kind: 'remove' })
 
   const removed = afterRemoveCrash.markRemoved(reserved.id, 'remove-1')
   assert.equal(removed.lifecycle, 'removed')

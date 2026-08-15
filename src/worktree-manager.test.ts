@@ -143,6 +143,7 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   const healthy = await manager.reconcile(new AbortController().signal)
   assert.equal(healthy.inspected, 1)
   assert.equal(healthy.healthy, 1)
+  assert.equal(healthy.recovered, 0)
   assert.equal(healthy.recoveryRequired, 0)
   assert.equal(healthy.orphaned, 0)
   assert.equal(healthy.snapshot.worktrees[0]?.lifecycle, 'ready')
@@ -184,6 +185,7 @@ test('discovers a previously ready checkout with no bound Harness session as orp
   const revision = registry.status().revision
 
   const liveRecheck = await manager.reconcile(new AbortController().signal)
+  assert.equal(liveRecheck.recovered, 0)
   assert.equal(liveRecheck.orphaned, 0)
   assert.equal(liveRecheck.snapshot.worktrees[0]?.lifecycle, 'ready')
   assert.equal(registry.status().revision, revision)
@@ -193,6 +195,7 @@ test('discovers a previously ready checkout with no bound Harness session as orp
     { orphanUnboundReady: true },
   )
   assert.equal(result.healthy, 1)
+  assert.equal(result.recovered, 0)
   assert.equal(result.recoveryRequired, 0)
   assert.equal(result.orphaned, 1)
   assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'orphaned')
@@ -205,6 +208,64 @@ test('discovers a previously ready checkout with no bound Harness session as orp
   assert.equal(duplicate.orphaned, 1)
   assert.equal(registry.status().revision, revision + 1)
   assert.equal(new WorktreeRegistry(path).get(record.id)?.lifecycle, 'orphaned')
+})
+
+test('recovers a repaired checkout only after an authoritative healthy inspection', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-health-recovery-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.v1.json')
+  const registry = new WorktreeRegistry(path)
+  const record = readyWorktree(registry, 'health-recovery')
+  registry.requireRecovery(record.id, 'locked')
+  const manager = new WorktreeManager(
+    cleanupOperations(record),
+    registry,
+    '/managed',
+    () => undefined,
+  )
+
+  const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.healthy, 1)
+  assert.equal(result.recovered, 1)
+  assert.equal(result.recoveryRequired, 0)
+  assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'ready')
+  assert.equal(new WorktreeRegistry(path).get(record.id)?.recoveryReason, undefined)
+})
+
+test('recovers an interrupted create as orphaned after startup proves the checkout exists', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-create-recovery-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'worktrees.v1.json')
+  const firstProcess = new WorktreeRegistry(path)
+  const reserved = firstProcess.reserve({
+    operationId: 'create-recovery',
+    repository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+    requestedBySessionId: 'session-create-recovery',
+    executionMode: 'worktree',
+    worktreePath: '/managed/create-recovery',
+    baseRef: 'refs/heads/main',
+    baseCommit: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+  })
+  const recoveredRegistry = new WorktreeRegistry(path)
+  const interrupted = recoveredRegistry.get(reserved.id)!
+  assert.equal(interrupted.recoveryReason, 'interrupted-create')
+  const manager = new WorktreeManager(
+    cleanupOperations(interrupted),
+    recoveredRegistry,
+    '/managed',
+    () => undefined,
+  )
+
+  const result = await manager.reconcile(
+    new AbortController().signal,
+    { orphanUnboundReady: true },
+  )
+  assert.equal(result.recovered, 1)
+  assert.equal(result.orphaned, 1)
+  assert.equal(result.recoveryRequired, 0)
+  assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'orphaned')
+  assert.equal(recoveredRegistry.get(reserved.id)?.pendingOperation, undefined)
 })
 
 test('does not dispatch a concurrent duplicate while creation is in flight', async t => {
@@ -564,6 +625,7 @@ test('preserves interrupted cleanup state while the checkout still exists', asyn
   }), recoveredRegistry, '/managed', () => undefined)
 
   const result = await manager.reconcile(new AbortController().signal)
+  assert.equal(result.recovered, 0)
   assert.equal(result.snapshot.worktrees[0]?.lifecycle, 'recovery-required')
   assert.equal(result.snapshot.worktrees[0]?.recoveryReason, 'interrupted-remove')
   assert.equal(removeCalls, 0)

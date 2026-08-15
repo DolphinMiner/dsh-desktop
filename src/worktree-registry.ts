@@ -70,6 +70,11 @@ export interface WorktreeRecoveryRequirement {
   reason: WorktreeRecoveryReason
 }
 
+export interface WorktreeRecoveryResolution {
+  id: string
+  lifecycle: 'ready' | 'orphaned'
+}
+
 export class WorktreeRegistryError extends Error {
   constructor(
     readonly code: 'BAD_MESSAGE' | 'CONFLICT' | 'DESKTOP_UNAVAILABLE' | 'DUPLICATE_REQUEST' | 'NOT_FOUND',
@@ -605,16 +610,59 @@ export class WorktreeRegistry {
     return results.map(cloneRecord)
   }
 
-  resolveRecovery(id: string, resolution: 'ready' | 'orphaned'): WorktreeRecord {
-    return this.transition(id, record => {
-      if (record.lifecycle !== 'recovery-required') {
+  resolveRecoveryBatch(resolutions: readonly WorktreeRecoveryResolution[]): WorktreeRecord[] {
+    this.assertAvailable()
+    if (new Set(resolutions.map(resolution => resolution.id)).size !== resolutions.length ||
+      resolutions.some(resolution => !isBoundedString(resolution.id) ||
+        (resolution.lifecycle !== 'ready' && resolution.lifecycle !== 'orphaned'))) {
+      throw new WorktreeRegistryError('BAD_MESSAGE', 'The worktree recovery resolutions are invalid.')
+    }
+    const updates = new Map<string, WorktreeRecord>()
+    const results: WorktreeRecord[] = []
+    const now = this.now()
+    for (const resolution of resolutions) {
+      const current = this.state.records.find(record => record.id === resolution.id)
+      if (current === undefined) {
+        throw new WorktreeRegistryError('NOT_FOUND', 'A worktree recovery record was not found.')
+      }
+      if (current.lifecycle !== 'recovery-required') {
         throw new WorktreeRegistryError('CONFLICT', 'The worktree does not require recovery.')
       }
-      record.lifecycle = resolution
-      delete record.pendingOperation
-      delete record.recoveryReason
-      return true
-    })
+      if (current.pendingOperation?.kind === 'remove') {
+        throw new WorktreeRegistryError(
+          'CONFLICT',
+          'An interrupted removal requires an explicit durable outcome and cannot be cleared as healthy.',
+        )
+      }
+      if (resolution.lifecycle === 'orphaned' &&
+        (current.executionMode !== 'worktree' || current.sessionId !== undefined)) {
+        throw new WorktreeRegistryError(
+          'CONFLICT',
+          'Only an unbound managed checkout can recover as orphaned.',
+        )
+      }
+      const result = cloneRecord(current)
+      result.lifecycle = resolution.lifecycle
+      delete result.pendingOperation
+      delete result.recoveryReason
+      result.updatedAt = monotonicUpdatedAt(now, result)
+      updates.set(result.id, result)
+      results.push(result)
+    }
+    if (updates.size > 0) {
+      this.commit(next => {
+        for (const [id, record] of updates) {
+          const index = next.records.findIndex(item => item.id === id)
+          if (index < 0) throw new WorktreeRegistryError('NOT_FOUND', 'A worktree recovery record was not found.')
+          next.records[index] = record
+        }
+      })
+    }
+    return results.map(cloneRecord)
+  }
+
+  resolveRecovery(id: string, resolution: 'ready' | 'orphaned'): WorktreeRecord {
+    return this.resolveRecoveryBatch([{ id, lifecycle: resolution }])[0]!
   }
 
   private recoverInterruptedOperations(): void {
