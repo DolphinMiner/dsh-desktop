@@ -112,6 +112,17 @@ export interface DesktopSessionActivityParams {
   workspacePath?: string
 }
 
+export interface DesktopWorkspacePathParams {
+  sessionId: string
+  workspaceRoot: string
+  path: string
+}
+
+export interface DesktopWorkspacePathResult {
+  opened: true
+  path: string
+}
+
 export interface ConnectionCredential {
   kind: ConnectionAuthKind
   accessToken: string
@@ -152,6 +163,14 @@ export interface DesktopCapabilityMap {
   'desktop.reportSessionActivity': {
     params: DesktopSessionActivityParams
     result: { accepted: boolean }
+  }
+  'desktop.revealPath': {
+    params: DesktopWorkspacePathParams
+    result: DesktopWorkspacePathResult
+  }
+  'desktop.openPath': {
+    params: DesktopWorkspacePathParams
+    result: DesktopWorkspacePathResult
   }
   'connections.list': {
     params: Record<string, never>
@@ -519,6 +538,15 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
       ...(value.workspacePath === undefined ? {} : { workspacePath: value.workspacePath }),
     } as DesktopCapabilityParams<M>
   }
+  if (method === 'desktop.revealPath' || method === 'desktop.openPath') {
+    if (!isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH) ||
+      !isBoundedString(value.workspaceRoot, 4_096) || !isBoundedString(value.path, 4_096)) return undefined
+    return {
+      sessionId: value.sessionId,
+      workspaceRoot: value.workspaceRoot,
+      path: value.path,
+    } as DesktopCapabilityParams<M>
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -566,6 +594,10 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
     return typeof value.accepted === 'boolean'
       ? { accepted: value.accepted } as DesktopCapabilityResult<M>
       : undefined
+  }
+  if (method === 'desktop.revealPath' || method === 'desktop.openPath') {
+    if (value.opened !== true || !isBoundedString(value.path, 4_096)) return undefined
+    return { opened: true, path: value.path } as DesktopCapabilityResult<M>
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined

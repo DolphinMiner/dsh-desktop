@@ -123,6 +123,10 @@ test('routes a child-process capability request through the desktop broker', asy
     isAppFocused: () => false,
     notifications: { isSupported: () => false, show: () => undefined },
     sessionActivity: { report: () => true },
+    workspaceFiles: {
+      reveal: () => Promise.reject(new Error('not configured')),
+      open: () => Promise.reject(new Error('not configured')),
+    },
     connections: {
       snapshot: () => ({
         revision: 0,

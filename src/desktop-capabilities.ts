@@ -6,6 +6,8 @@ import {
   McpTransportDescriptor,
   DesktopNotificationParams,
   DesktopSessionActivityParams,
+  DesktopWorkspacePathParams,
+  DesktopWorkspacePathResult,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { DesktopCapabilityHandlers } from './desktop-capability-broker'
@@ -20,6 +22,10 @@ export interface DesktopCapabilityDependencies {
   notifications: DesktopNotificationAdapter
   sessionActivity: {
     report(params: DesktopSessionActivityParams): boolean
+  }
+  workspaceFiles: {
+    reveal(params: DesktopWorkspacePathParams, signal: AbortSignal): Promise<DesktopWorkspacePathResult>
+    open(params: DesktopWorkspacePathParams, signal: AbortSignal): Promise<DesktopWorkspacePathResult>
   }
   connections: {
     snapshot(): ConnectionSnapshot
@@ -50,6 +56,8 @@ export function createDesktopCapabilityHandlers(
     'desktop.reportSessionActivity': params => ({
       accepted: dependencies.sessionActivity.report(params),
     }),
+    'desktop.revealPath': (params, context) => dependencies.workspaceFiles.reveal(params, context.signal),
+    'desktop.openPath': (params, context) => dependencies.workspaceFiles.open(params, context.signal),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

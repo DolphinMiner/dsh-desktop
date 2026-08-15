@@ -89,4 +89,25 @@ test('validates desktop commands and session activity reports', () => {
   assert.deepEqual(parseCapabilityResult('desktop.reportSessionActivity', { accepted: true }), {
     accepted: true,
   })
+  assert.deepEqual(parseCapabilityParams('desktop.revealPath', {
+    sessionId: 'session-1',
+    workspaceRoot: '/tmp/project',
+    path: 'README.md',
+  }), {
+    sessionId: 'session-1',
+    workspaceRoot: '/tmp/project',
+    path: 'README.md',
+  })
+  assert.equal(parseCapabilityParams('desktop.openPath', {
+    sessionId: '',
+    workspaceRoot: '/tmp/project',
+    path: 'README.md',
+  }), undefined)
+  assert.deepEqual(parseCapabilityResult('desktop.openPath', {
+    opened: true,
+    path: '/tmp/project/README.md',
+  }), {
+    opened: true,
+    path: '/tmp/project/README.md',
+  })
 })

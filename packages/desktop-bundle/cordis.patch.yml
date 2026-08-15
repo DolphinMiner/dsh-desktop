@@ -4,5 +4,7 @@
 - insert:
     - id: desktop-host
       name: '@dolphinminer/dsh-desktop-host'
+    - id: desktop-agent
+      name: '@dolphinminer/dsh-desktop-agent'
     - id: desktop-client
       name: '@dolphinminer/dsh-desktop-client'

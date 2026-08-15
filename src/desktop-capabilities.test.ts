@@ -14,6 +14,11 @@ const connections = {
   reportStatus: () => ({ accepted: false, revision: 0 }),
 }
 
+const workspaceFiles = {
+  reveal: () => Promise.reject(new Error('not configured')),
+  open: () => Promise.reject(new Error('not configured')),
+}
+
 test('suppresses native notifications while the app is focused', async () => {
   let shown = 0
   const handlers = createDesktopCapabilityHandlers({
@@ -23,6 +28,7 @@ test('suppresses native notifications while the app is focused', async () => {
       show: () => { shown += 1 },
     },
     sessionActivity: { report: () => true },
+    workspaceFiles,
     connections,
   })
 
@@ -46,6 +52,7 @@ test('reports unsupported notifications and dispatches supported notifications o
       show: params => shown.push(params.title),
     },
     sessionActivity: { report: () => true },
+    workspaceFiles,
     connections,
   })
   const context = { requestId: 'notify-2', signal: new AbortController().signal }
@@ -73,6 +80,7 @@ test('projects session activity through the desktop-owned tracker', async () => 
         return true
       },
     },
+    workspaceFiles,
     connections,
   })
 
@@ -85,4 +93,38 @@ test('projects session activity through the desktop-owned tracker', async () => 
     signal: new AbortController().signal,
   }), { accepted: true })
   assert.deepEqual(reported, ['session-1:true'])
+})
+
+test('dispatches workspace file capabilities with caller cancellation', async () => {
+  const operations: string[] = []
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles: {
+      reveal: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        operations.push(`reveal:${params.path}`)
+        return { opened: true, path: `/repo/${params.path}` }
+      },
+      open: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        operations.push(`open:${params.path}`)
+        return { opened: true, path: `/repo/${params.path}` }
+      },
+    },
+    connections,
+  })
+  const context = { requestId: 'path-1', signal: new AbortController().signal }
+  const params = { sessionId: 'session-1', workspaceRoot: '/repo', path: 'README.md' }
+
+  assert.deepEqual(await handlers['desktop.revealPath'](params, context), {
+    opened: true,
+    path: '/repo/README.md',
+  })
+  assert.deepEqual(await handlers['desktop.openPath'](params, context), {
+    opened: true,
+    path: '/repo/README.md',
+  })
+  assert.deepEqual(operations, ['reveal:README.md', 'open:README.md'])
 })

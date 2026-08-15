@@ -19,6 +19,10 @@ function testHandlers() {
       show: () => undefined,
     },
     sessionActivity: { report: () => true },
+    workspaceFiles: {
+      reveal: () => Promise.reject(new Error('not configured')),
+      open: () => Promise.reject(new Error('not configured')),
+    },
     connections: {
       snapshot: () => ({
         revision: 0,

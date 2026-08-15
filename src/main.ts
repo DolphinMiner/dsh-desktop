@@ -35,6 +35,7 @@ import { McpCredentialProxy } from './mcp-credential-proxy'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
+import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 
 app.setName('DSH Desktop')
 app.setPath('userData', join(app.getPath('appData'), app.name))
@@ -70,6 +71,17 @@ function updateDesktopActivity(snapshot: DesktopActivitySnapshot): void {
 }
 
 const activityTracker = new DesktopActivityTracker(updateDesktopActivity)
+
+function assertActiveWorkspace(sessionId: string, workspaceRoot: string, signal: AbortSignal): void {
+  if (signal.aborted) {
+    const error = new Error('The desktop file request was cancelled.')
+    error.name = 'AbortError'
+    throw error
+  }
+  if (!activityTracker.isRunningInWorkspace(sessionId, workspaceRoot)) {
+    throw new WorkspacePathError('BAD_MESSAGE', 'The workspace is not active for this running session.')
+  }
+}
 
 function registerDesktopProtocol(): boolean {
   if (process.defaultApp && process.argv[1] !== undefined) {
@@ -502,6 +514,23 @@ app.whenReady().then(async () => {
       },
     },
     sessionActivity: { report: params => activityTracker.report(params) },
+    workspaceFiles: {
+      reveal: async (params, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        const path = await resolveWorkspaceTarget(params.workspaceRoot, params.path, { operation: 'reveal' })
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        shell.showItemInFolder(path)
+        return { opened: true, path }
+      },
+      open: async (params, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        const path = await resolveWorkspaceTarget(params.workspaceRoot, params.path, { operation: 'open' })
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        const error = await shell.openPath(path)
+        if (error !== '') throw new Error(`The operating system could not open this file: ${error}`)
+        return { opened: true, path }
+      },
+    },
     connections: {
       snapshot: () => connections.snapshot(),
       resolveMcpTransport: (connectionId, signal) =>
