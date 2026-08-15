@@ -1,5 +1,7 @@
 import type {
   DesktopProtocolError,
+  GitCommitParams,
+  GitCommitResult,
   GitDiscoverParams,
   GitIndexMutationParams,
   GitRevertParams,
@@ -24,6 +26,14 @@ export interface GitRepositoryOperations {
     signal?: AbortSignal,
   ): Promise<GitStatusSnapshot>
   revertWorktree(repositoryRoot: string, path: string, signal?: AbortSignal): Promise<GitStatusSnapshot>
+  indexTree(repositoryRoot: string, signal?: AbortSignal): Promise<string>
+  commit(
+    repositoryRoot: string,
+    message: string,
+    expectedHead: string | undefined,
+    expectedTree: string,
+    signal?: AbortSignal,
+  ): Promise<Omit<GitCommitResult, 'operationId'>>
 }
 
 export type WorkspaceGitAuthorizer = (
@@ -164,5 +174,56 @@ export class WorkspaceGitCapabilityService {
       throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during the Git operation.')
     }
     return snapshot
+  }
+
+  async indexTree(params: GitStatusParams, signal: AbortSignal): Promise<string> {
+    const repository = await this.discover(params, signal)
+    if (repository.root !== params.repositoryRoot) {
+      throw new WorkspaceGitError(
+        'BAD_MESSAGE',
+        'The repository root does not match the active workspace repository.',
+      )
+    }
+    let tree: string
+    try {
+      tree = await this.git.indexTree(repository.root, signal)
+    } catch (error) {
+      mapGitError(error)
+    }
+    const current = await this.discover(params, signal)
+    if (current.root !== repository.root || current.gitDir !== repository.gitDir ||
+      current.commonDir !== repository.commonDir) {
+      throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during the Git operation.')
+    }
+    return tree
+  }
+
+  async commit(params: GitCommitParams, signal: AbortSignal): Promise<GitCommitResult> {
+    const repository = await this.discover(params, signal)
+    if (repository.root !== params.repositoryRoot) {
+      throw new WorkspaceGitError(
+        'BAD_MESSAGE',
+        'The repository root does not match the active workspace repository.',
+      )
+    }
+    let result: Omit<GitCommitResult, 'operationId'>
+    try {
+      result = await this.git.commit(
+        repository.root,
+        params.message,
+        params.expectedHead,
+        params.expectedTree,
+        signal,
+      )
+    } catch (error) {
+      mapGitError(error)
+    }
+    this.authorize(params.sessionId, params.workspaceRoot, signal)
+    if (result.status.repository.root !== repository.root ||
+      result.status.repository.gitDir !== repository.gitDir ||
+      result.status.repository.commonDir !== repository.commonDir || result.status.head !== result.commit) {
+      throw new WorkspaceGitError('CONFLICT', 'The active workspace repository changed during the Git commit.')
+    }
+    return { operationId: params.operationId, ...result }
   }
 }

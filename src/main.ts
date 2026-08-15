@@ -23,6 +23,8 @@ import {
   parseConnectApiKeyInput,
   parseDeleteGitReviewCommentInput,
   parseDisconnectConnectionInput,
+  parseDesktopGitCommitConfirmInput,
+  parseDesktopGitCommitPreviewInput,
   parseDesktopGitIndexMutationInput,
   parseDesktopGitRevertConfirmInput,
   parseDesktopGitRevertPreviewInput,
@@ -43,6 +45,7 @@ import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
+import { GitCommitController } from './git-commit-controller'
 import { GitReviewCommentController } from './git-review-comment-controller'
 import { GitReviewCommentStore } from './git-review-comments'
 import { GitIndexController, GitRepositoryMutationQueue } from './git-index-controller'
@@ -417,6 +420,7 @@ function installIpcHandlers(
   computer: ComputerObserver,
   git: WorkspaceGitCapabilityService,
   gitIndex: GitIndexController,
+  gitCommit: GitCommitController,
   gitRevert: GitRevertController,
   comments: GitReviewCommentController,
 ): void {
@@ -466,6 +470,16 @@ function installIpcHandlers(
     assertTrustedSender(event)
     const input = validInput(parseDesktopGitIndexMutationInput(value))
     return gitIndex.mutate(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:commit:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitCommitPreviewInput(value))
+    return gitCommit.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:git:commit:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitCommitConfirmInput(value))
+    return gitCommit.confirm(input, new AbortController().signal)
   })
   ipcMain.handle('desktop:git:revert:preview', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -727,6 +741,7 @@ app.whenReady().then(async () => {
     computerObserver,
     reviewWorkspaceGit,
     new GitIndexController(mutationWorkspaceGit, gitMutations, gitMutationQueue),
+    new GitCommitController(mutationWorkspaceGit, gitMutations, gitMutationQueue),
     new GitRevertController(mutationWorkspaceGit, gitMutations, gitMutationQueue, {
       approve: async details => {
         if (mainWindow === undefined || mainWindow.isDestroyed()) return false

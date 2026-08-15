@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, normalize, posix, win32 } from 'no
 import type { Readable } from 'node:stream'
 
 import type {
+  GitCommitResult,
   GitIndexMutationKind,
   GitRepositoryIdentity,
   GitReviewFile,
@@ -19,6 +20,7 @@ const MAX_ERROR_MESSAGE_LENGTH = 2_000
 const MAX_MUTATION_PATHS = 256
 const MAX_MUTATION_PATH_LENGTH = 4_096
 const MAX_MUTATION_TOTAL_PATH_LENGTH = 65_536
+const MAX_COMMIT_MESSAGE_LENGTH = 8_192
 
 export type GitServiceErrorCode =
   | 'BAD_OUTPUT'
@@ -63,6 +65,8 @@ export interface GitWorktreeEntry {
   pruneReason?: string
 }
 
+export type GitCommitExecutionResult = Omit<GitCommitResult, 'operationId'>
+
 interface GitCommandResult {
   stdout: Buffer
   stderr: Buffer
@@ -89,6 +93,20 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 
 function boundedInput(value: string, label: string): string {
   if (value.length === 0 || value.length > 4_096 || value.includes('\0')) {
+    throw new GitServiceError('INVALID_INPUT', `${label} is invalid.`)
+  }
+  return value
+}
+
+function boundedCommitMessage(value: string): string {
+  if (value.length > MAX_COMMIT_MESSAGE_LENGTH || value.trim().length === 0 || value.includes('\0')) {
+    throw new GitServiceError('INVALID_INPUT', 'The Git commit message is invalid.')
+  }
+  return value
+}
+
+function boundedObjectId(value: string | undefined, label: string): string | undefined {
+  if (value !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) {
     throw new GitServiceError('INVALID_INPUT', `${label} is invalid.`)
   }
   return value
@@ -547,6 +565,77 @@ export class GitService {
     return this.statusBefore(repository, signal, deadline)
   }
 
+  async indexTree(repositoryRoot: string, signal?: AbortSignal): Promise<string> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    return this.indexTreeBefore(repository.root, signal, deadline)
+  }
+
+  async commit(
+    repositoryRoot: string,
+    message: string,
+    expectedHead: string | undefined,
+    expectedTree: string,
+    signal?: AbortSignal,
+  ): Promise<GitCommitExecutionResult> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const safeMessage = boundedCommitMessage(message)
+    const safeHead = boundedObjectId(expectedHead, 'Expected Git HEAD')
+    const safeTree = boundedObjectId(expectedTree, 'Expected Git index tree')!
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const before = await this.statusBefore(repository, signal, deadline)
+    if (before.head !== safeHead) {
+      throw new GitServiceError('GIT_FAILED', 'Git HEAD changed after the commit preview.')
+    }
+    if (await this.indexTreeBefore(repository.root, signal, deadline) !== safeTree) {
+      throw new GitServiceError('GIT_FAILED', 'The Git index changed after the commit preview.')
+    }
+    await this.run([
+      '--no-optional-locks',
+      '-C', repository.root,
+      '-c', 'color.ui=false',
+      '-c', 'core.quotepath=false',
+      '-c', 'core.fsmonitor=false',
+      'commit',
+      '--cleanup=verbatim',
+      '--message', safeMessage,
+    ], signal, deadline)
+    const status = await this.statusBefore(repository, signal, deadline)
+    const commit = status.head
+    if (commit === undefined || commit === safeHead) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git reported success without creating a new commit.')
+    }
+    const parents = await this.commitParentsBefore(repository.root, commit, signal, deadline)
+    if ((safeHead === undefined && parents.length !== 0) ||
+      (safeHead !== undefined && parents[0] !== safeHead)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git created a commit from an unexpected parent.')
+    }
+    const committedTree = await this.resolveTreeBefore(repository.root, commit, signal, deadline)
+    if (committedTree !== safeTree) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git committed content that differs from the reviewed index.')
+    }
+    const committedMessage = await this.commitMessageBefore(repository.root, commit, signal, deadline)
+    const expectedMessage = safeMessage.endsWith('\n') ? safeMessage : `${safeMessage}\n`
+    if (committedMessage !== expectedMessage) {
+      throw new GitServiceError('BAD_OUTPUT', 'A Git hook changed the reviewed commit message.')
+    }
+    return { commit, status }
+  }
+
   private async statusBefore(
     repository: GitRepositoryIdentity,
     signal: AbortSignal | undefined,
@@ -565,6 +654,80 @@ export class GitService {
       '-z',
     ], signal, deadline)
     return parseGitStatus(repository, result.stdout)
+  }
+
+  private async indexTreeBefore(
+    repositoryRoot: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const tree = parseCommandValue(await this.run([
+      '--no-optional-locks',
+      '-C', repositoryRoot,
+      'write-tree',
+    ], signal, deadline), 'index tree identity')
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(tree)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid index tree identity.')
+    }
+    return tree
+  }
+
+  private async resolveTreeBefore(
+    repositoryRoot: string,
+    commit: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const tree = parseCommandValue(await this.run([
+      '-C', repositoryRoot,
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${commit}^{tree}`,
+    ], signal, deadline), 'commit tree identity')
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(tree)) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid commit tree identity.')
+    }
+    return tree
+  }
+
+  private async commitParentsBefore(
+    repositoryRoot: string,
+    commit: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string[]> {
+    const value = parseCommandValue(await this.run([
+      '-C', repositoryRoot,
+      'rev-list',
+      '--parents',
+      '--max-count=1',
+      commit,
+    ], signal, deadline), 'commit parent data')
+    const identities = value.split(' ')
+    if (identities[0] !== commit || identities.some(identity =>
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(identity))) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid commit parent data.')
+    }
+    return identities.slice(1)
+  }
+
+  private async commitMessageBefore(
+    repositoryRoot: string,
+    commit: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const result = await this.run([
+      '-C', repositoryRoot,
+      'cat-file',
+      'commit',
+      commit,
+    ], signal, deadline)
+    const value = result.stdout.toString('utf8')
+    const separator = value.indexOf('\n\n')
+    if (separator < 0) throw new GitServiceError('BAD_OUTPUT', 'Git returned invalid commit object data.')
+    return value.slice(separator + 2)
   }
 
   async resolveCommit(repositoryRoot: string, ref: string, signal?: AbortSignal): Promise<string> {

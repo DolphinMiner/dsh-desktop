@@ -269,6 +269,88 @@ test('reverts only the selected unstaged worktree change and preserves the index
   assert.equal(await gitOutput(root, 'diff', '--', 'README.md'), '')
 })
 
+test('commits exactly the reviewed index tree and preserves unstaged work', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'README.md'), 'staged version\n')
+  await git(root, 'add', 'README.md')
+  await writeFile(join(root, 'README.md'), 'unstaged version\n')
+  const service = new GitService()
+  const before = await service.status(canonicalRoot)
+  const expectedTree = await service.indexTree(canonicalRoot)
+
+  const result = await service.commit(
+    canonicalRoot,
+    'feat: commit reviewed index\n\nKeep the working copy.',
+    before.head,
+    expectedTree,
+  )
+  assert.equal(result.status.head, result.commit)
+  assert.equal(await gitOutput(root, 'show', `${result.commit}:README.md`), 'staged version')
+  assert.equal(await gitOutput(root, 'log', '-1', '--format=%B'),
+    'feat: commit reviewed index\n\nKeep the working copy.')
+  assert.equal(await gitOutput(root, 'show', ':README.md'), 'staged version')
+  const worktreeDiff = await gitOutput(root, 'diff', '--', 'README.md')
+  assert.match(worktreeDiff, /-staged version/)
+  assert.match(worktreeDiff, /\+unstaged version/)
+})
+
+test('runs commit hooks and leaves HEAD unchanged when a hook rejects', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'README.md'), 'staged version\n')
+  await git(root, 'add', 'README.md')
+  const hook = join(root, '.git', 'hooks', 'pre-commit')
+  await writeFile(hook, '#!/bin/sh\necho "review hook rejected" >&2\nexit 1\n')
+  await chmod(hook, 0o755)
+  const service = new GitService()
+  const before = await service.status(canonicalRoot)
+  const expectedTree = await service.indexTree(canonicalRoot)
+
+  await assert.rejects(service.commit(canonicalRoot, 'feat: rejected', before.head, expectedTree),
+    (error: GitServiceError) => error.code === 'GIT_FAILED' && /review hook rejected/.test(error.message))
+  assert.equal((await service.status(canonicalRoot)).head, before.head)
+  assert.equal(await service.indexTree(canonicalRoot), expectedTree)
+})
+
+test('detects a commit-msg hook that changes the reviewed message', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'README.md'), 'staged version\n')
+  await git(root, 'add', 'README.md')
+  const hook = join(root, '.git', 'hooks', 'commit-msg')
+  await writeFile(hook, '#!/bin/sh\nprintf "hook changed message\\n" > "$1"\n')
+  await chmod(hook, 0o755)
+  const service = new GitService()
+  const before = await service.status(canonicalRoot)
+  const expectedTree = await service.indexTree(canonicalRoot)
+
+  await assert.rejects(service.commit(canonicalRoot, 'feat: reviewed', before.head, expectedTree),
+    (error: GitServiceError) => error.code === 'BAD_OUTPUT' && /changed the reviewed commit message/.test(error.message))
+  assert.notEqual((await service.status(canonicalRoot)).head, before.head)
+  assert.equal(await gitOutput(root, 'log', '-1', '--format=%B'), 'hook changed message')
+})
+
+test('creates an initial commit from a reviewed index tree', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-git-initial-commit-test-'))
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await git(root, 'init', '-b', 'main')
+  await git(root, 'config', 'user.name', 'DSH Test')
+  await git(root, 'config', 'user.email', 'test@example.invalid')
+  await writeFile(join(root, 'README.md'), 'first\n')
+  await git(root, 'add', 'README.md')
+  const service = new GitService()
+  const expectedTree = await service.indexTree(canonicalRoot)
+
+  const result = await service.commit(canonicalRoot, 'feat: initial', undefined, expectedTree)
+  assert.equal(result.status.head, result.commit)
+  assert.equal((await gitOutput(root, 'rev-list', '--parents', '--max-count=1', result.commit)).split(' ').length, 1)
+})
+
 test('parses NUL-delimited worktree identity, lock, and prune attributes', () => {
   const entries = parseGitWorktreeList(Buffer.from([
     'worktree /repo',

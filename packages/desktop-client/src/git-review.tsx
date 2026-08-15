@@ -1,4 +1,4 @@
-import type { CSSProperties, FormEvent } from 'react'
+import type { CSSProperties, FormEvent, ReactNode } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -6,6 +6,7 @@ import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import {
   Button,
   IconBranchOutline16,
+  IconCheckOutline16,
   IconCloseOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
@@ -17,6 +18,8 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   AddGitReviewCommentInput,
+  DesktopGitCommitConfirmInput,
+  DesktopGitCommitPreviewInput,
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DesktopGitIndexMutationInput,
@@ -30,6 +33,8 @@ import type {
   GitReviewCommentsChangedEvent,
   GitReviewScope,
   GitReviewSnapshot,
+  GitCommitPreview,
+  GitCommitResult,
   GitIndexMutationResult,
   GitRevertPreview,
   GitRevertResult,
@@ -48,6 +53,8 @@ import {
 export interface DesktopGitBridge {
   review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
   mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
+  previewCommit(input: DesktopGitCommitPreviewInput): Promise<GitCommitPreview>
+  confirmCommit(input: DesktopGitCommitConfirmInput): Promise<GitCommitResult>
   previewRevert(input: DesktopGitRevertPreviewInput): Promise<GitRevertPreview>
   confirmRevert(input: DesktopGitRevertConfirmInput): Promise<GitRevertResult>
   comments: {
@@ -244,6 +251,16 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: '19px',
     padding: 12,
   },
+  confirmationSummary: {
+    alignItems: 'flex-start',
+    background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)',
+    borderRadius: 6,
+    display: 'flex',
+    fontSize: 13,
+    gap: 10,
+    lineHeight: '19px',
+    padding: 12,
+  },
   confirmationAcknowledge: {
     alignItems: 'flex-start',
     cursor: 'pointer',
@@ -258,6 +275,19 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     justifyContent: 'flex-end',
     padding: '12px 16px',
+  },
+  commitMessageInput: {
+    background: 'var(--dsw-alias-bg-base, #fff)',
+    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    borderRadius: 4,
+    boxSizing: 'border-box',
+    color: 'inherit',
+    font: 'inherit',
+    lineHeight: '20px',
+    minHeight: 96,
+    padding: '8px 10px',
+    resize: 'vertical',
+    width: '100%',
   },
   lineNumber: {
     borderRight: '1px solid var(--dsw-alias-border-l2, #deded9)',
@@ -344,6 +374,12 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: '20px',
     padding: 24,
   },
+  notice: {
+    color: 'var(--dsw-alias-state-success-primary, #287a3d)',
+    fontSize: 13,
+    lineHeight: '20px',
+    padding: '12px 24px',
+  },
 }
 
 const statusLabels: Record<GitReviewFile['status'], string> = {
@@ -391,31 +427,30 @@ function commentLocation(comment: GitReviewComment): string {
   return `${comment.anchor.path}:${String(comment.anchor.line)} (${comment.anchor.side})`
 }
 
-function RevertConfirmation({
-  preview,
-  acknowledged,
+function ReviewConfirmationDialog({
+  title,
+  descriptionId,
+  closeLabel,
   disabled,
-  onAcknowledgedChange,
   onCancel,
-  onConfirm,
+  children,
+  actions,
 }: {
-  preview?: GitRevertPreview
-  acknowledged: boolean
+  title: string
+  descriptionId: string
+  closeLabel: string
   disabled: boolean
-  onAcknowledgedChange: (value: boolean) => void
   onCancel: () => void
-  onConfirm: () => void
-}): React.JSX.Element | null {
+  children: ReactNode
+  actions: ReactNode
+}): React.JSX.Element {
   const dialogRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (preview === undefined) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
     return () => {
       if (previousFocus?.isConnected === true) previousFocus.focus()
     }
-  }, [preview])
-  if (preview === undefined) return null
-  const title = `Revert ${preview.path}?`
+  }, [])
   return createPortal(
     <div
       style={styles.confirmationOverlay}
@@ -432,7 +467,7 @@ function RevertConfirmation({
         if (event.key !== 'Tab') return
         const dialog = dialogRef.current
         const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled])',
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled])',
         ) ?? [])
         if (dialog === null || focusable.length === 0) {
           event.preventDefault()
@@ -455,7 +490,7 @@ function RevertConfirmation({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        aria-describedby="git-revert-description"
+        aria-describedby={descriptionId}
         style={styles.confirmationDialog}
       >
         <div style={styles.confirmationHeader}>
@@ -463,7 +498,7 @@ function RevertConfirmation({
           <button
             type="button"
             style={styles.iconButton}
-            aria-label="Close revert confirmation"
+            aria-label={closeLabel}
             title="Close"
             disabled={disabled}
             onClick={onCancel}
@@ -471,34 +506,125 @@ function RevertConfirmation({
             <IconCloseOutline16 />
           </button>
         </div>
-        <div style={styles.confirmationBody}>
-          <div id="git-revert-description" style={styles.confirmationWarning}>
-            <IconWarningOutline16 />
-            <span>
-              This restores the exact unstaged file shown in Review from the Git index. The approval expires at{' '}
-              {new Date(preview.expiresAt).toLocaleTimeString()}.
-            </span>
-          </div>
-          <label style={styles.confirmationAcknowledge}>
-            <input
-              autoFocus
-              type="checkbox"
-              checked={acknowledged}
-              disabled={disabled}
-              onChange={event => onAcknowledgedChange(event.currentTarget.checked)}
-            />
-            <span>I understand these unstaged changes cannot be recovered by DSH Desktop.</span>
-          </label>
-        </div>
-        <div style={styles.confirmationFooter}>
+        <div style={styles.confirmationBody}>{children}</div>
+        <div style={styles.confirmationFooter}>{actions}</div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function RevertConfirmation({
+  preview,
+  acknowledged,
+  disabled,
+  onAcknowledgedChange,
+  onCancel,
+  onConfirm,
+}: {
+  preview?: GitRevertPreview
+  acknowledged: boolean
+  disabled: boolean
+  onAcknowledgedChange: (value: boolean) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element | null {
+  if (preview === undefined) return null
+  return (
+    <ReviewConfirmationDialog
+      title={`Revert ${preview.path}?`}
+      descriptionId="git-revert-description"
+      closeLabel="Close revert confirmation"
+      disabled={disabled}
+      onCancel={onCancel}
+      actions={(
+        <>
           <Button size="sm" variant="outline" disabled={disabled} onClick={onCancel}>Cancel</Button>
           <Button size="sm" variant="primary" disabled={disabled || !acknowledged} onClick={onConfirm}>
             Revert file
           </Button>
-        </div>
+        </>
+      )}
+    >
+      <div id="git-revert-description" style={styles.confirmationWarning}>
+        <IconWarningOutline16 />
+        <span>
+          This restores the exact unstaged file shown in Review from the Git index. The approval expires at{' '}
+          {new Date(preview.expiresAt).toLocaleTimeString()}.
+        </span>
       </div>
-    </div>,
-    document.body,
+      <label style={styles.confirmationAcknowledge}>
+        <input
+          autoFocus
+          type="checkbox"
+          checked={acknowledged}
+          disabled={disabled}
+          onChange={event => onAcknowledgedChange(event.currentTarget.checked)}
+        />
+        <span>I understand these unstaged changes cannot be recovered by DSH Desktop.</span>
+      </label>
+    </ReviewConfirmationDialog>
+  )
+}
+
+function CommitConfirmation({
+  preview,
+  message,
+  disabled,
+  onMessageChange,
+  onCancel,
+  onConfirm,
+}: {
+  preview?: GitCommitPreview
+  message: string
+  disabled: boolean
+  onMessageChange: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element | null {
+  if (preview === undefined) return null
+  const fileCount = preview.review.files.length
+  return (
+    <ReviewConfirmationDialog
+      title={`Commit ${String(fileCount)} staged ${fileCount === 1 ? 'file' : 'files'}?`}
+      descriptionId="git-commit-description"
+      closeLabel="Close commit confirmation"
+      disabled={disabled}
+      onCancel={onCancel}
+      actions={(
+        <>
+          <Button size="sm" variant="outline" disabled={disabled} onClick={onCancel}>Cancel</Button>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<IconCheckOutline16 />}
+            disabled={disabled || message.trim() === ''}
+            onClick={onConfirm}
+          >
+            Commit
+          </Button>
+        </>
+      )}
+    >
+      <div id="git-commit-description" style={styles.confirmationSummary}>
+        <IconBranchOutline16 />
+        <span>
+          This commit is bound to the staged changes shown in Review and expires at{' '}
+          {new Date(preview.expiresAt).toLocaleTimeString()}.
+        </span>
+      </div>
+      <textarea
+        autoFocus
+        aria-label="Commit message"
+        placeholder="Commit message"
+        style={styles.commitMessageInput}
+        value={message}
+        maxLength={8_192}
+        disabled={disabled}
+        spellCheck
+        onChange={event => onMessageChange(event.currentTarget.value)}
+      />
+    </ReviewConfirmationDialog>
   )
 }
 
@@ -607,6 +733,10 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   const [pendingComment, setPendingComment] = useState<string>()
   const [pendingMutation, setPendingMutation] = useState<'stage' | 'unstage'>()
   const [mutationError, setMutationError] = useState<string>()
+  const [mutationNotice, setMutationNotice] = useState<string>()
+  const [commitPreview, setCommitPreview] = useState<GitCommitPreview>()
+  const [commitMessage, setCommitMessage] = useState('')
+  const [pendingCommit, setPendingCommit] = useState<'preview' | 'confirm'>()
   const [revertPreview, setRevertPreview] = useState<GitRevertPreview>()
   const [revertAcknowledged, setRevertAcknowledged] = useState(false)
   const [pendingRevert, setPendingRevert] = useState<'preview' | 'confirm'>()
@@ -713,6 +843,9 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     setCommentDraft(undefined)
     setCommentBody('')
     setMutationError(undefined)
+    setMutationNotice(undefined)
+    setCommitPreview(undefined)
+    setCommitMessage('')
     setRevertPreview(undefined)
     setRevertAcknowledged(false)
     setRequestedScope({ ...scope })
@@ -724,6 +857,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     const kind = snapshot.scope.kind === 'unstaged' ? 'stage' : 'unstage'
     setPendingMutation(kind)
     setMutationError(undefined)
+    setMutationNotice(undefined)
     void bridge.mutateIndex({
       sessionId,
       workspaceRoot,
@@ -739,11 +873,56 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     }).finally(() => setPendingMutation(undefined))
   }
 
+  const previewStagedCommit = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || snapshot?.scope.kind !== 'staged' ||
+      snapshot.files.length === 0) return
+    setPendingCommit('preview')
+    setMutationError(undefined)
+    setMutationNotice(undefined)
+    void bridge.previewCommit({ sessionId, workspaceRoot }).then(preview => {
+      setSnapshot(preview.review)
+      setSelectedPath(previous => preview.review.files.some(file => file.path === previous)
+        ? previous
+        : preview.review.files[0]?.path)
+      setCommitPreview(preview)
+      setCommitMessage('')
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setRequestedScope({ kind: 'staged' })
+    }).finally(() => setPendingCommit(undefined))
+  }
+
+  const confirmStagedCommit = (): void => {
+    if (bridge === undefined || workspaceRoot === undefined || commitPreview === undefined ||
+      commitMessage.trim() === '') return
+    setPendingCommit('confirm')
+    setMutationError(undefined)
+    setMutationNotice(undefined)
+    void bridge.confirmCommit({
+      sessionId,
+      workspaceRoot,
+      previewId: commitPreview.previewId,
+      message: commitMessage,
+      confirmed: true,
+    }).then(result => {
+      setMutationNotice(`Created commit ${result.commit.slice(0, 12)}.`)
+      setCommitPreview(undefined)
+      setCommitMessage('')
+      setRequestedScope({ kind: 'staged' })
+    }).catch(cause => {
+      setMutationError(reviewErrorMessage(cause))
+      setCommitPreview(undefined)
+      setCommitMessage('')
+      setRequestedScope({ kind: 'staged' })
+    }).finally(() => setPendingCommit(undefined))
+  }
+
   const previewSelectedRevert = (): void => {
     if (bridge === undefined || workspaceRoot === undefined || snapshot?.scope.kind !== 'unstaged' ||
       selected === undefined || !canRevert(selected)) return
     setPendingRevert('preview')
     setMutationError(undefined)
+    setMutationNotice(undefined)
     void bridge.previewRevert({ sessionId, workspaceRoot, path: selected.path }).then(preview => {
       setSnapshot(preview.review)
       setSelectedPath(preview.path)
@@ -760,6 +939,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       !revertAcknowledged) return
     setPendingRevert('confirm')
     setMutationError(undefined)
+    setMutationNotice(undefined)
     void bridge.confirmRevert({
       sessionId,
       workspaceRoot,
@@ -827,6 +1007,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           style={styles.scopeSelect}
           aria-label="Review scope"
           value={scopeKind}
+          disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
           onChange={event => setScopeKind(event.currentTarget.value as ReviewScopeKind)}
         >
           <option value="unstaged">Unstaged</option>
@@ -840,6 +1021,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
             style={styles.refInput}
             value={commitRef}
             maxLength={1024}
+            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
             spellCheck={false}
             onChange={event => setCommitRef(event.currentTarget.value)}
           />
@@ -850,6 +1032,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
             style={styles.refInput}
             value={baseRef}
             maxLength={1024}
+            disabled={pendingMutation !== undefined || pendingCommit !== undefined || pendingRevert !== undefined}
             spellCheck={false}
             onChange={event => setBaseRef(event.currentTarget.value)}
           />
@@ -858,7 +1041,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           size="sm"
           variant="toolbar"
           icon={<IconRefreshOutline16 />}
-          disabled={loading}
+          disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
+            pendingRevert !== undefined}
           onClick={requestReview}
         >
           Refresh
@@ -873,6 +1057,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       {error === undefined && !loading && snapshot?.files.length === 0 && (
         <div style={{ minHeight: 0, overflow: 'auto' }}>
           <div style={styles.state}>No changes in this scope.</div>
+          {mutationNotice !== undefined && <div role="status" style={styles.notice}>{mutationNotice}</div>}
           {mutationError !== undefined && <div role="alert" style={styles.state}>{mutationError}</div>}
           {commentError !== undefined && <div role="alert" style={styles.state}>{commentError}</div>}
           <UnresolvedComments
@@ -913,12 +1098,26 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
               <div style={styles.patchHeader}>
                 <span style={styles.patchPath}>{selected.path}</span>
                 <Pill>{selected.status}</Pill>
+                {snapshot.scope.kind === 'staged' && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<IconCheckOutline16 />}
+                    disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
+                      pendingRevert !== undefined}
+                    title="Preview and commit all staged files"
+                    onClick={previewStagedCommit}
+                  >
+                    Commit
+                  </Button>
+                )}
                 {(snapshot.scope.kind === 'unstaged' || snapshot.scope.kind === 'staged') && (
                   <Button
                     size="sm"
                     variant="toolbar"
                     icon={<IconBranchOutline16 />}
-                    disabled={loading || pendingMutation !== undefined || pendingRevert !== undefined}
+                    disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
+                      pendingRevert !== undefined}
                     title={snapshot.scope.kind === 'unstaged' ? 'Stage selected file' : 'Unstage selected file'}
                     onClick={mutateSelected}
                   >
@@ -930,7 +1129,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     size="sm"
                     variant="toolbar"
                     icon={<IconTrashOutline16 />}
-                    disabled={loading || pendingMutation !== undefined || pendingRevert !== undefined}
+                    disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
+                      pendingRevert !== undefined}
                     title="Preview reverting the selected file"
                     onClick={previewSelectedRevert}
                   >
@@ -939,6 +1139,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                 )}
               </div>
             )}
+            {mutationNotice !== undefined && <div role="status" style={styles.notice}>{mutationNotice}</div>}
             {mutationError !== undefined && <div role="alert" style={styles.state}>{mutationError}</div>}
             {commentError !== undefined && <div role="alert" style={styles.state}>{commentError}</div>}
             {parsed.error !== undefined && <div role="alert" style={styles.state}>{parsed.error}</div>}
@@ -1042,6 +1243,18 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           </div>
         </div>
       )}
+      <CommitConfirmation
+        preview={commitPreview}
+        message={commitMessage}
+        disabled={pendingCommit === 'confirm'}
+        onMessageChange={setCommitMessage}
+        onCancel={() => {
+          if (pendingCommit === 'confirm') return
+          setCommitPreview(undefined)
+          setCommitMessage('')
+        }}
+        onConfirm={confirmStagedCommit}
+      />
       <RevertConfirmation
         preview={revertPreview}
         acknowledged={revertAcknowledged}

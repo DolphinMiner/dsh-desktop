@@ -27,6 +27,8 @@ export interface DesktopBridge {
   git: {
     review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
     mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
+    previewCommit(input: DesktopGitCommitPreviewInput): Promise<GitCommitPreview>
+    confirmCommit(input: DesktopGitCommitConfirmInput): Promise<GitCommitResult>
     previewRevert(input: DesktopGitRevertPreviewInput): Promise<GitRevertPreview>
     confirmRevert(input: DesktopGitRevertConfirmInput): Promise<GitRevertResult>
     comments: {
@@ -68,6 +70,8 @@ import type {
   ComputerControlSnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  DesktopGitCommitConfirmInput,
+  DesktopGitCommitPreviewInput,
   DesktopGitIndexMutationInput,
   DesktopGitRevertConfirmInput,
   DesktopGitRevertPreviewInput,
@@ -77,6 +81,8 @@ import type {
   GitReviewCommentSnapshot,
   GitReviewCommentsChangedEvent,
   GitReviewSnapshot,
+  GitCommitPreview,
+  GitCommitResult,
   GitIndexMutationResult,
   GitRevertPreview,
   GitRevertResult,

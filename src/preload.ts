@@ -32,6 +32,8 @@ const bridge: DesktopBridge = {
   git: {
     review: input => ipcRenderer.invoke('desktop:git:review', input),
     mutateIndex: input => ipcRenderer.invoke('desktop:git:index:mutate', input),
+    previewCommit: input => ipcRenderer.invoke('desktop:git:commit:preview', input),
+    confirmCommit: input => ipcRenderer.invoke('desktop:git:commit:confirm', input),
     previewRevert: input => ipcRenderer.invoke('desktop:git:revert:preview', input),
     confirmRevert: input => ipcRenderer.invoke('desktop:git:revert:confirm', input),
     comments: {

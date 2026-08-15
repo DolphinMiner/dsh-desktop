@@ -32,6 +32,10 @@ function cleanStatus(identity: GitRepositoryIdentity = repository): GitStatusSna
   }
 }
 
+function committedStatus(identity: GitRepositoryIdentity = repository): GitStatusSnapshot {
+  return { ...cleanStatus(identity), head: 'b'.repeat(40) }
+}
+
 function emptyReview(identity: GitRepositoryIdentity = repository): GitReviewSnapshot {
   return {
     repository: identity,
@@ -65,6 +69,14 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
       calls.push(`revert:${root}:${path}`)
       return cleanStatus()
     },
+    indexTree: async root => {
+      calls.push(`tree:${root}`)
+      return 'c'.repeat(40)
+    },
+    commit: async (root, message, expectedHead, expectedTree) => {
+      calls.push(`commit:${root}:${message}:${expectedHead ?? 'initial'}:${expectedTree}`)
+      return { commit: 'b'.repeat(40), status: committedStatus() }
+    },
   }
   const service = new WorkspaceGitCapabilityService(git, (sessionId, workspaceRoot, signal) => {
     assert.equal(signal.aborted, false)
@@ -93,6 +105,15 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
     operationId: '22222222-2222-4222-8222-222222222222',
     path: 'src/example.ts',
   }, signal)).clean, true)
+  assert.equal(await service.indexTree({ ...params, repositoryRoot: '/repo' }, signal), 'c'.repeat(40))
+  assert.equal((await service.commit({
+    ...params,
+    repositoryRoot: '/repo',
+    operationId: '33333333-3333-4333-8333-333333333333',
+    message: 'feat: test',
+    expectedHead: 'a'.repeat(40),
+    expectedTree: 'c'.repeat(40),
+  }, signal)).commit, 'b'.repeat(40))
   assert.deepEqual(calls, [
     'authorize:session-1:/repo',
     'discover:/repo',
@@ -117,6 +138,18 @@ test('authorizes both sides of workspace-bound Git reads', async () => {
     'authorize:session-1:/repo',
     'revert:/repo:src/example.ts',
     'authorize:session-1:/repo',
+    'authorize:session-1:/repo',
+    'discover:/repo',
+    'authorize:session-1:/repo',
+    'tree:/repo',
+    'authorize:session-1:/repo',
+    'discover:/repo',
+    'authorize:session-1:/repo',
+    'authorize:session-1:/repo',
+    'discover:/repo',
+    'authorize:session-1:/repo',
+    `commit:/repo:feat: test:${'a'.repeat(40)}:${'c'.repeat(40)}`,
+    'authorize:session-1:/repo',
   ])
 })
 
@@ -131,6 +164,8 @@ test('rejects an unrelated requested root before reading status', async () => {
     review: async () => emptyReview(),
     mutateIndex: async () => cleanStatus(),
     revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -148,6 +183,8 @@ test('rejects a repository identity that changes during status', async () => {
     review: async () => emptyReview(),
     mutateIndex: async () => cleanStatus(),
     revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => undefined)
 
   await assert.rejects(service.status({
@@ -164,6 +201,8 @@ test('rejects a repository identity that changes during review', async () => {
     review: async () => emptyReview({ ...repository, commonDir: '/repo/.git-replaced' }),
     mutateIndex: async () => cleanStatus(),
     revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => undefined)
 
   await assert.rejects(service.review({
@@ -181,6 +220,8 @@ test('rejects a repository identity that changes during an index mutation', asyn
     review: async () => emptyReview(),
     mutateIndex: async () => cleanStatus({ ...repository, commonDir: '/repo/.git-replaced' }),
     revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => undefined)
 
   await assert.rejects(service.mutateIndex({
@@ -200,6 +241,8 @@ test('rejects a repository identity that changes during a worktree revert', asyn
     review: async () => emptyReview(),
     mutateIndex: async () => cleanStatus(),
     revertWorktree: async () => cleanStatus({ ...repository, gitDir: '/repo/.git-replaced' }),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => undefined)
 
   await assert.rejects(service.revertWorktree({
@@ -208,6 +251,48 @@ test('rejects a repository identity that changes during a worktree revert', asyn
     repositoryRoot: '/repo',
     operationId: '22222222-2222-4222-8222-222222222222',
     path: 'src/example.ts',
+  }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
+})
+
+test('rejects repository identity changes during index-tree reads and commits', async () => {
+  let discoveries = 0
+  const indexService = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => discoveries++ === 0
+      ? repository
+      : { ...repository, gitDir: '/repo/.git-replaced' },
+    status: async () => cleanStatus(),
+    review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
+    revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+  }, () => undefined)
+  await assert.rejects(indexService.indexTree({
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    repositoryRoot: '/repo',
+  }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
+
+  const commitService = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => repository,
+    status: async () => cleanStatus(),
+    review: async () => emptyReview(),
+    mutateIndex: async () => cleanStatus(),
+    revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({
+      commit: 'b'.repeat(40),
+      status: committedStatus({ ...repository, commonDir: '/repo/.git-replaced' }),
+    }),
+  }, () => undefined)
+  await assert.rejects(commitService.commit({
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    repositoryRoot: '/repo',
+    operationId: '33333333-3333-4333-8333-333333333333',
+    message: 'feat: test',
+    expectedHead: 'a'.repeat(40),
+    expectedTree: 'c'.repeat(40),
   }, new AbortController().signal), (error: WorkspaceGitError) => error.code === 'CONFLICT')
 })
 
@@ -221,6 +306,8 @@ test('maps bounded Git failures without weakening caller authorization', async (
     review: async () => emptyReview(),
     mutateIndex: async () => cleanStatus(),
     revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
   }, () => {
     authorized = true
   })

@@ -96,7 +96,7 @@ test('migrates the published v1 index journal before accepting destructive opera
   const journal = new GitMutationJournal(path)
   assert.equal(journal.status().available, true)
   assert.equal(journal.status().revision, 8)
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2)
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3)
   assert.equal(gitMutationPhase(journal.get(operationId)!), 'succeeded')
 
   const revertId = '22222222-2222-4222-8222-222222222222'
@@ -121,6 +121,54 @@ test('fails closed instead of overflowing the revision during v1 migration', asy
   const journal = new GitMutationJournal(path)
   assert.equal(journal.status().available, false)
   assert.equal(await readFile(path, 'utf8'), original)
+})
+
+test('migrates the published v2 revert journal without weakening approval evidence', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const revertId = '22222222-2222-4222-8222-222222222222'
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 2,
+    revision: 4,
+    operations: [{
+      ...input,
+      operationId: revertId,
+      kind: 'revert',
+      approval: { id: revertId, fingerprint: 'a'.repeat(64) },
+      events: [
+        { phase: 'intent', at: '2026-08-16T12:00:00.000Z' },
+        { phase: 'dispatch', at: '2026-08-16T12:00:01.000Z' },
+        { phase: 'succeeded', reason: 'completed', at: '2026-08-16T12:00:02.000Z' },
+      ],
+    }],
+  })}\n`)
+
+  const journal = new GitMutationJournal(path)
+  assert.equal(journal.status().available, true)
+  assert.equal(journal.status().revision, 5)
+  assert.equal(journal.get(revertId)?.approval?.fingerprint, 'a'.repeat(64))
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3)
+})
+
+test('persists the reviewed commit payload and resulting commit identity', async t => {
+  const { root, path } = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const journal = new GitMutationJournal(path)
+  const commitId = '33333333-3333-4333-8333-333333333333'
+  const commit = {
+    message: 'feat: durable commit',
+    expectedHead: 'a'.repeat(40),
+    expectedTree: 'b'.repeat(40),
+    stagedFingerprint: 'c'.repeat(64),
+  }
+
+  journal.begin({ ...input, operationId: commitId, kind: 'commit', commit })
+  journal.recordDispatch(commitId)
+  journal.recordOutcome(commitId, 'succeeded', 'completed', 'd'.repeat(40))
+  const restored = new GitMutationJournal(path)
+  assert.deepEqual(restored.get(commitId)?.commit, commit)
+  assert.equal(restored.get(commitId)?.resultCommit, 'd'.repeat(40))
+  assert.equal(restored.begin({ ...input, operationId: commitId, kind: 'commit', commit }).created, false)
 })
 
 test('requires immutable approval evidence only for destructive revert intents', async t => {

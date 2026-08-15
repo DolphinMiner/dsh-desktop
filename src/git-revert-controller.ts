@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 
 import type {
   DesktopGitRevertConfirmInput,
@@ -17,6 +17,7 @@ import { parseGitReviewPatch } from '@dolphinminer/dsh-desktop-protocol'
 
 import { GitRepositoryMutationQueue } from './git-index-controller'
 import { GitMutationJournal, gitMutationPhase, type GitMutationRecord } from './git-mutation-journal'
+import { gitReviewFingerprint } from './git-review-fingerprint'
 
 const DEFAULT_PREVIEW_TTL_MS = 5 * 60_000
 const MAX_PREVIEW_TTL_MS = 10 * 60_000
@@ -62,16 +63,6 @@ function sameRepository(left: GitRepositoryIdentity, right: GitRepositoryIdentit
 
 function isUuid(value: string): boolean {
   return /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)
-}
-
-function reviewFingerprint(review: GitReviewSnapshot): string {
-  return createHash('sha256').update(JSON.stringify({
-    repository: review.repository,
-    scope: review.scope,
-    head: review.head,
-    files: review.files,
-    patch: review.patch,
-  })).digest('hex')
 }
 
 function assertRevertibleReview(review: GitReviewSnapshot, path: string): void {
@@ -159,7 +150,7 @@ export class GitRevertController {
       workspaceRoot: input.workspaceRoot,
       repository: { ...repository },
       path: input.path,
-      fingerprint: reviewFingerprint(review),
+      fingerprint: gitReviewFingerprint(review),
       expiresAt,
     })
     return { previewId, path: input.path, expiresAt, review }
@@ -196,7 +187,7 @@ export class GitRevertController {
         this.previews.delete(input.previewId)
         throw error
       }
-      if (reviewFingerprint(review) !== pending.fingerprint) {
+      if (gitReviewFingerprint(review) !== pending.fingerprint) {
         this.previews.delete(input.previewId)
         throw new GitRevertControllerError(
           'CONFLICT',
@@ -225,7 +216,7 @@ export class GitRevertController {
         this.previews.delete(input.previewId)
         throw error
       }
-      if (reviewFingerprint(approvedReview) !== pending.fingerprint) {
+      if (gitReviewFingerprint(approvedReview) !== pending.fingerprint) {
         this.previews.delete(input.previewId)
         throw new GitRevertControllerError(
           'CONFLICT',
