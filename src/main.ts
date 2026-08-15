@@ -3,10 +3,13 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, Notification, shell } from 'electron'
 
+import { DesktopCapabilityBroker } from './desktop-capability-broker'
+import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
+import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 
 app.setName('DSH Desktop')
@@ -224,12 +227,36 @@ app.whenReady().then(async () => {
   await showLoadingPage()
 
   const logPath = join(app.getPath('logs'), 'harness.log')
+  const dshHome = join(app.getPath('userData'), 'harness')
+  bootstrapDesktopProfile({
+    dshHome,
+    packageRoot: app.getAppPath(),
+    productVersion: app.getVersion(),
+  })
+  const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
+    isAppFocused: () => mainWindow?.isFocused() ?? false,
+    notifications: {
+      isSupported: () => Notification.isSupported(),
+      show: params => {
+        const notification = new Notification({ title: params.title, body: params.body ?? '' })
+        notification.on('click', () => {
+          if (mainWindow === undefined || mainWindow.isDestroyed()) return
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+        })
+        notification.show()
+      },
+    },
+  }))
   harness = new HarnessService({
     dshBin: resolveDshBin(),
-    dshHome: join(app.getPath('userData'), 'harness'),
+    dshHome,
     cwd: homedir(),
     logPath,
     nodeExecutable: process.execPath,
+    profileName: 'desktop',
+    capabilityBroker,
     onState: publishState,
   })
 

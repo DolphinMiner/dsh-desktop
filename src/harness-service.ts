@@ -1,8 +1,9 @@
-import { ChildProcessByStdio, spawn } from 'node:child_process'
+import { ChildProcess, spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync, WriteStream } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable } from 'node:stream'
 
+import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { LineBuffer, parseHarnessUrl } from './harness-output'
 import { HarnessState } from './types'
 
@@ -13,7 +14,9 @@ interface HarnessServiceOptions {
   logPath: string
   nodeExecutable: string
   env?: NodeJS.ProcessEnv
+  profileName?: string
   startupTimeoutMs?: number
+  capabilityBroker?: DesktopCapabilityBroker
   onState: (state: HarnessState) => void
 }
 
@@ -29,7 +32,7 @@ function formatDuration(milliseconds: number): string {
 }
 
 export class HarnessService {
-  private child?: ChildProcessByStdio<null, Readable, Readable>
+  private child?: ChildProcess
   private log?: WriteStream
   private logClosing?: Promise<void>
   private startupTimer?: NodeJS.Timeout
@@ -61,7 +64,16 @@ export class HarnessService {
 
     const child = spawn(
       this.options.nodeExecutable,
-      ['--expose-internals', this.options.dshBin, 'web', '--host', '127.0.0.1', '--port', '0'],
+      [
+        '--expose-internals',
+        this.options.dshBin,
+        '--profile',
+        this.options.profileName ?? 'desktop',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '0',
+      ],
       {
         cwd: this.options.cwd,
         env: {
@@ -71,7 +83,7 @@ export class HarnessService {
           ELECTRON_RUN_AS_NODE: '1',
           FORCE_COLOR: '0',
         },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       },
     )
     this.child = child
@@ -79,13 +91,15 @@ export class HarnessService {
     const stdout = new LineBuffer()
     const stderr = new LineBuffer()
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    const childStdout = child.stdout as Readable
+    const childStderr = child.stderr as Readable
+    childStdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8')
       this.log?.write(`[stdout] ${text}`)
       for (const line of stdout.push(text)) this.inspectLine(line, runId)
     })
 
-    child.stderr.on('data', (chunk: Buffer) => {
+    childStderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8')
       this.log?.write(`[stderr] ${text}`)
       for (const line of stderr.push(text)) this.writeDesktopLog(`Harness stderr: ${line}`)
@@ -97,6 +111,20 @@ export class HarnessService {
       void this.stop()
     })
 
+    child.on('message', message => {
+      if (runId !== this.runId || this.stopping || this.child !== child) return
+      this.options.capabilityBroker?.receive(message, response => {
+        if (runId !== this.runId || this.stopping || this.child !== child || !child.connected) return
+        child.send(response, error => {
+          if (error !== null) this.writeDesktopLog(`could not send desktop capability response: ${error.message}`)
+        })
+      })
+    })
+
+    child.once('disconnect', () => {
+      if (this.child === child) this.options.capabilityBroker?.disconnect()
+    })
+
     child.once('exit', (code, signal) => {
       const stdoutTail = stdout.flush()
       if (stdoutTail !== undefined) this.inspectLine(stdoutTail, runId)
@@ -104,6 +132,7 @@ export class HarnessService {
       if (stderrTail !== undefined) this.writeDesktopLog(`Harness stderr: ${stderrTail}`)
 
       if (this.child === child) this.child = undefined
+      this.options.capabilityBroker?.disconnect()
       this.clearStartupTimer()
 
       if (runId === this.runId && !this.stopping) {
@@ -125,6 +154,7 @@ export class HarnessService {
     this.runId += 1
     this.stopping = true
     this.clearStartupTimer()
+    this.options.capabilityBroker?.disconnect()
 
     const child = this.child
     if (child === undefined) {

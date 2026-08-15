@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import { DesktopCapabilityBroker } from './desktop-capability-broker'
+import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { HarnessService } from './harness-service'
 import { HarnessPhase, HarnessState } from './types'
 
@@ -83,6 +85,63 @@ test('starts a healthy Harness and stops it cleanly', async () => {
     assert.match(log, /Harness ready at http:\/\/127\.0\.0\.1:/)
     assert.match(log, /stopping Harness/)
   })
+})
+
+test('launches the explicit desktop profile instead of the web alias', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-argv-test-'))
+  const argvPath = join(root, 'argv.json')
+  const service = new HarnessService({
+    dshBin: FIXTURE_PATH,
+    dshHome: join(root, 'home'),
+    cwd: root,
+    logPath: join(root, 'logs', 'harness.log'),
+    nodeExecutable: process.execPath,
+    env: { DSH_TEST_MODE: 'ready', DSH_TEST_ARGV_PATH: argvPath },
+    onState: () => undefined,
+  })
+  try {
+    await service.start()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
+    assert.deepEqual(argv.slice(0, 2), ['--profile', 'desktop'])
+    assert.equal(argv.includes('web'), false)
+  } finally {
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('routes a child-process capability request through the desktop broker', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-ipc-test-'))
+  let resolvePing: (nonce: string) => void
+  const ping = new Promise<string>(resolve => {
+    resolvePing = resolve
+  })
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+  })
+  handlers['desktop.ping'] = params => {
+    resolvePing(params.nonce)
+    return { nonce: params.nonce, protocolVersion: 1 }
+  }
+  const service = new HarnessService({
+    dshBin: FIXTURE_PATH,
+    dshHome: join(root, 'home'),
+    cwd: root,
+    logPath: join(root, 'logs', 'harness.log'),
+    nodeExecutable: process.execPath,
+    env: { DSH_TEST_MODE: 'capability' },
+    capabilityBroker: new DesktopCapabilityBroker(handlers),
+    onState: () => undefined,
+  })
+  try {
+    await service.start()
+    assert.equal(await ping, 'from-child')
+  } finally {
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('restarts the same Harness service without leaking the previous run', async () => {

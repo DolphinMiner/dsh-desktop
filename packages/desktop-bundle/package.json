@@ -1,0 +1,24 @@
+{
+  "name": "@dolphinminer/dsh-desktop-bundle",
+  "version": "0.2.0",
+  "description": "Product composition layer for the official DeepSeek Harness web profile.",
+  "private": true,
+  "license": "Apache-2.0",
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@dolphinminer/dsh-desktop-agent": "0.2.0",
+    "@dolphinminer/dsh-desktop-client": "0.2.0",
+    "@dolphinminer/dsh-desktop-host": "0.2.0"
+  }
+}

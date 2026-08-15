@@ -14,14 +14,17 @@ An independent, community-built macOS desktop host for the official
 
 ## Preview
 
-![DSH Desktop running the official DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.jpg)
+![DSH Desktop running the official DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
 
-This first MVP intentionally keeps the architecture narrow:
+The desktop host intentionally keeps the architecture narrow:
 
 1. Electron starts a pinned, bundled `@deepseek-ai/dsh` process.
-2. Harness binds to `127.0.0.1` on an operating-system-selected port.
-3. Electron waits for the official readiness URL and loads it in a native window.
-4. Electron stops the Harness process when the application quits.
+2. A product-owned `desktop` profile composes the official base and Web bundles
+   with a small desktop Cordis plugin.
+3. Harness binds to `127.0.0.1` on an operating-system-selected port.
+4. Electron waits for the official readiness URL and loads it in a native window.
+5. A versioned, allowlisted child-process channel provides native capabilities.
+6. Electron stops the Harness process and pending desktop work on quit.
 
 The project does not fork or modify the Harness agent loop, model adapters,
 session storage, tools, or Web UI.
@@ -34,15 +37,17 @@ React Native would require rewriting the Harness interface.
 
 ```text
 Electron main process
-  -> starts the bundled dsh CLI as a managed child process
+  -> bootstraps and starts the bundled dsh CLI with --profile desktop
   -> waits for its loopback health endpoint
+  -> brokers typed, allowlisted native capabilities
   -> loads the official Harness Web UI in a sandboxed window
   -> stops the child process during application shutdown
 ```
 
 Harness remains the source of truth for agents, model calls, tools, sessions,
-approvals, and persistence. The Electron layer owns only the desktop window,
-process lifecycle, navigation policy, and a small loading-page IPC bridge.
+approvals, and persistence. The Electron layer owns the desktop window, process
+lifecycle, navigation policy, native notifications, and capability enforcement.
+The Harness renderer never receives direct Electron or Node.js access.
 
 ## Requirements
 
@@ -96,8 +101,8 @@ Signing and notarization are deliberately outside the first MVP.
 - Apple Silicon is the only packaged architecture.
 - Releases are not yet code signed or notarized.
 - Releases do not yet have an automatic updater.
-- Native notifications, Dock integration, Keychain storage, and Computer Use
-  are not implemented.
+- Connections, Keychain storage, Dock integration, and Computer Use are not yet
+  implemented.
 
 ## Local Data
 
@@ -135,24 +140,22 @@ boundary.
 
 ## Desktop Integration Boundary
 
-The current application needs no custom Harness plugin. Harness already owns
-workspace selection, local tools, approvals, session persistence, directory
-selection, and opening generated files with macOS applications.
+Harness already owns workspace selection, local tools, approvals, session
+persistence, and generated files. The desktop integration plugin only adapts
+capabilities that exist because Harness is running inside Electron. It exposes
+a small allowlisted API rather than duplicating the agent or granting browser
+code unrestricted Electron IPC access.
 
-A future desktop integration plugin should only adapt capabilities that exist
-because the UI is inside Electron, such as Dock badges, native notifications,
-application menus, Keychain-backed credentials, and desktop updates. It should
-expose a small allowlisted API to Harness rather than duplicating the agent or
-granting browser code unrestricted Electron IPC access.
-
-For example, a notification integration would have only two small halves:
+The first integration, native notifications, has two small halves:
 
 1. A Harness plugin listens for a completed run and emits a typed
    `desktop.notify` request.
 2. Electron validates that request and calls the macOS notification API.
 
-The plugin does not own prompts, sessions, model calls, tools, or persistence.
-Those remain in Harness as the single source of truth.
+The protocol validates message versions, methods, payloads, responses, request
+IDs, timeouts, cancellation, and disconnects. The plugin does not own prompts,
+sessions, model calls, tools, or persistence; those remain in Harness as the
+single source of truth.
 
 Computer Use would be a separate, larger integration. It would need explicit
 screen-capture and accessibility permissions plus tightly scoped screenshot,

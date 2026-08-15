@@ -14,14 +14,16 @@ DSH Desktop 是一个独立的社区项目，用 Electron 在 macOS 桌面端托
 
 ## 功能展示
 
-![DSH Desktop 运行官方 DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.jpg)
+![DSH Desktop 运行官方 DeepSeek Harness Web UI](docs/images/dsh-desktop-preview.png)
 
-MVP 刻意保持很薄：
+桌面宿主刻意保持很薄：
 
 1. Electron 启动项目锁定版本并随应用打包的 `@deepseek-ai/dsh` 进程。
-2. Harness 只监听 `127.0.0.1`，端口由操作系统随机分配。
-3. Electron 验证健康状态后，在原生窗口中加载官方 Web UI。
-4. 应用退出时，Electron 负责停止 Harness 子进程。
+2. 产品自有的 `desktop` Profile 组合官方 base、Web bundle 和轻量桌面插件。
+3. Harness 只监听 `127.0.0.1`，端口由操作系统随机分配。
+4. Electron 验证健康状态后，在原生窗口中加载官方 Web UI。
+5. 版本化、白名单化的子进程通道提供原生桌面能力。
+6. 应用退出时，Electron 停止 Harness 子进程和未完成的桌面请求。
 
 项目不 fork 或修改 Harness 的 Agent 循环、模型适配器、会话存储、工具和
 Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React Native。
@@ -30,14 +32,16 @@ Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React
 
 ```text
 Electron 主进程
-  -> 启动并托管 dsh CLI 子进程
+  -> 创建 desktop Profile，并用 --profile desktop 启动 dsh CLI
   -> 等待本机回环地址上的健康检查
+  -> 代理类型化、白名单化的原生能力
   -> 在沙箱窗口中加载官方 Harness Web UI
   -> 应用退出时停止子进程
 ```
 
 Harness 仍然是 Agent、模型调用、工具、会话、审批和持久化的唯一事实来源。
-Electron 层只负责窗口、进程生命周期、导航策略和启动页所需的少量 IPC。
+Electron 层负责窗口、进程生命周期、导航策略、原生通知和桌面能力校验；
+Harness 网页渲染层不会获得 Electron 或 Node.js 的直接访问能力。
 
 ## 环境要求
 
@@ -95,7 +99,14 @@ Harness 仅监听 `127.0.0.1`。Electron 渲染进程启用沙箱并关闭 Node.
 - 仅提供 Apple Silicon 构建。
 - 尚未进行代码签名和 Apple 公证。
 - 暂无自动更新。
-- 原生通知、Dock 集成、Keychain 和 Computer Use 尚未实现。
+- Connections、Dock 集成、Keychain 和 Computer Use 尚未实现。
+
+## 桌面集成边界
+
+Harness 继续负责工作区、工具、审批、会话持久化和生成文件。桌面插件只适配
+Electron 环境才具备的原生能力，并通过版本化白名单协议调用 Electron 主进程。
+协议会校验方法、参数、响应、请求 ID、超时、取消和断连；网页端无法直接调用
+这条子进程能力通道。当前首个完整能力是任务完成或失败后的原生通知。
 
 Computer Use 属于更大的独立能力，需要明确申请屏幕录制和辅助功能权限，
 并提供严格限制的截图、点击和键盘操作。仅把 Harness 放进 Electron 窗口，

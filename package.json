@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A macOS desktop host for the official DeepSeek Harness web application.",
   "main": "dist/main.js",
   "private": true,
@@ -25,11 +25,15 @@
     "npm": ">=10.0.0"
   },
   "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:packages && tsc -p tsconfig.json",
+    "build:packages": "npm run build -w @dolphinminer/dsh-desktop-protocol && npm run build -w @dolphinminer/dsh-desktop-host && npm run build -w @dolphinminer/dsh-desktop-agent && npm run build -w @dolphinminer/dsh-desktop-client",
     "check": "npm run typecheck && npm test",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/desktop-security.test.js dist/harness-output.test.js dist/harness-service.test.js",
+    "typecheck": "npm run build:packages && tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/*.test.js packages/*/lib/*.test.js",
     "start": "npm run build && electron .",
     "dev": "npm run start",
     "prepare:electron-licenses": "node -e \"require('electron')\"",
@@ -37,7 +41,8 @@
     "dist:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dmg zip --arm64"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.0-rc.6"
+    "@deepseek-ai/dsh": "0.1.0-rc.6",
+    "@dolphinminer/dsh-desktop-bundle": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "24.10.9",
@@ -54,6 +59,9 @@
       "dist/**/*",
       "!dist/**/*.test.js",
       "!dist/**/*.test.js.map",
+      "!node_modules/@dolphinminer/*/src/**/*",
+      "!node_modules/@dolphinminer/*/tsconfig.json",
+      "!node_modules/@dolphinminer/*/lib/**/*.test.*",
       "renderer/**/*",
       "package.json",
       "README.md",

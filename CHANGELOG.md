@@ -14,6 +14,12 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI, dependency update automation, contribution guidance, and security policy.
 - macOS application icon based on the Harness home-page fish mark.
 - Electron, Chromium, and LGPL dependency notices in packaged applications.
+- Product-owned `desktop` Harness profile composed from official bundle layers.
+- Versioned parent/child capability protocol with validation, cancellation,
+  timeout handling, duplicate suppression, and disconnect cleanup.
+- Native completion and failure notifications from a desktop Cordis host plugin.
+- npm workspace packages for desktop protocol, host, agent, client, and bundle
+  extension points.
 
 ### Security
 
