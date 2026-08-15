@@ -469,6 +469,10 @@ function isComputerKey(value: unknown): value is string {
   return isString(value, 32) && (NAMED_KEYS.has(value) || /^[A-Za-z0-9]$/.test(value))
 }
 
+function isActionId(value: unknown): value is string {
+  return isString(value, 36) && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)
+}
+
 export function parseComputerAction(value: unknown): ComputerAction | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'click') {
@@ -511,7 +515,7 @@ export function parseComputerAction(value: unknown): ComputerAction | undefined 
 
 export function parseComputerActParams(value: unknown): ComputerActParams | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, ['actionId', 'sessionId', 'snapshotId', 'action']) ||
-    !isString(value.actionId, 128) || !isString(value.sessionId, 256) ||
+    !isActionId(value.actionId) || !isString(value.sessionId, 256) ||
     !isString(value.snapshotId, MAX_ID_LENGTH)) return undefined
   const action = parseComputerAction(value.action)
   return action === undefined ? undefined : {
@@ -541,7 +545,7 @@ export function summarizeComputerAction(action: ComputerAction): ComputerActionS
   }
 }
 
-function parseActionSummary(value: unknown): ComputerActionSummary | undefined {
+export function parseComputerActionSummary(value: unknown): ComputerActionSummary | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'type') {
     if (!hasOnlyKeys(value, ['kind', 'elementId', 'textLength', 'replace']) ||
@@ -564,9 +568,9 @@ export function parseComputerActionResult(value: unknown): ComputerActionResult 
     value,
     ['version', 'actionId', 'previousSnapshotId', 'completedAt', 'action', 'observation'],
   ) || value.version !== COMPUTER_ACTION_VERSION ||
-    !isString(value.actionId, 128) || !isString(value.previousSnapshotId, MAX_ID_LENGTH) ||
+    !isActionId(value.actionId) || !isString(value.previousSnapshotId, MAX_ID_LENGTH) ||
     !isString(value.completedAt, 64) || Number.isNaN(Date.parse(value.completedAt))) return undefined
-  const action = parseActionSummary(value.action)
+  const action = parseComputerActionSummary(value.action)
   const observation = parseComputerObservation(value.observation)
   if (action === undefined || observation === undefined ||
     observation.snapshotId === value.previousSnapshotId) return undefined

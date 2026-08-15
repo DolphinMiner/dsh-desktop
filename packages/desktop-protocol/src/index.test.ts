@@ -204,7 +204,7 @@ test('validates bounded computer permissions and observations', () => {
 
 test('validates snapshot-bound computer actions without echoing typed text', () => {
   const input = {
-    actionId: 'action-1',
+    actionId: '11111111-1111-4111-8111-111111111111',
     sessionId: 'session-1',
     snapshotId: 'snapshot-1',
     action: {
@@ -266,7 +266,7 @@ test('validates snapshot-bound computer actions without echoing typed text', () 
   } as const
   const result = {
     version: COMPUTER_ACTION_VERSION,
-    actionId: 'action-1',
+    actionId: '11111111-1111-4111-8111-111111111111',
     previousSnapshotId: 'snapshot-1',
     completedAt: '2026-08-16T12:00:01.000Z',
     action: {
