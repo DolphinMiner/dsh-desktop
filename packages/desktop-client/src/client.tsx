@@ -8,6 +8,9 @@ import {
   IconLinkOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
+  IconRightUpOutline16,
+  IconSettingsOutline16,
+  IconStopFill16,
   IconTrashOutline16,
   Input,
   Modal,
@@ -25,11 +28,21 @@ import type {
   ConnectionAccess,
   ConnectionSnapshot,
   ConnectionSummary,
+  ComputerControlSnapshot,
+  ComputerPermissionStatus,
+  ComputerTargetKind,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  SelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
-import { canReconnect, connectionStateDot, connectionStatusLabel } from './view-model.js'
+import {
+  canReconnect,
+  computerPermissionLabel,
+  computerTargetGroupLabel,
+  connectionStateDot,
+  connectionStatusLabel,
+} from './view-model.js'
 import { runDesktopCommand } from './desktop-command.js'
 
 interface OAuthResultNotice {
@@ -47,11 +60,21 @@ interface DesktopConnectionsBridge {
   onOAuthResult(listener: (result: OAuthResultNotice) => void): () => void
 }
 
+interface DesktopComputerBridge {
+  getState(): Promise<ComputerControlSnapshot>
+  refresh(): Promise<ComputerControlSnapshot>
+  selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
+  stop(): Promise<ComputerControlSnapshot>
+  openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
+  onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
+}
+
 declare global {
   interface Window {
     dshDesktop?: {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
+      computer: DesktopComputerBridge
       connections: DesktopConnectionsBridge
     }
   }
@@ -156,6 +179,46 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     minHeight: 32,
     padding: '6px 8px',
+  },
+  tabs: {
+    alignItems: 'center',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'flex',
+    gap: 4,
+    marginBottom: 20,
+    paddingBottom: 10,
+  },
+  permissionList: { borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)', marginBottom: 22 },
+  permissionRow: {
+    alignItems: 'center',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'grid',
+    gap: 12,
+    gridTemplateColumns: 'minmax(0, 1fr) auto 32px',
+    minHeight: 52,
+  },
+  permissionName: { fontSize: 13, fontWeight: 600 },
+  select: {
+    appearance: 'auto',
+    background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)',
+    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    borderRadius: 4,
+    boxSizing: 'border-box',
+    color: 'inherit',
+    font: 'inherit',
+    minHeight: 36,
+    padding: '6px 10px',
+    width: '100%',
+  },
+  computerStatus: {
+    alignItems: 'center',
+    borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'space-between',
+    marginTop: 20,
+    paddingTop: 16,
   },
 }
 
@@ -537,6 +600,187 @@ function ConnectionsSection(): React.JSX.Element {
   )
 }
 
+function PermissionRow({
+  label,
+  status,
+  kind,
+  bridge,
+}: {
+  label: string
+  status: ComputerPermissionStatus
+  kind: 'screen-recording' | 'accessibility'
+  bridge: DesktopComputerBridge
+}): React.JSX.Element {
+  return (
+    <div style={styles.permissionRow}>
+      <span style={styles.permissionName}>{label}</span>
+      <span style={styles.status}>
+        <StateDot state={status === 'granted' ? 'done' : status === 'unavailable' ? 'warning' : 'error'} />
+        {computerPermissionLabel(status)}
+      </span>
+      {status !== 'granted' && status !== 'unavailable' ? (
+        <Button
+          size="sm"
+          variant="toolbar"
+          icon={<IconRightUpOutline16 />}
+          aria-label={`Open ${label} settings`}
+          title={`Open ${label} settings`}
+          onClick={() => void bridge.openPermissionSettings(kind)}
+        />
+      ) : <span />}
+    </div>
+  )
+}
+
+function ComputerSection(): React.JSX.Element {
+  const bridge = window.dshDesktop?.computer
+  const [snapshot, setSnapshot] = useState<ComputerControlSnapshot>()
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>()
+
+  const refresh = async (): Promise<void> => {
+    if (bridge === undefined) {
+      setError('The desktop computer bridge is unavailable.')
+      setLoading(false)
+      return
+    }
+    try {
+      setSnapshot(await bridge.refresh())
+      setError(undefined)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void refresh()
+    if (bridge === undefined) return
+    return bridge.onChanged(next => {
+      setSnapshot(next)
+      setLoading(false)
+    })
+  }, [bridge])
+
+  const selectTarget = async (targetId: string): Promise<void> => {
+    if (bridge === undefined || targetId.length === 0) return
+    setLoading(true)
+    try {
+      setSnapshot(await bridge.selectTarget({ targetId }))
+      setError(undefined)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const stop = async (): Promise<void> => {
+    if (bridge === undefined) return
+    setLoading(true)
+    try {
+      setSnapshot(await bridge.stop())
+      setError(undefined)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const groups: ComputerTargetKind[] = ['application', 'window', 'display']
+  const permissions = snapshot?.permissions
+  return (
+    <section style={styles.root} aria-labelledby="desktop-computer-heading">
+      <header style={styles.header}>
+        <h2 id="desktop-computer-heading" style={styles.heading}>Computer</h2>
+        <Button
+          size="sm"
+          variant="toolbar"
+          icon={<IconRefreshOutline16 />}
+          aria-label="Refresh computer targets"
+          title="Refresh computer targets"
+          disabled={loading}
+          onClick={() => void refresh()}
+        />
+      </header>
+
+      {permissions !== undefined && bridge !== undefined && (
+        <div style={styles.permissionList}>
+          <PermissionRow
+            label="Screen Recording"
+            status={permissions.screenRecording}
+            kind="screen-recording"
+            bridge={bridge}
+          />
+          <PermissionRow
+            label="Accessibility"
+            status={permissions.accessibility}
+            kind="accessibility"
+            bridge={bridge}
+          />
+        </div>
+      )}
+
+      <label style={styles.field}>
+        <span style={styles.label}>Observation target</span>
+        <select
+          style={styles.select}
+          value={snapshot?.selectedTarget?.id ?? ''}
+          disabled={loading || snapshot?.permissions.supported === false}
+          onChange={event => void selectTarget(event.currentTarget.value)}
+        >
+          <option value="" disabled>Select an application, window, or display</option>
+          {groups.map(kind => {
+            const targets = snapshot?.targets.filter(target => target.kind === kind) ?? []
+            return targets.length === 0 ? null : (
+              <optgroup key={kind} label={computerTargetGroupLabel(kind)}>
+                {targets.map(target => (
+                  <option key={target.id} value={target.id}>
+                    {target.applicationName === undefined ? target.name : `${target.applicationName} - ${target.name}`}
+                  </option>
+                ))}
+              </optgroup>
+            )
+          })}
+        </select>
+      </label>
+
+      {error !== undefined && (
+        <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-error-secondary, #fef0ef)' }}>
+          {error}
+        </div>
+      )}
+      {snapshot?.statusMessage !== undefined && error === undefined && (
+        <div role="status" style={styles.notice}>{snapshot.statusMessage}</div>
+      )}
+
+      <div style={styles.computerStatus}>
+        <span style={styles.metadata}>
+          {snapshot?.observing === true
+            ? 'Observing'
+            : snapshot?.lastObservation === undefined
+              ? snapshot?.enabled === true ? 'Ready' : 'Stopped'
+              : `Last observed ${new Date(snapshot.lastObservation.observedAt).toLocaleString()} / ` +
+                `${snapshot.lastObservation.elementCount} elements`}
+        </span>
+        {snapshot?.enabled === true && (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<IconStopFill16 />}
+            disabled={loading}
+            onClick={() => void stop()}
+          >
+            Stop
+          </Button>
+        )}
+      </div>
+    </section>
+  )
+}
+
 const settingsListeners = new Set<(sectionId?: string) => void>()
 
 function openDesktopSettings(sectionId?: string): void {
@@ -545,10 +789,13 @@ function openDesktopSettings(sectionId?: string): void {
 
 function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [section, setSection] = useState<'connections' | 'computer'>('connections')
 
   useEffect(() => {
     const listener = (sectionId?: string): void => {
-      if (sectionId === undefined || sectionId === 'connections') setOpen(true)
+      if (sectionId === 'computer') setSection('computer')
+      else if (sectionId === undefined || sectionId === 'connections') setSection('connections')
+      if (sectionId === undefined || sectionId === 'connections' || sectionId === 'computer') setOpen(true)
     }
     settingsListeners.add(listener)
     return () => { settingsListeners.delete(listener) }
@@ -559,12 +806,12 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
       <button
         type="button"
         style={styles.footerButton}
-        aria-label="Connections"
-        title="Connections"
+        aria-label="Desktop settings"
+        title="Desktop settings"
         onClick={() => setOpen(true)}
       >
-        <IconLinkOutline16 size={wide ? 14 : 18} />
-        {wide && <span>Connections</span>}
+        <IconSettingsOutline16 size={wide ? 14 : 18} />
+        {wide && <span>Desktop</span>}
       </button>
       <Modal
         open={open}
@@ -572,7 +819,27 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
         title="Desktop settings"
         closeLabel="Close desktop settings"
       >
-        <ConnectionsSection />
+        <div style={styles.tabs} role="tablist" aria-label="Desktop settings sections">
+          <Pill
+            type="button"
+            role="tab"
+            aria-selected={section === 'connections'}
+            active={section === 'connections'}
+            onClick={() => setSection('connections')}
+          >
+            Connections
+          </Pill>
+          <Pill
+            type="button"
+            role="tab"
+            aria-selected={section === 'computer'}
+            active={section === 'computer'}
+            onClick={() => setSection('computer')}
+          >
+            Computer
+          </Pill>
+        </div>
+        {section === 'connections' ? <ConnectionsSection /> : <ComputerSection />}
       </Modal>
     </>
   )
@@ -599,9 +866,15 @@ export function apply(ctx: ClientContext): void {
     order: 12,
     label: 'Connections',
   }, ConnectionsSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'computer',
+    order: 13,
+    label: 'Computer',
+  }, ComputerSection))
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
-    id: 'desktop-connections',
+    id: 'desktop-settings',
     order: 10,
   }, DesktopSettingsLauncher))
 }

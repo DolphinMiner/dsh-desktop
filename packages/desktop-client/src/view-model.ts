@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from '@dolphinminer/dsh-desktop-protocol'
+import type { ComputerPermissionStatus, ComputerTargetKind, ConnectionStatus } from '@dolphinminer/dsh-desktop-protocol'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 
 export function connectionStateDot(status: ConnectionStatus): StateDotState {
@@ -18,4 +18,17 @@ export function connectionStatusLabel(status: ConnectionStatus): string {
 
 export function canReconnect(status: ConnectionStatus): boolean {
   return status === 'disconnected' || status === 'expired' || status === 'error'
+}
+
+export function computerPermissionLabel(status: ComputerPermissionStatus): string {
+  if (status === 'granted') return 'Allowed'
+  if (status === 'not-determined') return 'Not requested'
+  if (status === 'unavailable') return 'Unavailable'
+  return 'Not allowed'
+}
+
+export function computerTargetGroupLabel(kind: ComputerTargetKind): string {
+  if (kind === 'application') return 'Applications'
+  if (kind === 'window') return 'Windows'
+  return 'Displays'
 }
