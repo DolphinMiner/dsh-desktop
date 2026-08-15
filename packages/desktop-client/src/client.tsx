@@ -1,7 +1,7 @@
 import type { CSSProperties, FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   Button,
   IconCloseOutline16,
@@ -30,6 +30,7 @@ import type {
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { canReconnect, connectionStateDot, connectionStatusLabel } from './view-model.js'
+import { runDesktopCommand } from './desktop-command.js'
 
 interface OAuthResultNotice {
   ok: boolean
@@ -577,92 +578,17 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
   )
 }
 
-interface SnapshotSource<T> {
-  getSnapshot(): T
-  subscribe(listener: () => void): () => void
-}
-
-function waitForSnapshot<T>(
-  source: SnapshotSource<T>,
-  ready: (snapshot: T) => boolean,
-  timeoutMs = 10_000,
-): Promise<T> {
-  const current = source.getSnapshot()
-  if (ready(current)) return Promise.resolve(current)
-  return new Promise<T>((resolve, reject) => {
-    let settled = false
-    let unsubscribe = (): void => undefined
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    const finish = (result: () => void): void => {
-      if (settled) return
-      settled = true
-      if (timeout !== undefined) clearTimeout(timeout)
-      unsubscribe()
-      result()
-    }
-    const removeSubscription = source.subscribe(() => {
-      const snapshot = source.getSnapshot()
-      if (ready(snapshot)) finish(() => resolve(snapshot))
-    })
-    unsubscribe = removeSubscription
-    if (settled) {
-      removeSubscription()
-      return
-    }
-    timeout = setTimeout(() => {
-      finish(() => reject(new Error('Harness state did not become ready in time.')))
-    }, timeoutMs)
-  })
-}
-
-async function runDesktopCommand(ctx: ClientContext, command: DesktopRendererCommand): Promise<void> {
-  if (command.type === 'project.open') {
-    const path = await window.dshDesktop?.pickProjectDirectory()
-    if (path === undefined) throw new Error('The desktop directory picker is unavailable.')
-    if (path === null) return
-    const workspace = await ctx.workspaces.create({ path })
-    ctx.workspaces.startSession(workspace.workspaceId)
-    return
-  }
-  if (command.type === 'session.new') {
-    ctx.workspaces.startSession()
-    return
-  }
-  if (command.type === 'session.open') {
-    const sessions = await waitForSnapshot(ctx.sessions.list, snapshot => snapshot.phase === 'ready')
-    const sessionId = command.sessionId as SessionId
-    if (sessions.byId[sessionId] === undefined) throw new Error('The requested session no longer exists.')
-    ctx.sessions.open(sessionId)
-    return
-  }
-  if (command.type === 'workspace.open') {
-    const workspaces = await waitForSnapshot(ctx.workspaces.list, snapshot => snapshot.phase === 'ready')
-    const workspace = workspaces.items.find(item => item.workspaceId === command.workspaceId)
-    if (workspace === undefined) throw new Error('The requested workspace no longer exists.')
-    ctx.workspaces.startSession(workspace.workspaceId)
-    return
-  }
-  if (command.type === 'session.stop') {
-    const sessionId = command.sessionId as SessionId | undefined ?? ctx.sessions.list.getSnapshot().current
-    if (sessionId === undefined) return
-    const result = await ctx.sessions.binding(sessionId)?.session.cancel()
-    if (result !== undefined && !result.ok) throw new Error(result.error.message)
-    return
-  }
-  if (command.type === 'settings.open') {
-    openDesktopSettings(command.sectionId)
-    return
-  }
-  ctx.layout.toggleSidebar()
-}
-
 export const inject = ['slots', 'sessions', 'workspaces', 'layout']
 
 export function apply(ctx: ClientContext): void {
   const bridge = window.dshDesktop
   if (bridge !== undefined) {
     ctx.effect(() => bridge.onCommand(command => {
-      void runDesktopCommand(ctx, command).catch(error => {
+      void runDesktopCommand({
+        ctx,
+        pickProjectDirectory: () => bridge.pickProjectDirectory(),
+        openSettings: openDesktopSettings,
+      }, command).catch(error => {
         console.warn('Desktop command failed:', error instanceof Error ? error.message : String(error))
       })
     }), 'dsh-desktop: native command bridge')
