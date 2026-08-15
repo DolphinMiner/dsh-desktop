@@ -55,6 +55,10 @@ export interface GitReviewParams extends GitStatusParams {
   scope: GitReviewScope
 }
 
+export interface DesktopGitReviewInput extends GitDiscoverParams {
+  scope: GitReviewScope
+}
+
 export type GitReviewFileStatus =
   | 'added'
   | 'modified'
@@ -136,7 +140,7 @@ function parseStatusEntry(value: unknown): GitStatusEntry | undefined {
   }
 }
 
-function parseReviewScope(value: unknown): GitReviewScope | undefined {
+export function parseGitReviewScope(value: unknown): GitReviewScope | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'unstaged' || value.kind === 'staged') {
     return Object.keys(value).length === 1 ? { kind: value.kind } : undefined
@@ -187,7 +191,14 @@ export function parseGitStatusParams(value: unknown): GitStatusParams | undefine
 export function parseGitReviewParams(value: unknown): GitReviewParams | undefined {
   const base = parseGitStatusParams(value)
   if (base === undefined || !isRecord(value)) return undefined
-  const scope = parseReviewScope(value.scope)
+  const scope = parseGitReviewScope(value.scope)
+  return scope === undefined ? undefined : { ...base, scope }
+}
+
+export function parseDesktopGitReviewInput(value: unknown): DesktopGitReviewInput | undefined {
+  const base = parseGitDiscoverParams(value)
+  if (base === undefined || !isRecord(value)) return undefined
+  const scope = parseGitReviewScope(value.scope)
   return scope === undefined ? undefined : { ...base, scope }
 }
 
@@ -223,7 +234,7 @@ export function parseGitStatusSnapshot(value: unknown): GitStatusSnapshot | unde
 export function parseGitReviewSnapshot(value: unknown): GitReviewSnapshot | undefined {
   if (!isRecord(value)) return undefined
   const repository = parseRepository(value.repository)
-  const scope = parseReviewScope(value.scope)
+  const scope = parseGitReviewScope(value.scope)
   if (repository === undefined || scope === undefined || !Array.isArray(value.files) ||
     value.files.length > MAX_STATUS_ENTRIES || typeof value.patch !== 'string' ||
     value.patch.length > MAX_PATCH_LENGTH || value.patch.includes('\0')) return undefined

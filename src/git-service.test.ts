@@ -173,6 +173,7 @@ test('reads authoritative unstaged, staged, commit, and merge-base review scopes
     patchAvailable: false,
   }])
   assert.match(unstaged.patch, /diff --git a\/README\.md b\/README\.md/)
+  assert.match(unstaged.patch, /^index [a-f0-9]{40}\.\.[a-f0-9]{40}(?:\s|$)/m)
   assert.doesNotMatch(unstaged.patch, /untracked\.txt/)
 
   const staged = await service.review(canonicalRoot, { kind: 'staged' })

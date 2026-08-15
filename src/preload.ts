@@ -29,6 +29,9 @@ const bridge: DesktopBridge = {
     for (const command of pendingCommands.splice(0)) listener(command)
     return () => { commandListeners.delete(listener) }
   },
+  git: {
+    review: input => ipcRenderer.invoke('desktop:git:review', input),
+  },
   computer: {
     getState: () => ipcRenderer.invoke('desktop:computer:get-state'),
     refresh: () => ipcRenderer.invoke('desktop:computer:refresh'),

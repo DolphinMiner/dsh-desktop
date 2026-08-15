@@ -11,6 +11,7 @@ import {
   parseCapabilityResult,
   parseConnectApiKeyInput,
   parseDesktopProtocolMessage,
+  parseDesktopGitReviewInput,
   parseRendererCommand,
   isLikelyReadOnlyMcpTool,
   parseComputerActParams,
@@ -132,6 +133,17 @@ test('validates desktop commands and session activity reports', () => {
 
 test('validates bounded Git capability contracts', () => {
   const workspace = { sessionId: 'session-1', workspaceRoot: '/repo' }
+  assert.deepEqual(parseDesktopGitReviewInput({
+    ...workspace,
+    scope: { kind: 'branch', baseRef: 'main' },
+  }), {
+    ...workspace,
+    scope: { kind: 'branch', baseRef: 'main' },
+  })
+  assert.equal(parseDesktopGitReviewInput({
+    ...workspace,
+    scope: { kind: 'branch', baseRef: 'main\n--output=/tmp/result' },
+  }), undefined)
   assert.deepEqual(parseCapabilityParams('git.discover', workspace), workspace)
   assert.deepEqual(parseCapabilityParams('git.status', {
     ...workspace,

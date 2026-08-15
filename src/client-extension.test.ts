@@ -20,6 +20,7 @@ test('packages desktop settings and navigation through the official Harness load
   assert.equal(manifest.dsh?.client?.platform, 'web')
   assert.deepEqual(manifest.dsh?.client?.inject, [
     '@deepseek-ai/dsh-client-runtime',
+    '@deepseek-ai/dsh-client-ui-conversation',
     '@deepseek-ai/dsh-client-ui-layout',
     '@deepseek-ai/dsh-client-ui-sidebar',
     '@deepseek-ai/dsh-client-ui-settings',
@@ -29,6 +30,7 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /id: "@dolphinminer\/dsh-desktop-client"/)
   assert.match(bundle, /id: "connections"/)
   assert.match(bundle, /id: "computer"/)
+  assert.match(bundle, /id: "review"/)
   assert.match(bundle, /id: "desktop-settings"/)
   assert.match(bundle, /Screen Recording/)
   assert.match(bundle, /Allow for this session/)
@@ -37,5 +39,6 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /pauseActions/)
   assert.match(bundle, /resumeActions/)
   assert.match(bundle, /revokeActions/)
+  assert.match(bundle, /Git review/)
   assert.match(bundle, /project\.open/)
 })

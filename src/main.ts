@@ -21,6 +21,7 @@ import {
   parseCancelOAuthInput,
   parseConnectApiKeyInput,
   parseDisconnectConnectionInput,
+  parseDesktopGitReviewInput,
   parseSelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -97,6 +98,13 @@ function assertActiveWorkspace(sessionId: string, workspaceRoot: string, signal:
   }
   if (!activityTracker.isRunningInWorkspace(sessionId, workspaceRoot)) {
     throw new WorkspacePathError('BAD_MESSAGE', 'The workspace is not active for this running session.')
+  }
+}
+
+function assertKnownWorkspace(sessionId: string, workspaceRoot: string, signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException('The desktop Git request was cancelled.', 'AbortError')
+  if (!activityTracker.isKnownInWorkspace(sessionId, workspaceRoot)) {
+    throw new WorkspacePathError('BAD_MESSAGE', 'The workspace does not belong to this Harness session.')
   }
 }
 
@@ -386,7 +394,11 @@ function publishRecoveryExhausted(maxAttempts: number): void {
   })
 }
 
-function installIpcHandlers(connections: ConnectionManager, computer: ComputerObserver): void {
+function installIpcHandlers(
+  connections: ConnectionManager,
+  computer: ComputerObserver,
+  git: WorkspaceGitCapabilityService,
+): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
     const loadingPageUrl = pathToFileURL(loadingPagePath()).href
@@ -421,6 +433,13 @@ function installIpcHandlers(connections: ConnectionManager, computer: ComputerOb
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('desktop:git:review', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopGitReviewInput(value))
+    const signal = new AbortController().signal
+    const repository = await git.discover(input, signal)
+    return git.review({ ...input, repositoryRoot: repository.root }, signal)
   })
   ipcMain.handle('desktop:computer:get-state', event => {
     assertTrustedSender(event)
@@ -634,8 +653,12 @@ app.whenReady().then(async () => {
   )
   await computerObserver.stop()
 
+  const gitService = new GitService()
+  const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
+  const reviewWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertKnownWorkspace)
+
   installMenu()
-  installIpcHandlers(connections, computerObserver)
+  installIpcHandlers(connections, computerObserver, reviewWorkspaceGit)
 
   windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {
     onError: error => console.error('Could not persist the desktop window state.', error),
@@ -653,8 +676,6 @@ app.whenReady().then(async () => {
     packageRoot: app.getAppPath(),
     productVersion: app.getVersion(),
   })
-  const gitService = new GitService()
-  const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
   const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
   const worktreeManager = new WorktreeManager(
     gitService,

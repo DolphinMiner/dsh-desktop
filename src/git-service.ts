@@ -550,6 +550,7 @@ export class GitService {
       '--no-textconv',
       '--find-renames',
       '--find-copies',
+      '--full-index',
       '--submodule=short',
     ]
     let nameArgs: string[]

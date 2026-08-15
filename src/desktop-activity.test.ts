@@ -27,6 +27,8 @@ test('authorizes only the exact workspace of a running session', () => {
   tracker.report({ sessionId: 'one', eventSeq: 2, running: false, workspacePath: '/repo' })
   assert.equal(tracker.isRunning('one'), false)
   assert.equal(tracker.isRunningInWorkspace('one', '/repo'), false)
+  assert.equal(tracker.isKnownInWorkspace('one', '/repo'), true)
+  assert.equal(tracker.isKnownInWorkspace('one', '/other'), false)
 })
 
 test('clears all running state when the Harness lifecycle ends', () => {
@@ -34,4 +36,5 @@ test('clears all running state when the Harness lifecycle ends', () => {
   tracker.report({ sessionId: 'one', eventSeq: 1, running: true, workspacePath: '/repo' })
   tracker.clear()
   assert.deepEqual(tracker.snapshot(), { runningSessionIds: [], workspacePaths: {} })
+  assert.equal(tracker.isKnownInWorkspace('one', '/repo'), false)
 })

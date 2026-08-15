@@ -2,6 +2,7 @@ import type { CSSProperties, FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
   IconCheckOutline16,
@@ -49,6 +50,7 @@ import {
   connectionStatusLabel,
 } from './view-model.js'
 import { runDesktopCommand } from './desktop-command.js'
+import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 
 interface OAuthResultNotice {
   ok: boolean
@@ -83,6 +85,7 @@ declare global {
     dshDesktop?: {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
+      git: DesktopGitBridge
       computer: DesktopComputerBridge
       connections: DesktopConnectionsBridge
     }
@@ -1067,6 +1070,12 @@ export function apply(ctx: ClientContext): void {
     order: 13,
     label: 'Computer',
   }, ComputerSection))
+  ctx.slots.inject('conversation.view', () => ctx.slots.register({
+    name: 'conversation.view',
+    id: 'review',
+    order: 20,
+    label: 'Review',
+  }, (props: ConvViewProps) => <GitReviewView {...props} bridge={bridge?.git} />))
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'desktop-settings',

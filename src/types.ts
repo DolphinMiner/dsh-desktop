@@ -24,6 +24,9 @@ export interface DesktopBridge {
   pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+  git: {
+    review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
+  }
   computer: {
     getState(): Promise<ComputerControlSnapshot>
     refresh(): Promise<ComputerControlSnapshot>
@@ -55,5 +58,7 @@ import type {
   ComputerControlSnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
+  DesktopGitReviewInput,
+  GitReviewSnapshot,
   SelectComputerTargetInput,
 } from '@dolphinminer/dsh-desktop-protocol'

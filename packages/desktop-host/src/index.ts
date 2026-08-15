@@ -104,6 +104,12 @@ export async function apply(ctx: Context): Promise<void> {
 
   ctx.on('session/created', session => {
     if (session.header.cwd === undefined) return
+    void bridge.call('desktop.reportSessionActivity', {
+      sessionId: session.id,
+      eventSeq: session.seq,
+      running: false,
+      workspacePath: session.header.cwd,
+    }).catch(() => undefined)
     const claim = worktreeGuard.claim(session.id, session.header.cwd)
     if (!claim.managed) return
     void bridge.call('desktop.reportSessionBinding', {
