@@ -117,6 +117,7 @@ test('starts a healthy Harness and stops it cleanly', async () => {
 test('launches the explicit desktop profile instead of the web alias', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-argv-test-'))
   const argvPath = join(root, 'argv.json')
+  const observer = observePhase('ready')
   const service = new HarnessService({
     dshBin: FIXTURE_PATH,
     dshHome: join(root, 'home'),
@@ -124,11 +125,11 @@ test('launches the explicit desktop profile instead of the web alias', async () 
     logPath: join(root, 'logs', 'harness.log'),
     nodeExecutable: process.execPath,
     env: { DSH_TEST_MODE: 'ready', DSH_TEST_ARGV_PATH: argvPath },
-    onState: () => undefined,
+    onState: state => observer.onState(state),
   })
   try {
     await service.start()
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await observer.reached
     const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
     assert.deepEqual(argv.slice(0, 2), ['--profile', 'desktop'])
     assert.equal(argv.includes('web'), false)
