@@ -18,6 +18,7 @@ const unconfiguredGit = {
   status: () => Promise.reject(new Error('not configured')),
 }
 const unconfiguredWorktrees = {
+  snapshot: () => ({ revision: 0, worktrees: [] }),
   provision: () => Promise.reject(new Error('not configured')),
   reportSessionBinding: () => Promise.resolve({ managed: false }),
 }

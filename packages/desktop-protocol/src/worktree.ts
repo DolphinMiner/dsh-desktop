@@ -1,6 +1,7 @@
 const MAX_ID_LENGTH = 256
 const MAX_PATH_LENGTH = 4_096
 const MAX_REF_LENGTH = 1_024
+const MAX_WORKTREES = 10_000
 
 export type WorktreeExecutionMode = 'local' | 'worktree'
 export type WorktreeLifecycle =
@@ -51,6 +52,16 @@ export interface WorktreeSummary {
 export interface WorktreeSessionBindingResult {
   managed: boolean
   worktree?: WorktreeSummary
+}
+
+export interface WorktreeSnapshot {
+  revision: number
+  worktrees: WorktreeSummary[]
+}
+
+export interface WorktreeChangedEvent {
+  revision: number
+  worktree: WorktreeSummary
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -147,4 +158,28 @@ export function parseWorktreeSessionBindingResult(value: unknown): WorktreeSessi
   if (!value.managed) return value.worktree === undefined ? { managed: false } : undefined
   const worktree = parseWorktreeSummary(value.worktree)
   return worktree === undefined ? undefined : { managed: true, worktree }
+}
+
+export function parseWorktreeSnapshot(value: unknown): WorktreeSnapshot | undefined {
+  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 ||
+    !Array.isArray(value.worktrees) || value.worktrees.length > MAX_WORKTREES) return undefined
+  const worktrees = value.worktrees.map(parseWorktreeSummary)
+  if (worktrees.some(worktree => worktree === undefined)) return undefined
+  const summaries = worktrees as WorktreeSummary[]
+  const active = summaries.filter(worktree => worktree.lifecycle !== 'removed')
+  const checkoutPaths = active.map(worktree =>
+    worktree.executionMode === 'local' ? worktree.repositoryRoot : worktree.worktreePath!)
+  const requestingSessions = active.map(worktree => worktree.requestedBySessionId)
+  const boundSessions = active.flatMap(worktree => worktree.sessionId === undefined ? [] : [worktree.sessionId])
+  if (new Set(summaries.map(worktree => worktree.id)).size !== summaries.length ||
+    new Set(checkoutPaths).size !== checkoutPaths.length ||
+    new Set(requestingSessions).size !== requestingSessions.length ||
+    new Set(boundSessions).size !== boundSessions.length) return undefined
+  return { revision: Number(value.revision), worktrees: summaries }
+}
+
+export function parseWorktreeChangedEvent(value: unknown): WorktreeChangedEvent | undefined {
+  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0) return undefined
+  const worktree = parseWorktreeSummary(value.worktree)
+  return worktree === undefined ? undefined : { revision: Number(value.revision), worktree }
 }

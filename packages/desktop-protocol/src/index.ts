@@ -26,10 +26,14 @@ import {
   parseWorktreeProvisionParams,
   parseWorktreeSessionBindingParams,
   parseWorktreeSessionBindingResult,
+  parseWorktreeSnapshot,
+  parseWorktreeChangedEvent,
   parseWorktreeSummary,
   WorktreeProvisionParams,
   WorktreeSessionBindingParams,
   WorktreeSessionBindingResult,
+  WorktreeSnapshot,
+  WorktreeChangedEvent,
   WorktreeSummary,
 } from './worktree.js'
 
@@ -37,7 +41,7 @@ export * from './computer.js'
 export * from './git.js'
 export * from './worktree.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 8 as const
+export const DESKTOP_PROTOCOL_VERSION = 9 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -239,6 +243,10 @@ export interface DesktopCapabilityMap {
     params: WorktreeProvisionParams
     result: WorktreeSummary
   }
+  'worktrees.list': {
+    params: Record<string, never>
+    result: WorktreeSnapshot
+  }
   'desktop.reportSessionBinding': {
     params: WorktreeSessionBindingParams
     result: WorktreeSessionBindingResult
@@ -261,6 +269,7 @@ export interface DesktopEventMap {
   'connections.changed': {
     revision: number
   }
+  'worktrees.changed': WorktreeChangedEvent
 }
 
 export type DesktopCapabilityMethod = keyof DesktopCapabilityMap
@@ -558,9 +567,15 @@ export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMess
   if (!isRecord(value) || !hasEnvelope(value)) return undefined
 
   if (value.kind === 'event') {
-    if (value.event !== 'connections.changed' || !isRecord(value.data) ||
-      !Number.isSafeInteger(value.data.revision) || Number(value.data.revision) < 0) return undefined
-    return createEvent('connections.changed', { revision: Number(value.data.revision) })
+    if (value.event === 'connections.changed' && isRecord(value.data) &&
+      Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
+      return createEvent('connections.changed', { revision: Number(value.data.revision) })
+    }
+    if (value.event === 'worktrees.changed') {
+      const data = parseWorktreeChangedEvent(value.data)
+      return data === undefined ? undefined : createEvent('worktrees.changed', data)
+    }
+    return undefined
   }
 
   if (!isBoundedString(value.id, MAX_ID_LENGTH)) return undefined
@@ -648,6 +663,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'worktrees.provision') {
     return parseWorktreeProvisionParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'worktrees.list') {
+    return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
+  }
   if (method === 'desktop.reportSessionBinding') {
     return parseWorktreeSessionBindingParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -723,6 +741,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'worktrees.provision') {
     return parseWorktreeSummary(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'worktrees.list') {
+    return parseWorktreeSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'desktop.reportSessionBinding') {
     return parseWorktreeSessionBindingResult(value) as DesktopCapabilityResult<M> | undefined

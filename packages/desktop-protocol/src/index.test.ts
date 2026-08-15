@@ -19,6 +19,7 @@ import {
   parseComputerPermissions,
   parseSelectComputerTargetInput,
   summarizeComputerAction,
+  WorktreeSummary,
 } from './index'
 
 test('round-trips a valid capability request', () => {
@@ -184,7 +185,7 @@ test('validates worktree provisioning without exposing operation internals', () 
   assert.deepEqual(parseCapabilityParams('worktrees.provision', params), params)
   assert.equal(parseCapabilityParams('worktrees.provision', { ...params, baseRef: 'main\n--force' }), undefined)
 
-  const summary = {
+  const summary: WorktreeSummary = {
     id: '11111111-1111-4111-8111-111111111111',
     repositoryRoot: '/repo',
     requestedBySessionId: 'session-1',
@@ -228,6 +229,19 @@ test('validates worktree provisioning without exposing operation internals', () 
   })
   assert.equal(parseCapabilityResult('desktop.reportSessionBinding', {
     managed: true,
+  }), undefined)
+  const snapshot = { revision: 7, worktrees: [summary] }
+  assert.deepEqual(parseCapabilityParams('worktrees.list', {}), {})
+  assert.deepEqual(parseCapabilityResult('worktrees.list', snapshot), snapshot)
+  assert.equal(parseCapabilityResult('worktrees.list', {
+    revision: 7,
+    worktrees: [summary, { ...summary }],
+  }), undefined)
+  const changed = createEvent('worktrees.changed', { revision: 8, worktree: summary })
+  assert.deepEqual(parseDesktopProtocolMessage(changed), changed)
+  assert.equal(parseDesktopProtocolMessage({
+    ...changed,
+    data: { revision: -1, worktree: summary },
   }), undefined)
 })
 

@@ -26,6 +26,7 @@ const git = {
 }
 
 const worktrees = {
+  snapshot: () => ({ revision: 0, worktrees: [] }),
   provision: () => Promise.reject(new Error('not configured')),
   reportSessionBinding: () => Promise.reject(new Error('not configured')),
 }
@@ -305,6 +306,7 @@ test('routes worktree provisioning as a caller-cancellable capability', async ()
     connections,
     git,
     worktrees: {
+      snapshot: () => ({ revision: 4, worktrees: [] }),
       provision: async (params, signal) => {
         assert.equal(signal.aborted, false)
         calls.push(`${params.operationId}:${params.requestedBySessionId}:${params.baseRef}`)
@@ -342,6 +344,10 @@ test('routes worktree provisioning as a caller-cancellable capability', async ()
     signal: new AbortController().signal,
   })
   assert.equal(result.lifecycle, 'ready')
+  assert.deepEqual(await handlers['worktrees.list']({}, {
+    requestId: 'worktree-list-1',
+    signal: new AbortController().signal,
+  }), { revision: 4, worktrees: [] })
   assert.deepEqual(await handlers['desktop.reportSessionBinding']({
     sessionId: 'session-created',
     workspacePath: '/other',

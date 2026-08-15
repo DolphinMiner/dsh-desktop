@@ -18,9 +18,11 @@ import {
 } from './bridge.js'
 import { CordisMcpMountFactory } from './cordis-mcp.js'
 import { DesktopConnectionClient, McpConnectionSupervisor } from './mcp-supervisor.js'
+import { WorktreeSessionGuard } from './worktree-guard.js'
 
 export * from './bridge.js'
 export * from './mcp-supervisor.js'
+export * from './worktree-guard.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -68,10 +70,14 @@ export async function apply(ctx: Context): Promise<void> {
       bridge.call('connections.reportStatus', params),
   }
   const supervisor = new McpConnectionSupervisor(connections, new CordisMcpMountFactory(ctx))
+  const worktreeGuard = new WorktreeSessionGuard()
   ctx.effect(() => () => supervisor.dispose(), 'dsh-desktop: MCP connection supervisor')
 
   bridge.on('connections.changed', () => {
     void supervisor.reconcile().catch(() => undefined)
+  })
+  bridge.on('worktrees.changed', event => {
+    worktreeGuard.applyChange(event)
   })
   ctx.on('tools/change', () => {
     void supervisor.refreshTools().catch(() => undefined)
@@ -94,8 +100,12 @@ export async function apply(ctx: Context): Promise<void> {
     ctx.logger('dsh-desktop').warn('desktop capability bridge unavailable: %s', message)
   })
 
+  worktreeGuard.applySnapshot(await bridge.call('worktrees.list', {}))
+
   ctx.on('session/created', session => {
     if (session.header.cwd === undefined) return
+    const claim = worktreeGuard.claim(session.id, session.header.cwd)
+    if (!claim.managed) return
     void bridge.call('desktop.reportSessionBinding', {
       sessionId: session.id,
       workspacePath: session.header.cwd,

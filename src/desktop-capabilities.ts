@@ -15,6 +15,7 @@ import {
   WorktreeProvisionParams,
   WorktreeSessionBindingParams,
   WorktreeSessionBindingResult,
+  WorktreeSnapshot,
   WorktreeSummary,
   McpTransportDescriptor,
   DesktopNotificationParams,
@@ -59,6 +60,7 @@ export interface DesktopCapabilityDependencies {
     status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
   }
   worktrees: {
+    snapshot(): WorktreeSnapshot
     provision(params: WorktreeProvisionParams, signal: AbortSignal): Promise<WorktreeSummary>
     reportSessionBinding(
       params: WorktreeSessionBindingParams,
@@ -106,6 +108,7 @@ export function createDesktopCapabilityHandlers(
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
     'git.status': (params, context) => dependencies.git.status(params, context.signal),
     'worktrees.provision': (params, context) => dependencies.worktrees.provision(params, context.signal),
+    'worktrees.list': () => dependencies.worktrees.snapshot(),
     'desktop.reportSessionBinding': (params, context) =>
       dependencies.worktrees.reportSessionBinding(params, context.signal),
     'connections.list': () => dependencies.connections.snapshot(),

@@ -655,9 +655,10 @@ app.whenReady().then(async () => {
   })
   const gitService = new GitService()
   const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
+  const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
   const worktreeManager = new WorktreeManager(
     gitService,
-    new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json')),
+    worktreeRegistry,
     join(desktopDataPath, 'worktrees'),
     assertActiveWorkspace,
   )
@@ -700,8 +701,14 @@ app.whenReady().then(async () => {
       status: (params, signal) => workspaceGit.status(params, signal),
     },
     worktrees: {
+      snapshot: () => worktreeManager.snapshot(),
       provision: async (params, signal) => {
         const result = await worktreeManager.provision(params, signal)
+        const summary = summarizeWorktreeRecord(result.record)
+        harness?.send(createEvent('worktrees.changed', {
+          revision: worktreeRegistry.status().revision,
+          worktree: summary,
+        }))
         if (result.created && result.record.worktreePath !== undefined) {
           const command: DesktopRendererCommand = {
             type: 'worktree.open',
@@ -712,13 +719,17 @@ app.whenReady().then(async () => {
             dispatchRendererCommand(command)
           })
         }
-        return summarizeWorktreeRecord(result.record)
+        return summary
       },
       reportSessionBinding: async (params, signal) => {
         const record = await worktreeManager.bindSession(params, signal)
-        return record === undefined
-          ? { managed: false }
-          : { managed: true, worktree: summarizeWorktreeRecord(record) }
+        if (record === undefined) return { managed: false }
+        const summary = summarizeWorktreeRecord(record)
+        harness?.send(createEvent('worktrees.changed', {
+          revision: worktreeRegistry.status().revision,
+          worktree: summary,
+        }))
+        return { managed: true, worktree: summary }
       },
     },
     computer: {

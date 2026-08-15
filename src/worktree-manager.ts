@@ -2,11 +2,16 @@ import { createHash } from 'node:crypto'
 import { mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-import type { DesktopProtocolError, GitRepositoryIdentity } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  DesktopProtocolError,
+  GitRepositoryIdentity,
+  WorktreeSnapshot,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { GitCreateWorktreeInput, GitServiceError } from './git-service'
 import type { WorkspaceGitAuthorizer } from './workspace-git'
 import {
+  summarizeWorktreeRecord,
   WorktreeRecord,
   WorktreeRegistry,
   WorktreeRegistryError,
@@ -109,6 +114,19 @@ export class WorktreeManager {
     private readonly managedRoot: string,
     private readonly authorize: WorkspaceGitAuthorizer,
   ) {}
+
+  snapshot(): WorktreeSnapshot {
+    const status = this.registry.status()
+    if (!status.available) {
+      throw new WorktreeManagerError('DESKTOP_UNAVAILABLE', status.message ?? 'The worktree registry is unavailable.')
+    }
+    return {
+      revision: status.revision,
+      worktrees: this.registry.list()
+        .filter(record => record.lifecycle !== 'removed')
+        .map(summarizeWorktreeRecord),
+    }
+  }
 
   async provision(input: ProvisionWorktreeInput, signal: AbortSignal): Promise<ProvisionWorktreeResult> {
     validateInput(input)
