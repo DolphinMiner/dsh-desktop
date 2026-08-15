@@ -2,6 +2,12 @@ import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { realpath, stat } from 'node:fs/promises'
 import type { Readable } from 'node:stream'
 
+import type {
+  GitRepositoryIdentity,
+  GitStatusEntry,
+  GitStatusSnapshot,
+} from '@dolphinminer/dsh-desktop-protocol'
+
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 const MAX_ERROR_MESSAGE_LENGTH = 2_000
@@ -21,38 +27,6 @@ export class GitServiceError extends Error {
     super(message)
     this.name = 'GitServiceError'
   }
-}
-
-export interface GitRepositoryIdentity {
-  root: string
-  gitDir: string
-  commonDir: string
-}
-
-export type GitStatusEntryKind =
-  | 'ordinary'
-  | 'renamed'
-  | 'unmerged'
-  | 'untracked'
-  | 'ignored'
-
-export interface GitStatusEntry {
-  kind: GitStatusEntryKind
-  path: string
-  originalPath?: string
-  indexStatus: string
-  worktreeStatus: string
-}
-
-export interface GitStatusSnapshot {
-  repository: GitRepositoryIdentity
-  head?: string
-  branch?: string
-  upstream?: string
-  ahead: number
-  behind: number
-  clean: boolean
-  entries: GitStatusEntry[]
 }
 
 export interface GitServiceOptions {

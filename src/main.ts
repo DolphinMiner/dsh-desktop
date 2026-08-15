@@ -36,6 +36,7 @@ import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
 import { HarnessRecoveryController, HarnessRecoverySchedule } from './harness-recovery'
+import { GitService } from './git-service'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
@@ -43,6 +44,7 @@ import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
+import { WorkspaceGitCapabilityService } from './workspace-git'
 
 app.setName('DSH Desktop')
 const developmentUserData = app.isPackaged ? undefined : process.env.DSH_DESKTOP_USER_DATA?.trim()
@@ -649,6 +651,8 @@ app.whenReady().then(async () => {
     packageRoot: app.getAppPath(),
     productVersion: app.getVersion(),
   })
+  const gitService = new GitService()
+  const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
   const capabilityBroker = new DesktopCapabilityBroker(createDesktopCapabilityHandlers({
     isAppFocused: () => mainWindow?.isFocused() ?? false,
     notifications: {
@@ -682,6 +686,10 @@ app.whenReady().then(async () => {
         if (error !== '') throw new Error(`The operating system could not open this file: ${error}`)
         return { opened: true, path }
       },
+    },
+    git: {
+      discover: (params, signal) => workspaceGit.discover(params, signal),
+      status: (params, signal) => workspaceGit.status(params, signal),
     },
     computer: {
       getPermissions: signal => computerObserver!.getPermissions(signal),

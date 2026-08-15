@@ -12,10 +12,21 @@ import {
   parseComputerObservation,
   parseComputerPermissions,
 } from './computer.js'
+import {
+  GitDiscoverParams,
+  GitRepositoryIdentity,
+  GitStatusParams,
+  GitStatusSnapshot,
+  parseGitDiscoverParams,
+  parseGitRepositoryIdentity,
+  parseGitStatusParams,
+  parseGitStatusSnapshot,
+} from './git.js'
 
 export * from './computer.js'
+export * from './git.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 6 as const
+export const DESKTOP_PROTOCOL_VERSION = 7 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -203,6 +214,14 @@ export interface DesktopCapabilityMap {
   'computer.act': {
     params: ComputerActParams
     result: ComputerActionResult
+  }
+  'git.discover': {
+    params: GitDiscoverParams
+    result: GitRepositoryIdentity
+  }
+  'git.status': {
+    params: GitStatusParams
+    result: GitStatusSnapshot
   }
   'connections.list': {
     params: Record<string, never>
@@ -593,6 +612,12 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'computer.act') {
     return parseComputerActParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'git.discover') {
+    return parseGitDiscoverParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'git.status') {
+    return parseGitStatusParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -656,6 +681,12 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'computer.act') {
     return parseComputerActionResult(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'git.discover') {
+    return parseGitRepositoryIdentity(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'git.status') {
+    return parseGitStatusSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined

@@ -20,6 +20,11 @@ const workspaceFiles = {
   open: () => Promise.reject(new Error('not configured')),
 }
 
+const git = {
+  discover: () => Promise.reject(new Error('not configured')),
+  status: () => Promise.reject(new Error('not configured')),
+}
+
 test('suppresses native notifications while the app is focused', async () => {
   let shown = 0
   const handlers = createDesktopCapabilityHandlers({
@@ -30,6 +35,7 @@ test('suppresses native notifications while the app is focused', async () => {
     },
     sessionActivity: { report: () => true },
     workspaceFiles,
+    git,
     connections,
   })
 
@@ -54,6 +60,7 @@ test('reports unsupported notifications and dispatches supported notifications o
     },
     sessionActivity: { report: () => true },
     workspaceFiles,
+    git,
     connections,
   })
   const context = { requestId: 'notify-2', signal: new AbortController().signal }
@@ -82,6 +89,7 @@ test('projects session activity through the desktop-owned tracker', async () => 
       },
     },
     workspaceFiles,
+    git,
     connections,
   })
 
@@ -114,6 +122,7 @@ test('dispatches workspace file capabilities with caller cancellation', async ()
         return { opened: true, path: `/repo/${params.path}` }
       },
     },
+    git,
     connections,
   })
   const context = { requestId: 'path-1', signal: new AbortController().signal }
@@ -169,6 +178,7 @@ test('routes bounded computer observation and action capabilities', async () => 
     notifications: { isSupported: () => false, show: () => undefined },
     sessionActivity: { report: () => true },
     workspaceFiles,
+    git,
     connections,
     computer: {
       getPermissions: async signal => {
@@ -234,4 +244,42 @@ test('routes bounded computer observation and action capabilities', async () => 
     },
   }, context)).observation.snapshotId, 'snapshot-2')
   assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1', 'act:session-1:click'])
+})
+
+test('routes workspace-bound Git discovery and status with caller cancellation', async () => {
+  const calls: string[] = []
+  const repository = { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' }
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    connections,
+    git: {
+      discover: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`discover:${params.sessionId}:${params.workspaceRoot}`)
+        return repository
+      },
+      status: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`status:${params.repositoryRoot}`)
+        return {
+          repository,
+          head: 'a'.repeat(40),
+          branch: 'main',
+          ahead: 0,
+          behind: 0,
+          clean: true,
+          entries: [],
+        }
+      },
+    },
+  })
+  const context = { requestId: 'git-1', signal: new AbortController().signal }
+  const workspace = { sessionId: 'session-1', workspaceRoot: '/repo' }
+
+  assert.deepEqual(await handlers['git.discover'](workspace, context), repository)
+  assert.equal((await handlers['git.status']({ ...workspace, repositoryRoot: '/repo' }, context)).clean, true)
+  assert.deepEqual(calls, ['discover:session-1:/repo', 'status:/repo'])
 })

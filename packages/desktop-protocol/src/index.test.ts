@@ -120,6 +120,51 @@ test('validates desktop commands and session activity reports', () => {
   })
 })
 
+test('validates bounded Git capability contracts', () => {
+  const workspace = { sessionId: 'session-1', workspaceRoot: '/repo' }
+  assert.deepEqual(parseCapabilityParams('git.discover', workspace), workspace)
+  assert.deepEqual(parseCapabilityParams('git.status', {
+    ...workspace,
+    repositoryRoot: '/repo',
+  }), {
+    ...workspace,
+    repositoryRoot: '/repo',
+  })
+  assert.equal(parseCapabilityParams('git.status', {
+    ...workspace,
+    repositoryRoot: '',
+  }), undefined)
+
+  const repository = { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' }
+  assert.deepEqual(parseCapabilityResult('git.discover', repository), repository)
+  const status = {
+    repository,
+    head: 'a'.repeat(40),
+    branch: 'main',
+    upstream: 'origin/main',
+    ahead: 1,
+    behind: 2,
+    clean: false,
+    entries: [{
+      kind: 'renamed',
+      path: 'new file.ts',
+      originalPath: 'old file.ts',
+      indexStatus: 'R',
+      worktreeStatus: '.',
+    }],
+  }
+  assert.deepEqual(parseCapabilityResult('git.status', status), status)
+  assert.equal(parseCapabilityResult('git.status', { ...status, clean: true }), undefined)
+  assert.equal(parseCapabilityResult('git.status', {
+    ...status,
+    upstream: undefined,
+  }), undefined)
+  assert.equal(parseCapabilityResult('git.status', {
+    ...status,
+    entries: [{ ...status.entries[0], originalPath: undefined }],
+  }), undefined)
+})
+
 test('validates bounded computer permissions and observations', () => {
   assert.deepEqual(parseComputerPermissions({
     supported: true,

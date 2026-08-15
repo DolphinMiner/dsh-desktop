@@ -23,6 +23,10 @@ function testHandlers() {
       reveal: () => Promise.reject(new Error('not configured')),
       open: () => Promise.reject(new Error('not configured')),
     },
+    git: {
+      discover: () => Promise.reject(new Error('not configured')),
+      status: () => Promise.reject(new Error('not configured')),
+    },
     connections: {
       snapshot: () => ({
         revision: 0,

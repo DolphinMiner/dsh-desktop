@@ -1,5 +1,7 @@
 import { createServer } from 'node:http'
 
+import { DESKTOP_PROTOCOL_VERSION } from '@dolphinminer/dsh-desktop-protocol'
+
 let mode = process.env.DSH_TEST_MODE
 
 if (mode === 'recover-once' || mode === 'capability-exit-once') {
@@ -41,7 +43,7 @@ if (mode === 'ready' || mode === 'capability') {
       if (typeof process.send !== 'function') process.exit(3)
       process.send({
         channel: 'dsh-desktop',
-        version: 6,
+        version: DESKTOP_PROTOCOL_VERSION,
         kind: 'request',
         id: 'fixture-ping',
         method: 'desktop.ping',
@@ -60,7 +62,7 @@ if (mode === 'ready' || mode === 'capability') {
   if (typeof process.send !== 'function') process.exit(3)
   process.send({
     channel: 'dsh-desktop',
-    version: 6,
+    version: DESKTOP_PROTOCOL_VERSION,
     kind: 'request',
     id: 'fixture-open',
     method: 'desktop.openPath',

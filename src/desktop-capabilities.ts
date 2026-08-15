@@ -8,6 +8,10 @@ import {
   ComputerActionResult,
   ComputerObservation,
   ComputerPermissions,
+  GitDiscoverParams,
+  GitRepositoryIdentity,
+  GitStatusParams,
+  GitStatusSnapshot,
   McpTransportDescriptor,
   DesktopNotificationParams,
   DesktopSessionActivityParams,
@@ -45,6 +49,10 @@ export interface DesktopCapabilityDependencies {
     listApplications(signal: AbortSignal): Promise<ComputerApplicationList>
     observe(sessionId: string, signal: AbortSignal): Promise<ComputerObservation>
     act(params: ComputerActParams, signal: AbortSignal): Promise<ComputerActionResult>
+  }
+  git: {
+    discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity>
+    status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
   }
 }
 
@@ -84,6 +92,8 @@ export function createDesktopCapabilityHandlers(
       dependencies.computer?.observe(params.sessionId, context.signal) ?? unsupportedComputer(),
     'computer.act': (params, context) =>
       dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
+    'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
+    'git.status': (params, context) => dependencies.git.status(params, context.signal),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

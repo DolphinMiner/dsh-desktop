@@ -30,6 +30,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'computer_observe',
     'desktop_reveal_file',
     'desktop_open_file',
+    'desktop_git_status',
     'computer_click',
     'computer_click_at',
     'computer_type',
@@ -63,6 +64,57 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     kind: 'ask',
     reason: 'This computer action can change another application. Approve this operation once to continue.',
   })
+})
+
+test('reads Git status only through the current workspace repository identity', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: unknown }> = []
+  const repository = { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' }
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: unknown) => {
+        calls.push({ method, params })
+        if (method === 'git.discover') return repository
+        return {
+          repository,
+          head: 'a'.repeat(40),
+          branch: 'main',
+          ahead: 0,
+          behind: 0,
+          clean: false,
+          entries: Array.from({ length: 501 }, (_, index) => ({
+            kind: 'untracked',
+            path: `file-${String(index)}.txt`,
+            indexStatus: '?',
+            worktreeStatus: '?',
+          })),
+        }
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+
+  const tool = definitions.find(definition => definition.name === 'desktop_git_status')!
+  const result = await tool.execute({}, {
+    agent: { id: 'session-git', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never) as { totalEntries: number; entriesTruncated: boolean; entries: unknown[] }
+
+  assert.deepEqual(calls, [
+    {
+      method: 'git.discover',
+      params: { sessionId: 'session-git', workspaceRoot: '/repo' },
+    },
+    {
+      method: 'git.status',
+      params: { sessionId: 'session-git', workspaceRoot: '/repo', repositoryRoot: '/repo' },
+    },
+  ])
+  assert.equal(result.totalEntries, 501)
+  assert.equal(result.entriesTruncated, true)
+  assert.equal(result.entries.length, 500)
 })
 
 test('refuses a desktop file action without an authoritative workspace', async () => {

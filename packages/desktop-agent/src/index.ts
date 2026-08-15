@@ -17,6 +17,8 @@ const OUTPUT_SCHEMA = {
 
 const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
+const GIT_READ_TIMEOUT_MS = 35_000
+const MAX_AGENT_GIT_ENTRIES = 500
 const COMPUTER_ACTION_TOOLS = new Set([
   'computer_click',
   'computer_click_at',
@@ -172,6 +174,37 @@ export function apply(ctx: Context): void {
         ...agentWorkspace(exec),
         path: args.path,
       }, { signal: exec.signal })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_git_status',
+    description: 'Read the authoritative Git branch and working-tree status for the current workspace repository.',
+    parameters: {},
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Read Git status', kind: 'read' }),
+    timeoutMs: GIT_READ_TIMEOUT_MS * 2 + 5_000,
+    async execute(_args, exec) {
+      const workspace = agentWorkspace(exec)
+      const repository = await ctx.desktopBridge.call(
+        'git.discover',
+        workspace,
+        { signal: exec.signal, timeoutMs: GIT_READ_TIMEOUT_MS },
+      )
+      const status = await ctx.desktopBridge.call(
+        'git.status',
+        { ...workspace, repositoryRoot: repository.root },
+        { signal: exec.signal, timeoutMs: GIT_READ_TIMEOUT_MS },
+      )
+      return JSON.parse(JSON.stringify({
+        ...status,
+        totalEntries: status.entries.length,
+        entriesTruncated: status.entries.length > MAX_AGENT_GIT_ENTRIES,
+        entries: status.entries.slice(0, MAX_AGENT_GIT_ENTRIES),
+      }))
     },
   }))
 

@@ -13,6 +13,24 @@ import { HarnessService } from './harness-service'
 import { HarnessPhase, HarnessState } from './types'
 
 const FIXTURE_PATH = join(process.cwd(), 'test', 'fixtures', 'fake-harness.mjs')
+const unconfiguredGit = {
+  discover: () => Promise.reject(new Error('not configured')),
+  status: () => Promise.reject(new Error('not configured')),
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 2_000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
 
 interface StateObserver {
   states: HarnessState[]
@@ -128,6 +146,7 @@ test('routes a child-process capability request through the desktop broker', asy
       reveal: () => Promise.reject(new Error('not configured')),
       open: () => Promise.reject(new Error('not configured')),
     },
+    git: unconfiguredGit,
     connections: {
       snapshot: () => ({
         revision: 0,
@@ -155,7 +174,7 @@ test('routes a child-process capability request through the desktop broker', asy
   })
   try {
     await service.start()
-    assert.equal(await ping, 'from-child')
+    assert.equal(await withTimeout(ping, 'fixture capability request'), 'from-child')
   } finally {
     await service.stop()
     await rm(root, { recursive: true, force: true })
@@ -272,6 +291,7 @@ test('cancels pending desktop work and recovers without replay after a Harness c
         })
       },
     },
+    git: unconfiguredGit,
     connections: {
       snapshot: () => ({
         revision: 0,
@@ -307,7 +327,7 @@ test('cancels pending desktop work and recovers without replay after a Harness c
 
   try {
     await recovery.restartNow()
-    await Promise.all([observer.reached, cancelled])
+    await Promise.all([observer.reached, withTimeout(cancelled, 'capability cancellation')])
     await new Promise(resolve => setTimeout(resolve, 30))
 
     assert.equal(openCalls, 1)
