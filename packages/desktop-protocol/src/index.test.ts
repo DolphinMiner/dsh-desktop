@@ -304,6 +304,12 @@ test('validates worktree provisioning without exposing operation internals', () 
     ...changed,
     data: { revision: -1, worktree: summary },
   }), undefined)
+  const snapshotEvent = createEvent('worktrees.snapshot', snapshot)
+  assert.deepEqual(parseDesktopProtocolMessage(snapshotEvent), snapshotEvent)
+  assert.equal(parseDesktopProtocolMessage(createEvent('worktrees.snapshot', {
+    revision: 8,
+    worktrees: [summary, summary],
+  })), undefined)
 })
 
 test('validates bounded computer permissions and observations', () => {

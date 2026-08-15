@@ -439,6 +439,7 @@ function installIpcHandlers(
   worktreeCleanup: WorktreeCleanupController,
   worktreeHandoff: WorktreeHandoffController,
   publishWorktreeChange: (worktree: WorktreeSummary) => void,
+  publishWorktreeReconciliation: (snapshot: ReturnType<WorktreeManager['snapshot']>) => void,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
     const senderUrl = event.senderFrame?.url ?? ''
@@ -538,6 +539,12 @@ function installIpcHandlers(
   ipcMain.handle('desktop:worktrees:list', event => {
     assertTrustedSender(event)
     return worktrees.snapshot()
+  })
+  ipcMain.handle('desktop:worktrees:reconcile', async event => {
+    assertTrustedSender(event)
+    const result = await worktrees.reconcile(new AbortController().signal)
+    publishWorktreeReconciliation(result.snapshot)
+    return result.snapshot
   })
   ipcMain.handle('desktop:worktrees:cleanup:preview', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -793,6 +800,14 @@ app.whenReady().then(async () => {
     join(desktopDataPath, 'worktrees'),
     assertActiveWorkspace,
   )
+  const publishWorktreeReconciliation = (
+    snapshot: ReturnType<WorktreeManager['snapshot']>,
+  ): void => {
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('desktop:worktrees:changed', snapshot)
+    }
+    harness?.send(createEvent('worktrees.snapshot', snapshot))
+  }
   const publishWorktreeChange = (worktree?: WorktreeSummary): void => {
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('desktop:worktrees:changed', worktreeManager.snapshot())
@@ -905,6 +920,7 @@ app.whenReady().then(async () => {
     worktreeCleanup,
     worktreeHandoff,
     publishWorktreeChange,
+    publishWorktreeReconciliation,
   )
 
   windowStateStore = new WindowStateStore(join(desktopDataPath, 'window-state.v1.json'), {

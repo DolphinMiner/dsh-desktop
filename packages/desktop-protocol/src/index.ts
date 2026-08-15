@@ -53,7 +53,7 @@ export * from './worktree.js'
 export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 10 as const
+export const DESKTOP_PROTOCOL_VERSION = 11 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -286,6 +286,7 @@ export interface DesktopEventMap {
     revision: number
   }
   'worktrees.changed': WorktreeChangedEvent
+  'worktrees.snapshot': WorktreeSnapshot
 }
 
 export type DesktopCapabilityMethod = keyof DesktopCapabilityMap
@@ -590,6 +591,10 @@ export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMess
     if (value.event === 'worktrees.changed') {
       const data = parseWorktreeChangedEvent(value.data)
       return data === undefined ? undefined : createEvent('worktrees.changed', data)
+    }
+    if (value.event === 'worktrees.snapshot') {
+      const data = parseWorktreeSnapshot(value.data)
+      return data === undefined ? undefined : createEvent('worktrees.snapshot', data)
     }
     return undefined
   }

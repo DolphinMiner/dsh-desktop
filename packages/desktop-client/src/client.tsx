@@ -96,6 +96,7 @@ interface DesktopComputerBridge {
 
 interface DesktopWorktreesBridge {
   list(): Promise<WorktreeSnapshot>
+  reconcile(): Promise<WorktreeSnapshot>
   previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
   confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
   previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
@@ -829,7 +830,7 @@ function WorktreesSection(): React.JSX.Element {
     }
     setLoading(true)
     try {
-      applySnapshot(await bridge.list())
+      applySnapshot(await bridge.reconcile())
       setError(undefined)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -964,8 +965,8 @@ function WorktreesSection(): React.JSX.Element {
           size="sm"
           variant="toolbar"
           icon={<IconRefreshOutline16 />}
-          aria-label="Refresh worktrees"
-          title="Refresh worktrees"
+          aria-label="Recheck worktrees"
+          title="Recheck worktrees"
           disabled={loading}
           onClick={() => void refresh()}
         />

@@ -55,3 +55,23 @@ test('applies monotonic changes and blocks unresolved recovery records', () => {
   }), true)
   assert.deepEqual(guard.claim('session-created', '/managed/worktree'), { managed: false })
 })
+
+test('replaces the complete projection from one monotonic reconciliation snapshot', () => {
+  const guard = new WorktreeSessionGuard()
+  const removed = worktree()
+  const recovered = worktree({
+    id: '22222222-2222-4222-8222-222222222222',
+    requestedBySessionId: 'session-recovered',
+    worktreePath: '/managed/recovered',
+    branch: 'refs/heads/dsh/session-recovered',
+  })
+  assert.equal(guard.applySnapshot({ revision: 5, worktrees: [removed] }), true)
+  assert.equal(guard.applySnapshot({ revision: 6, worktrees: [recovered] }), true)
+  assert.deepEqual(guard.claim('session-old', '/managed/worktree'), { managed: false })
+  assert.deepEqual(guard.claim('session-new', '/managed/recovered'), {
+    managed: true,
+    recordId: recovered.id,
+  })
+  assert.equal(guard.applySnapshot({ revision: 6, worktrees: [removed] }), false)
+  assert.deepEqual(guard.claim('session-old', '/managed/worktree'), { managed: false })
+})

@@ -79,6 +79,9 @@ export async function apply(ctx: Context): Promise<void> {
   bridge.on('worktrees.changed', event => {
     worktreeGuard.applyChange(event)
   })
+  bridge.on('worktrees.snapshot', snapshot => {
+    worktreeGuard.applySnapshot(snapshot)
+  })
   ctx.on('tools/change', () => {
     void supervisor.refreshTools().catch(() => undefined)
   })

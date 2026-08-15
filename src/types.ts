@@ -42,6 +42,7 @@ export interface DesktopBridge {
   }
   worktrees: {
     list(): Promise<WorktreeSnapshot>
+    reconcile(): Promise<WorktreeSnapshot>
     previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
     confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
     previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
