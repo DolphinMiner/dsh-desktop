@@ -212,11 +212,11 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'desktop_git_review',
-    description: 'Read an authoritative Git patch for unstaged, staged, commit, or branch-versus-merge-base review.',
+    description: 'Read an authoritative Git patch for unstaged, staged, commit, branch, or last completed turn review.',
     parameters: {
       scope: {
         type: 'string',
-        enum: ['unstaged', 'staged', 'commit', 'branch'],
+        enum: ['unstaged', 'staged', 'commit', 'branch', 'completed-turn'],
         required: true,
         description: 'Git review scope.',
       },

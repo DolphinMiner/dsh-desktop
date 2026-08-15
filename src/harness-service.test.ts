@@ -17,6 +17,7 @@ const unconfiguredGit = {
   discover: () => Promise.reject(new Error('not configured')),
   status: () => Promise.reject(new Error('not configured')),
   review: () => Promise.reject(new Error('not configured')),
+  reportTurnBoundary: () => Promise.reject(new Error('not configured')),
 }
 const unconfiguredWorktrees = {
   snapshot: () => ({ revision: 0, worktrees: [] }),

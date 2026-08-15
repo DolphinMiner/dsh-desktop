@@ -62,6 +62,8 @@ import { GitMutationJournal } from './git-mutation-journal'
 import { GitPushController } from './git-push-controller'
 import { GitRevertController } from './git-revert-controller'
 import { GitService } from './git-service'
+import { GitTurnAttributionService } from './git-turn-attribution'
+import { GitTurnAttributionJournal } from './git-turn-attribution-journal'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
@@ -797,8 +799,13 @@ app.whenReady().then(async () => {
   await computerObserver.stop()
 
   const gitService = new GitService()
-  const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace)
-  const reviewWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertKnownWorkspace)
+  const gitTurnAttributions = new GitTurnAttributionService(
+    gitService,
+    new GitTurnAttributionJournal(join(desktopDataPath, 'git-turn-attributions.v1.json')),
+    assertKnownWorkspace,
+  )
+  const workspaceGit = new WorkspaceGitCapabilityService(gitService, assertActiveWorkspace, gitTurnAttributions)
+  const reviewWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertKnownWorkspace, gitTurnAttributions)
   const mutationWorkspaceGit = new WorkspaceGitCapabilityService(gitService, assertIdleWorkspace)
   const reviewComments = new GitReviewCommentStore(join(desktopDataPath, 'git-review-comments.v1.json'), {
     onChange: event => {
@@ -1034,6 +1041,7 @@ app.whenReady().then(async () => {
       discover: (params, signal) => workspaceGit.discover(params, signal),
       status: (params, signal) => workspaceGit.status(params, signal),
       review: (params, signal) => workspaceGit.review(params, signal),
+      reportTurnBoundary: (params, signal) => gitTurnAttributions.reportBoundary(params, signal),
     },
     worktrees: {
       snapshot: () => worktreeManager.snapshot(),

@@ -54,6 +54,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /does not delete files or the Git branch/)
   assert.match(bundle, /Ignored files stay only in this checkout/)
   assert.match(bundle, /Git review/)
+  assert.match(bundle, /Last agent turn/)
+  assert.match(bundle, /observed from/)
   assert.match(bundle, /Unresolved comments/)
   assert.match(bundle, /Stale anchor/)
   assert.match(bundle, /comments\.add/)

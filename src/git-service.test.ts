@@ -205,6 +205,41 @@ test('reads authoritative unstaged, staged, commit, and merge-base review scopes
   assert.match(branch.patch, /diff --git a\/committed\.txt b\/committed\.txt/)
 })
 
+test('captures complete working trees without changing the real index and reviews their exact range', async t => {
+  const root = await repositoryFixture()
+  const canonicalRoot = await realpath(root)
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const service = new GitService()
+  const before = await service.captureWorkingTree(canonicalRoot)
+
+  await writeFile(join(root, 'README.md'), 'unstaged turn change\n')
+  await writeFile(join(root, 'staged.txt'), 'staged turn change\n')
+  await git(root, 'add', 'staged.txt')
+  await writeFile(join(root, 'untracked.txt'), 'untracked turn change\n')
+  const indexBeforeCapture = await service.indexTree(canonicalRoot)
+  const after = await service.captureWorkingTree(canonicalRoot)
+  const indexAfterCapture = await service.indexTree(canonicalRoot)
+
+  assert.equal(indexAfterCapture, indexBeforeCapture)
+  assert.notEqual(after.tree, before.tree)
+  const review = await service.reviewTreeRange(canonicalRoot, before.tree, after.tree, {
+    sessionId: 'session-1',
+    turn: 4,
+    startEventSeq: 10,
+    endEventSeq: 20,
+    startedAt: '2026-08-16T12:00:00.000Z',
+    completedAt: '2026-08-16T12:01:00.000Z',
+  })
+  assert.equal(review.scope.kind, 'completed-turn')
+  assert.equal(review.attributedTurn?.turn, 4)
+  assert.deepEqual(review.files.map(file => [file.status, file.path]), [
+    ['modified', 'README.md'],
+    ['added', 'staged.txt'],
+    ['added', 'untracked.txt'],
+  ])
+  assert.match(review.patch, /diff --git a\/untracked\.txt b\/untracked\.txt/)
+})
+
 test('stages and unstages literal paths and returns authoritative status', async t => {
   const root = await repositoryFixture()
   const canonicalRoot = await realpath(root)

@@ -27,6 +27,12 @@ import {
   parseGitStatusSnapshot,
 } from './git.js'
 import {
+  GitTurnBoundaryParams,
+  GitTurnBoundaryResult,
+  parseGitTurnBoundaryParams,
+  parseGitTurnBoundaryResult,
+} from './git-turn.js'
+import {
   parseWorktreeProvisionParams,
   parseWorktreeSessionBindingParams,
   parseWorktreeSessionBindingResult,
@@ -43,6 +49,7 @@ import {
 
 export * from './computer.js'
 export * from './git.js'
+export * from './git-turn.js'
 export * from './git-commit.js'
 export * from './git-index.js'
 export * from './git-push.js'
@@ -54,7 +61,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 14 as const
+export const DESKTOP_PROTOCOL_VERSION = 15 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -255,6 +262,10 @@ export interface DesktopCapabilityMap {
   'git.review': {
     params: GitReviewParams
     result: GitReviewSnapshot
+  }
+  'git.reportTurnBoundary': {
+    params: GitTurnBoundaryParams
+    result: GitTurnBoundaryResult
   }
   'worktrees.provision': {
     params: WorktreeProvisionParams
@@ -685,6 +696,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'git.review') {
     return parseGitReviewParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'git.reportTurnBoundary') {
+    return parseGitTurnBoundaryParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'worktrees.provision') {
     return parseWorktreeProvisionParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -766,6 +780,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'git.review') {
     return parseGitReviewSnapshot(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'git.reportTurnBoundary') {
+    return parseGitTurnBoundaryResult(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'worktrees.provision') {
     return parseWorktreeSummary(value) as DesktopCapabilityResult<M> | undefined

@@ -14,6 +14,8 @@ import {
   GitReviewSnapshot,
   GitStatusParams,
   GitStatusSnapshot,
+  GitTurnBoundaryParams,
+  GitTurnBoundaryResult,
   WorktreeProvisionParams,
   WorktreeSessionBindingParams,
   WorktreeSessionBindingResult,
@@ -61,6 +63,7 @@ export interface DesktopCapabilityDependencies {
     discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity>
     status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
     review(params: GitReviewParams, signal: AbortSignal): Promise<GitReviewSnapshot>
+    reportTurnBoundary(params: GitTurnBoundaryParams, signal: AbortSignal): Promise<GitTurnBoundaryResult>
   }
   worktrees: {
     snapshot(): WorktreeSnapshot
@@ -111,6 +114,8 @@ export function createDesktopCapabilityHandlers(
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
     'git.status': (params, context) => dependencies.git.status(params, context.signal),
     'git.review': (params, context) => dependencies.git.review(params, context.signal),
+    'git.reportTurnBoundary': (params, context) =>
+      dependencies.git.reportTurnBoundary(params, context.signal),
     'worktrees.provision': (params, context) => dependencies.worktrees.provision(params, context.signal),
     'worktrees.list': () => dependencies.worktrees.snapshot(),
     'desktop.reportSessionBinding': (params, context) =>

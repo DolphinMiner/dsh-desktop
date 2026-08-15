@@ -227,6 +227,55 @@ test('rejects an unrelated requested root before reading status', async () => {
   assert.equal(statusCalls, 0)
 })
 
+test('routes completed-turn review through the durable attribution owner', async () => {
+  let ordinaryReviews = 0
+  let attributedReviews = 0
+  const service = new WorkspaceGitCapabilityService({
+    discoverRepository: async () => repository,
+    status: async () => cleanStatus(),
+    review: async () => {
+      ordinaryReviews += 1
+      return emptyReview()
+    },
+    mutateIndex: async () => cleanStatus(),
+    revertWorktree: async () => cleanStatus(),
+    indexTree: async () => 'c'.repeat(40),
+    commit: async () => ({ commit: 'b'.repeat(40), status: committedStatus() }),
+    pushTarget: async () => pushTarget,
+    push: async () => pushResult,
+  }, () => undefined, {
+    reviewCompletedTurn: async params => {
+      attributedReviews += 1
+      return {
+        repository,
+        scope: { kind: 'completed-turn' },
+        fromTree: 'c'.repeat(40),
+        toTree: 'd'.repeat(40),
+        attributedTurn: {
+          sessionId: params.sessionId,
+          turn: 2,
+          startEventSeq: 10,
+          endEventSeq: 20,
+          startedAt: '2026-08-16T12:00:00.000Z',
+          completedAt: '2026-08-16T12:01:00.000Z',
+        },
+        files: [],
+        patch: '',
+      }
+    },
+  })
+
+  const review = await service.review({
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    repositoryRoot: '/repo',
+    scope: { kind: 'completed-turn' },
+  }, new AbortController().signal)
+  assert.equal(review.attributedTurn?.turn, 2)
+  assert.equal(attributedReviews, 1)
+  assert.equal(ordinaryReviews, 0)
+})
+
 test('rejects a repository identity that changes during status', async () => {
   const service = new WorkspaceGitCapabilityService({
     discoverRepository: async () => repository,

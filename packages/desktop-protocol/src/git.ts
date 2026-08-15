@@ -48,6 +48,7 @@ export interface GitStatusParams extends GitDiscoverParams {
 export type GitReviewScope =
   | { kind: 'unstaged' }
   | { kind: 'staged' }
+  | { kind: 'completed-turn' }
   | { kind: 'commit'; ref: string }
   | { kind: 'branch'; baseRef: string }
 
@@ -76,6 +77,15 @@ export interface GitReviewFile {
   patchAvailable: boolean
 }
 
+export interface GitReviewTurnAttribution {
+  sessionId: string
+  turn: number
+  startEventSeq: number
+  endEventSeq: number
+  startedAt: string
+  completedAt: string
+}
+
 export interface GitReviewSnapshot {
   repository: GitRepositoryIdentity
   scope: GitReviewScope
@@ -83,6 +93,9 @@ export interface GitReviewSnapshot {
   selectedCommit?: string
   baseCommit?: string
   mergeBase?: string
+  fromTree?: string
+  toTree?: string
+  attributedTurn?: GitReviewTurnAttribution
   files: GitReviewFile[]
   patch: string
 }
@@ -142,7 +155,7 @@ export function parseGitStatusEntry(value: unknown): GitStatusEntry | undefined 
 
 export function parseGitReviewScope(value: unknown): GitReviewScope | undefined {
   if (!isRecord(value)) return undefined
-  if (value.kind === 'unstaged' || value.kind === 'staged') {
+  if (value.kind === 'unstaged' || value.kind === 'staged' || value.kind === 'completed-turn') {
     return Object.keys(value).length === 1 ? { kind: value.kind } : undefined
   }
   if (value.kind === 'commit' && isBoundedString(value.ref, MAX_REF_LENGTH) &&
@@ -154,6 +167,27 @@ export function parseGitReviewScope(value: unknown): GitReviewScope | undefined 
     return { kind: value.kind, baseRef: value.baseRef }
   }
   return undefined
+}
+
+function parseTurnAttribution(value: unknown): GitReviewTurnAttribution | undefined {
+  if (!isRecord(value) || Object.keys(value).some(key => ![
+    'sessionId', 'turn', 'startEventSeq', 'endEventSeq', 'startedAt', 'completedAt',
+  ].includes(key)) || Object.keys(value).length !== 6 ||
+    !isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH) ||
+    !Number.isSafeInteger(value.turn) || Number(value.turn) < 0 ||
+    !Number.isSafeInteger(value.startEventSeq) || Number(value.startEventSeq) < 0 ||
+    !Number.isSafeInteger(value.endEventSeq) || Number(value.endEventSeq) <= Number(value.startEventSeq) ||
+    typeof value.startedAt !== 'string' || Number.isNaN(Date.parse(value.startedAt)) ||
+    typeof value.completedAt !== 'string' || Number.isNaN(Date.parse(value.completedAt)) ||
+    Date.parse(value.completedAt) < Date.parse(value.startedAt)) return undefined
+  return {
+    sessionId: value.sessionId,
+    turn: Number(value.turn),
+    startEventSeq: Number(value.startEventSeq),
+    endEventSeq: Number(value.endEventSeq),
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+  }
 }
 
 function parseReviewFile(value: unknown): GitReviewFile | undefined {
@@ -246,11 +280,20 @@ export function parseGitReviewSnapshot(value: unknown): GitReviewSnapshot | unde
   const hasSelectedCommit = value.selectedCommit !== undefined
   const hasBaseCommit = value.baseCommit !== undefined
   const hasMergeBase = value.mergeBase !== undefined
+  const fromTree = value.fromTree
+  const toTree = value.toTree
+  const attributedTurn = value.attributedTurn === undefined ? undefined : parseTurnAttribution(value.attributedTurn)
+  const hasTurnFields = fromTree !== undefined || toTree !== undefined || value.attributedTurn !== undefined
   if (scope.kind === 'commit') {
-    if (!hasSelectedCommit || hasBaseCommit || hasMergeBase) return undefined
+    if (!hasSelectedCommit || hasBaseCommit || hasMergeBase || hasTurnFields) return undefined
   } else if (scope.kind === 'branch') {
-    if (hasSelectedCommit || !hasBaseCommit || !hasMergeBase) return undefined
-  } else if (hasSelectedCommit || hasBaseCommit || hasMergeBase) return undefined
+    if (hasSelectedCommit || !hasBaseCommit || !hasMergeBase || hasTurnFields) return undefined
+  } else if (scope.kind === 'completed-turn') {
+    if (hasSelectedCommit || hasBaseCommit || hasMergeBase ||
+      typeof fromTree !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(fromTree) ||
+      typeof toTree !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(toTree) ||
+      attributedTurn === undefined) return undefined
+  } else if (hasSelectedCommit || hasBaseCommit || hasMergeBase || hasTurnFields) return undefined
   const files = value.files.map(parseReviewFile)
   if (files.some(file => file === undefined) ||
     new Set((files as GitReviewFile[]).map(file => file.path)).size !== files.length) return undefined
@@ -261,6 +304,9 @@ export function parseGitReviewSnapshot(value: unknown): GitReviewSnapshot | unde
     ...(value.selectedCommit === undefined ? {} : { selectedCommit: value.selectedCommit as string }),
     ...(value.baseCommit === undefined ? {} : { baseCommit: value.baseCommit as string }),
     ...(value.mergeBase === undefined ? {} : { mergeBase: value.mergeBase as string }),
+    ...(fromTree === undefined ? {} : { fromTree: fromTree as string }),
+    ...(toTree === undefined ? {} : { toTree: toTree as string }),
+    ...(attributedTurn === undefined ? {} : { attributedTurn }),
     files: files as GitReviewFile[],
     patch: value.patch,
   }

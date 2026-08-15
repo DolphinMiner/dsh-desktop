@@ -113,6 +113,12 @@ const styles: Record<string, CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  attribution: {
+    color: 'var(--dsw-alias-label-secondary, #5f6268)',
+    flexBasis: '100%',
+    fontSize: 12,
+    lineHeight: '18px',
+  },
   content: {
     display: 'grid',
     gridTemplateColumns: 'minmax(180px, 240px) minmax(0, 1fr)',
@@ -829,7 +835,7 @@ function UnresolvedComments({
 }
 
 function scopeFrom(kind: ReviewScopeKind, commitRef: string, baseRef: string): GitReviewScope | undefined {
-  if (kind === 'unstaged' || kind === 'staged') return { kind }
+  if (kind === 'unstaged' || kind === 'staged' || kind === 'completed-turn') return { kind }
   const ref = (kind === 'commit' ? commitRef : baseRef).trim()
   if (ref === '') return undefined
   return kind === 'commit' ? { kind, ref } : { kind, baseRef: ref }
@@ -1194,6 +1200,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
           <option value="staged">Staged</option>
           <option value="commit">Commit</option>
           <option value="branch">Branch</option>
+          <option value="completed-turn">Last agent turn</option>
         </select>
         {scopeKind === 'commit' && (
           <Input
@@ -1244,6 +1251,13 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
         <span style={styles.repository} title={snapshot?.repository.root ?? workspaceRoot}>
           {snapshot?.repository.root ?? workspaceRoot}
         </span>
+        {snapshot?.scope.kind === 'completed-turn' && snapshot.attributedTurn !== undefined && (
+          <span style={styles.attribution}>
+            Turn {String(snapshot.attributedTurn.turn)}, observed from{' '}
+            {new Date(snapshot.attributedTurn.startedAt).toLocaleTimeString()} to{' '}
+            {new Date(snapshot.attributedTurn.completedAt).toLocaleTimeString()}
+          </span>
+        )}
       </div>
 
       {error !== undefined && <div role="alert" style={styles.state}>{error}</div>}
@@ -1302,7 +1316,8 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                   type="button"
                   style={{
                     ...styles.fileButton,
-                    ...((snapshot.scope.kind === 'commit' || snapshot.scope.kind === 'branch')
+                    ...((snapshot.scope.kind === 'commit' || snapshot.scope.kind === 'branch' ||
+                      snapshot.scope.kind === 'completed-turn')
                       ? { gridColumn: '1 / -1', paddingLeft: 12 }
                       : {}),
                     ...(file.path === selectedPath

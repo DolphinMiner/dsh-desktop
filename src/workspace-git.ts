@@ -51,6 +51,14 @@ export type WorkspaceGitAuthorizer = (
   signal: AbortSignal,
 ) => void
 
+export interface CompletedTurnReviewOperations {
+  reviewCompletedTurn(
+    params: GitReviewParams,
+    repository: GitRepositoryIdentity,
+    signal: AbortSignal,
+  ): Promise<GitReviewSnapshot>
+}
+
 export class WorkspaceGitError extends Error {
   constructor(readonly code: DesktopProtocolError['code'], message: string) {
     super(message)
@@ -79,6 +87,7 @@ export class WorkspaceGitCapabilityService {
   constructor(
     private readonly git: GitRepositoryOperations,
     private readonly authorize: WorkspaceGitAuthorizer,
+    private readonly completedTurns?: CompletedTurnReviewOperations,
   ) {}
 
   async discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity> {
@@ -126,7 +135,14 @@ export class WorkspaceGitCapabilityService {
     }
     let snapshot: GitReviewSnapshot
     try {
-      snapshot = await this.git.review(repository.root, params.scope, signal)
+      if (params.scope.kind === 'completed-turn') {
+        if (this.completedTurns === undefined) {
+          throw new WorkspaceGitError('DESKTOP_UNAVAILABLE', 'Completed-turn Git review is unavailable.')
+        }
+        snapshot = await this.completedTurns.reviewCompletedTurn(params, repository, signal)
+      } else {
+        snapshot = await this.git.review(repository.root, params.scope, signal)
+      }
     } catch (error) {
       mapGitError(error)
     }

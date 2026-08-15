@@ -12,6 +12,7 @@ import {
   parseConnectApiKeyInput,
   parseDesktopProtocolMessage,
   parseDesktopGitReviewInput,
+  parseGitTurnBoundaryParams,
   parseRendererCommand,
   isLikelyReadOnlyMcpTool,
   parseComputerActParams,
@@ -108,6 +109,35 @@ test('validates desktop commands and session activity reports', () => {
   assert.deepEqual(parseCapabilityResult('desktop.reportSessionActivity', { accepted: true }), {
     accepted: true,
   })
+  const turnStart = {
+    sessionId: 'session-1',
+    workspaceRoot: '/tmp/project',
+    turn: 3,
+    eventSeq: 21,
+    eventTime: 1_787_000_000_000,
+    boundary: 'start' as const,
+  }
+  assert.deepEqual(parseGitTurnBoundaryParams(turnStart), turnStart)
+  assert.deepEqual(parseCapabilityParams('git.reportTurnBoundary', {
+    ...turnStart,
+    boundary: 'end',
+    eventSeq: 29,
+    reason: 'completed',
+  }), {
+    ...turnStart,
+    boundary: 'end',
+    eventSeq: 29,
+    reason: 'completed',
+  })
+  assert.equal(parseGitTurnBoundaryParams({ ...turnStart, reason: 'completed' }), undefined)
+  assert.deepEqual(parseCapabilityResult('git.reportTurnBoundary', {
+    accepted: true,
+    state: 'captured',
+  }), { accepted: true, state: 'captured' })
+  assert.equal(parseCapabilityResult('git.reportTurnBoundary', {
+    accepted: true,
+    state: 'unavailable',
+  }), undefined)
   assert.deepEqual(parseCapabilityParams('desktop.revealPath', {
     sessionId: 'session-1',
     workspaceRoot: '/tmp/project',
@@ -228,6 +258,33 @@ test('validates bounded Git capability contracts', () => {
   assert.equal(parseCapabilityResult('git.review', {
     ...review,
     files: [{ status: 'untracked', path: 'new.txt', patchAvailable: true }],
+  }), undefined)
+
+  const completedTurnReview = {
+    repository,
+    scope: { kind: 'completed-turn' } as const,
+    head: 'a'.repeat(40),
+    fromTree: 'c'.repeat(40),
+    toTree: 'd'.repeat(40),
+    attributedTurn: {
+      sessionId: 'session-1',
+      turn: 7,
+      startEventSeq: 30,
+      endEventSeq: 42,
+      startedAt: '2026-08-16T12:00:00.000Z',
+      completedAt: '2026-08-16T12:01:00.000Z',
+    },
+    files: [],
+    patch: '',
+  }
+  assert.deepEqual(parseCapabilityResult('git.review', completedTurnReview), completedTurnReview)
+  assert.equal(parseCapabilityResult('git.review', {
+    ...completedTurnReview,
+    attributedTurn: undefined,
+  }), undefined)
+  assert.equal(parseCapabilityResult('git.review', {
+    ...completedTurnReview,
+    attributedTurn: { ...completedTurnReview.attributedTurn, endEventSeq: 29 },
   }), undefined)
 })
 

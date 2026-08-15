@@ -9,6 +9,7 @@ import {
   DesktopCapabilityResult,
   DesktopEventData,
   DesktopEventName,
+  GitTurnBoundaryParams,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import {
@@ -18,10 +19,12 @@ import {
 } from './bridge.js'
 import { CordisMcpMountFactory } from './cordis-mcp.js'
 import { DesktopConnectionClient, McpConnectionSupervisor } from './mcp-supervisor.js'
+import { GitTurnBoundaryCoordinator, reportTurnBoundaryAndActivity } from './git-turn-boundary.js'
 import { WorktreeSessionGuard } from './worktree-guard.js'
 
 export * from './bridge.js'
 export * from './mcp-supervisor.js'
+export * from './git-turn-boundary.js'
 export * from './worktree-guard.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -71,6 +74,14 @@ export async function apply(ctx: Context): Promise<void> {
   }
   const supervisor = new McpConnectionSupervisor(connections, new CordisMcpMountFactory(ctx))
   const worktreeGuard = new WorktreeSessionGuard()
+  const turnBoundaries = new GitTurnBoundaryCoordinator(params => reportTurnBoundaryAndActivity(
+    params,
+    activity => bridge.call('desktop.reportSessionActivity', activity).then(() => undefined),
+    boundary => bridge.call('git.reportTurnBoundary', boundary, { timeoutMs: 40_000 }).then(() => undefined),
+  ), error => {
+    const message = error instanceof Error ? error.message : String(error)
+    ctx.logger('dsh-desktop').warn('Git turn attribution unavailable: %s', message)
+  })
   ctx.effect(() => () => supervisor.dispose(), 'dsh-desktop: MCP connection supervisor')
 
   bridge.on('connections.changed', () => {
@@ -84,6 +95,10 @@ export async function apply(ctx: Context): Promise<void> {
   })
   ctx.on('tools/change', () => {
     void supervisor.refreshTools().catch(() => undefined)
+  })
+  ctx.on('tools/pre-execute', async (execution, next) => {
+    await turnBoundaries.beforeTool(execution.agent)
+    return next()
   })
   ctx.on('tools/pre-execute', async (execution, next) => {
     const downstream = await next()
@@ -125,12 +140,37 @@ export async function apply(ctx: Context): Promise<void> {
 
   ctx.on('session/event', (session, event) => {
     if (event.type === 'turn/start' || event.type === 'turn/end') {
-      void bridge.call('desktop.reportSessionActivity', {
-        sessionId: session.id,
-        eventSeq: event.seq,
-        running: event.type === 'turn/start',
-        ...(session.header.cwd === undefined ? {} : { workspacePath: session.header.cwd }),
-      }).catch(() => undefined)
+      if (session.header.cwd === undefined) {
+        void bridge.call('desktop.reportSessionActivity', {
+          sessionId: session.id,
+          eventSeq: event.seq,
+          running: event.type === 'turn/start',
+        }).catch(() => undefined)
+      } else {
+        const boundary: GitTurnBoundaryParams = event.type === 'turn/start'
+          ? {
+              sessionId: session.id,
+              workspaceRoot: session.header.cwd,
+              turn: event.data.turn,
+              eventSeq: event.seq,
+              eventTime: event.time,
+              boundary: 'start',
+            }
+          : {
+              sessionId: session.id,
+              workspaceRoot: session.header.cwd,
+              turn: event.data.turn,
+              eventSeq: event.seq,
+              eventTime: event.time,
+              boundary: 'end',
+              reason: event.data.reason.kind === 'completed' || event.data.reason.kind === 'aborted' ||
+                event.data.reason.kind === 'blocked' || event.data.reason.kind === 'error' ||
+                event.data.reason.kind === 'max-tokens' || event.data.reason.kind === 'interrupted'
+                ? event.data.reason.kind
+                : 'other',
+            }
+        void turnBoundaries.observe(boundary)
+      }
     }
     if (event.type !== 'turn/end') return
     const kind = event.data.reason.kind

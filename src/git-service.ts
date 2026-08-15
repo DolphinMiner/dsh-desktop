@@ -13,6 +13,7 @@ import type {
   GitReviewFile,
   GitReviewScope,
   GitReviewSnapshot,
+  GitReviewTurnAttribution,
   GitStatusEntry,
   GitStatusSnapshot,
   WorktreeCleanupInspection,
@@ -123,6 +124,11 @@ export interface GitWorktreeEntry {
 
 export type GitCommitExecutionResult = Omit<GitCommitResult, 'operationId'>
 export type GitPushExecutionResult = Omit<GitPushResult, 'operationId'>
+
+export interface GitWorkingTreeCapture {
+  repository: GitRepositoryIdentity
+  tree: string
+}
 
 interface GitCommandResult {
   stdout: Buffer
@@ -1157,7 +1163,7 @@ export class GitService {
         '--name-status', '-z', selectedCommit, '--',
       ]
       patchArgs = ['show', '--format=', ...diffOptions, '--patch', selectedCommit, '--']
-    } else {
+    } else if (scope.kind === 'branch') {
       if (status.head === undefined) {
         throw new GitServiceError('GIT_FAILED', 'A branch review requires a committed HEAD.')
       }
@@ -1173,6 +1179,11 @@ export class GitService {
       }
       nameArgs = ['diff', ...diffOptions, '--name-status', '-z', mergeBase, status.head, '--']
       patchArgs = ['diff', ...diffOptions, '--patch', mergeBase, status.head, '--']
+    } else {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Completed-turn reviews require a verified desktop attribution record.',
+      )
     }
     const [names, patchResult] = await Promise.all([
       this.run(['--no-optional-locks', '-C', repository.root, '-c', 'color.ui=false', ...nameArgs], signal, deadline),
@@ -1195,6 +1206,97 @@ export class GitService {
       ...(baseCommit === undefined ? {} : { baseCommit }),
       ...(mergeBase === undefined ? {} : { mergeBase }),
       files,
+      patch,
+    }
+  }
+
+  async captureWorkingTree(repositoryRoot: string, signal?: AbortSignal): Promise<GitWorkingTreeCapture> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const status = await this.statusBefore(repository, signal, deadline)
+    if (status.entries.some(entry => entry.kind === 'unmerged')) {
+      throw new GitServiceError('GIT_FAILED', 'A conflicted working tree cannot be attributed safely.')
+    }
+    const first = await this.captureWorkingTreeBefore(repository.root, signal, deadline)
+    const second = await this.captureWorkingTreeBefore(repository.root, signal, deadline)
+    if (first !== second) {
+      throw new GitServiceError('GIT_FAILED', 'The working tree changed while its attribution boundary was captured.')
+    }
+    const [current, finalStatus] = await Promise.all([
+      this.discoverRepositoryBefore(requestedRoot, signal, deadline),
+      this.statusBefore(repository, signal, deadline),
+    ])
+    if (current.root !== repository.root || current.gitDir !== repository.gitDir ||
+      current.commonDir !== repository.commonDir) {
+      throw new GitServiceError('GIT_FAILED', 'The Git repository identity changed during attribution capture.')
+    }
+    if (finalStatus.entries.some(entry => entry.kind === 'unmerged')) {
+      throw new GitServiceError('GIT_FAILED', 'A conflicted working tree cannot be attributed safely.')
+    }
+    return { repository, tree: first }
+  }
+
+  async reviewTreeRange(
+    repositoryRoot: string,
+    fromTree: string,
+    toTree: string,
+    attributedTurn: GitReviewTurnAttribution,
+    signal?: AbortSignal,
+  ): Promise<GitReviewSnapshot> {
+    const deadline = Date.now() + this.timeoutMs
+    const requestedRoot = await this.canonicalDirectory(boundedInput(repositoryRoot, 'Repository root'))
+    const repository = await this.discoverRepositoryBefore(requestedRoot, signal, deadline)
+    if (repository.root !== requestedRoot) {
+      throw new GitServiceError(
+        'INVALID_INPUT',
+        'Git operations require the exact repository root returned by repository discovery.',
+      )
+    }
+    const safeFromTree = boundedObjectId(fromTree, 'Attribution start tree')!
+    const safeToTree = boundedObjectId(toTree, 'Attribution end tree')!
+    const [resolvedFromTree, resolvedToTree, status] = await Promise.all([
+      this.resolveTreeBefore(repository.root, safeFromTree, signal, deadline),
+      this.resolveTreeBefore(repository.root, safeToTree, signal, deadline),
+      this.statusBefore(repository, signal, deadline),
+    ])
+    if (resolvedFromTree !== safeFromTree || resolvedToTree !== safeToTree) {
+      throw new GitServiceError('BAD_OUTPUT', 'Git resolved an unexpected attribution tree identity.')
+    }
+    const diffOptions = [
+      '--no-ext-diff',
+      '--no-textconv',
+      '--find-renames',
+      '--find-copies',
+      '--full-index',
+      '--submodule=short',
+    ]
+    const [names, patchResult] = await Promise.all([
+      this.run([
+        '--no-optional-locks', '-C', repository.root, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--name-status', '-z', safeFromTree, safeToTree, '--',
+      ], signal, deadline),
+      this.run([
+        '--no-optional-locks', '-C', repository.root, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--patch', safeFromTree, safeToTree, '--',
+      ], signal, deadline),
+    ])
+    const patch = patchResult.stdout.toString('utf8')
+    if (patch.includes('\0')) throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid patch payload.')
+    return {
+      repository,
+      scope: { kind: 'completed-turn' },
+      ...(status.head === undefined ? {} : { head: status.head }),
+      fromTree: safeFromTree,
+      toTree: safeToTree,
+      attributedTurn: { ...attributedTurn },
+      files: parseGitNameStatus(names.stdout),
       patch,
     }
   }
@@ -1523,35 +1625,43 @@ export class GitService {
     signal: AbortSignal | undefined,
     deadline: number,
   ): Promise<{ sourceTree: string; files: GitReviewFile[]; patch: string }> {
-    const sourceIndexTree = await this.indexTreeBefore(sourceRoot, signal, deadline)
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'dsh-handoff-index-'))
+    const sourceTree = await this.captureWorkingTreeBefore(sourceRoot, signal, deadline)
+    const [names, patchResult] = await Promise.all([
+      this.run([
+        '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--name-status', '-z', baseCommit, sourceTree, '--',
+      ], signal, deadline),
+      this.run([
+        '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
+        'diff', ...diffOptions, '--binary', '--patch', baseCommit, sourceTree, '--',
+      ], signal, deadline),
+    ])
+    return {
+      sourceTree,
+      files: parseGitNameStatus(names.stdout),
+      patch: patchResult.stdout.toString('utf8'),
+    }
+  }
+
+  private async captureWorkingTreeBefore(
+    repositoryRoot: string,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const sourceIndexTree = await this.indexTreeBefore(repositoryRoot, signal, deadline)
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'dsh-working-tree-index-'))
     const indexFile = join(temporaryDirectory, 'index')
     try {
       await this.run([
-        '--no-optional-locks', '-C', sourceRoot,
+        '--no-optional-locks', '-C', repositoryRoot,
         'read-tree', sourceIndexTree,
       ], signal, deadline, { indexFile })
       await this.run([
-        '--no-optional-locks', '-C', sourceRoot,
+        '--no-optional-locks', '-C', repositoryRoot,
         '-c', 'core.fsmonitor=false',
         'add', '-A', '--', '.',
       ], signal, deadline, { indexFile })
-      const sourceTree = await this.indexTreeBefore(sourceRoot, signal, deadline, indexFile)
-      const [names, patchResult] = await Promise.all([
-        this.run([
-          '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
-          'diff', ...diffOptions, '--name-status', '-z', baseCommit, sourceTree, '--',
-        ], signal, deadline),
-        this.run([
-          '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
-          'diff', ...diffOptions, '--binary', '--patch', baseCommit, sourceTree, '--',
-        ], signal, deadline),
-      ])
-      return {
-        sourceTree,
-        files: parseGitNameStatus(names.stdout),
-        patch: patchResult.stdout.toString('utf8'),
-      }
+      return await this.indexTreeBefore(repositoryRoot, signal, deadline, indexFile)
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true })
     }

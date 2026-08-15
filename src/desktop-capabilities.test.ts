@@ -24,6 +24,7 @@ const git = {
   discover: () => Promise.reject(new Error('not configured')),
   status: () => Promise.reject(new Error('not configured')),
   review: () => Promise.reject(new Error('not configured')),
+  reportTurnBoundary: () => Promise.reject(new Error('not configured')),
 }
 
 const worktrees = {
@@ -298,6 +299,11 @@ test('routes workspace-bound Git discovery, status, and review with caller cance
           patch: '',
         }
       },
+      reportTurnBoundary: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`turn:${params.boundary}:${String(params.turn)}`)
+        return { accepted: true, state: params.boundary === 'start' ? 'started' : 'captured' }
+      },
     },
   })
   const context = { requestId: 'git-1', signal: new AbortController().signal }
@@ -310,7 +316,19 @@ test('routes workspace-bound Git discovery, status, and review with caller cance
     repositoryRoot: '/repo',
     scope: { kind: 'unstaged' },
   }, context)).patch, '')
-  assert.deepEqual(calls, ['discover:session-1:/repo', 'status:/repo', 'review:/repo:unstaged'])
+  assert.deepEqual(await handlers['git.reportTurnBoundary']({
+    ...workspace,
+    turn: 2,
+    eventSeq: 9,
+    eventTime: 1_787_000_000_000,
+    boundary: 'start',
+  }, context), { accepted: true, state: 'started' })
+  assert.deepEqual(calls, [
+    'discover:session-1:/repo',
+    'status:/repo',
+    'review:/repo:unstaged',
+    'turn:start:2',
+  ])
 })
 
 test('routes worktree provisioning as a caller-cancellable capability', async () => {

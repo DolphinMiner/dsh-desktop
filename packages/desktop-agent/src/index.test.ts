@@ -135,6 +135,20 @@ test('reads bounded Git review scopes through the authoritative workspace reposi
   calls.length = 0
   await assert.rejects(tool.execute({ scope: 'commit' }, execution), /requires an explicit ref/)
   assert.deepEqual(calls, [])
+
+  await tool.execute({ scope: 'completed-turn' }, execution)
+  assert.deepEqual(calls.at(-1), {
+    method: 'git.review',
+    params: {
+      sessionId: 'session-review',
+      workspaceRoot: '/repo',
+      repositoryRoot: '/repo',
+      scope: { kind: 'completed-turn' },
+    },
+  })
+  calls.length = 0
+  await assert.rejects(tool.execute({ scope: 'completed-turn', ref: 'HEAD' }, execution), /does not accept a ref/)
+  assert.deepEqual(calls, [])
 })
 
 test('reads Git status only through the current workspace repository identity', async () => {
