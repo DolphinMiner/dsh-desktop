@@ -33,7 +33,7 @@ session storage, tools, or Web UI.
 ## Connections
 
 The Connections page is contributed through the official Harness client-slot
-API. v0.3 supports multiple Linear workspaces through either an API key or an
+API. v0.4 supports multiple Linear workspaces through either an API key or an
 OAuth application configured by the distributor.
 
 - API keys, OAuth access tokens, refresh tokens, and PKCE recovery state are
@@ -56,6 +56,23 @@ DSH_DESKTOP_LINEAR_CLIENT_ID=your_client_id npm start
 
 `DSH_DESKTOP_LINEAR_CLIENT_SECRET` is optional for clients configured to use
 PKCE without a secret. Never commit either value.
+
+## Workstation Experience
+
+v0.4 keeps the coding workflow in official Harness services while adding native
+desktop affordances:
+
+- macOS menus and shortcuts open projects, create or stop sessions, show logs,
+  and toggle the official sidebar;
+- `dsh-desktop://` links focus existing Harness sessions, workspaces, and
+  Connections settings;
+- task completion, failure, window title, and Dock badge state follow official
+  session events;
+- approved file opens and Finder reveals are restricted to the active session's
+  canonical workspace and reject path or symlink escapes; and
+- window geometry survives cold starts, while an unexpectedly stopped Harness
+  is restarted with bounded backoff and pending native operations are cancelled
+  without replay.
 
 Cross-platform reuse comes from Electron plus the official React Web UI, not
 React Native. The same host code can later target Windows and Linux; using
@@ -130,7 +147,7 @@ Signing and notarization are deliberately outside the first MVP.
 - Releases are not yet code signed or notarized.
 - Releases do not yet have an automatic updater.
 - Linear OAuth requires a separately configured Linear application.
-- Dock activity integration and Computer Use are not yet implemented.
+- Computer Use is not yet implemented.
 
 ## Local Data
 
@@ -184,16 +201,17 @@ capabilities that exist because Harness is running inside Electron. It exposes
 a small allowlisted API rather than duplicating the agent or granting browser
 code unrestricted Electron IPC access.
 
-The first integration, native notifications, has two small halves:
+Native notifications have two small halves:
 
 1. A Harness plugin listens for a completed run and emits a typed
    `desktop.notify` request.
 2. Electron validates that request and calls the macOS notification API.
 
-The protocol validates message versions, methods, payloads, responses, request
-IDs, timeouts, cancellation, and disconnects. The plugin does not own prompts,
-sessions, model calls, tools, or persistence; those remain in Harness as the
-single source of truth.
+The same bridge also carries authoritative task activity and tightly scoped
+Finder/open-file tools. The protocol validates message versions, methods,
+payloads, responses, request IDs, timeouts, cancellation, and disconnects. The
+plugin does not own prompts, sessions, model calls, tools, or persistence;
+those remain in Harness as the single source of truth.
 
 Computer Use would be a separate, larger integration. It would need explicit
 screen-capture and accessibility permissions plus tightly scoped screenshot,

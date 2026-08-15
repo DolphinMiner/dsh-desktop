@@ -31,7 +31,7 @@ Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React
 
 ## Connections
 
-Connections 页面通过官方 Harness client slot 注入。v0.3 支持用 API Key 或
+Connections 页面通过官方 Harness client slot 注入。v0.4 支持用 API Key 或
 由发行方配置的 OAuth 应用连接多个 Linear 工作区。
 
 - API Key、OAuth Token、Refresh Token 和 PKCE 恢复状态通过 Electron
@@ -51,6 +51,18 @@ DSH_DESKTOP_LINEAR_CLIENT_ID=your_client_id npm start
 
 仅在 OAuth 客户端要求时设置 `DSH_DESKTOP_LINEAR_CLIENT_SECRET`，不要提交
 这两个值。
+
+## 工作台体验
+
+v0.4 继续使用官方 Harness 服务承载完整编码流程，同时增加桌面能力：
+
+- macOS 菜单和快捷键可打开项目、新建或停止会话、查看日志及切换官方侧栏；
+- `dsh-desktop://` 深链可定位已有会话、工作区和 Connections 设置；
+- 原生通知、窗口标题和 Dock 角标严格跟随官方会话事件；
+- Finder 定位和需审批的文件打开仅允许当前运行会话的规范化工作区路径，拒绝
+  路径穿越与符号链接逃逸；
+- 窗口位置和尺寸可跨冷启动恢复，Harness 意外退出时采用有上限的退避重启，
+  未完成的原生操作会取消且不会重放。
 
 ## 架构边界
 
@@ -127,14 +139,15 @@ Harness 仅监听 `127.0.0.1`。Electron 渲染进程启用沙箱并关闭 Node.
 - 尚未进行代码签名和 Apple 公证。
 - 暂无自动更新。
 - Linear OAuth 需要单独配置 OAuth 应用。
-- Dock 活动状态和 Computer Use 尚未实现。
+- Computer Use 尚未实现。
 
 ## 桌面集成边界
 
 Harness 继续负责工作区、工具、审批、会话持久化和生成文件。桌面插件只适配
 Electron 环境才具备的原生能力，并通过版本化白名单协议调用 Electron 主进程。
 协议会校验方法、参数、响应、请求 ID、超时、取消和断连；网页端无法直接调用
-这条子进程能力通道。当前首个完整能力是任务完成或失败后的原生通知。
+这条子进程能力通道。当前桥接能力包括任务完成/失败通知、真实任务状态，以及
+限定工作区的 Finder 定位和文件打开。
 
 Computer Use 属于更大的独立能力，需要明确申请屏幕录制和辅助功能权限，
 并提供严格限制的截图、点击和键盘操作。仅把 Harness 放进 Electron 窗口，

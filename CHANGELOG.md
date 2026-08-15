@@ -27,6 +27,13 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Linear OAuth with PKCE, encrypted recovery, token refresh rotation, confirmed
   revocation, cancellation, timeout handling, and cold-start completion.
 - A generic stdio and Streamable HTTP MCP supervisor with reconnect status.
+- Native menus, shortcuts, project picker, deep links, session routing, and
+  truthful task activity in the window title and Dock.
+- Workspace-bound Finder reveal and approved file-open tools contributed through
+  the official Harness agent tool registry.
+- Atomic window-state restoration and bounded automatic Harness recovery.
+- Product-level contracts for official session persistence, workspace routing,
+  tool execution, diff presentation, reconnect, and cold-start behavior.
 
 ### Security
 
@@ -37,3 +44,7 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bearer credentials attached only by an ephemeral loopback proxy and withheld
   from Harness configuration, tool results, logs, and browser storage.
 - Duplicate possible-write MCP calls blocked at the desktop proxy boundary.
+- Native file actions reject traversal, symlink escapes, inactive workspaces,
+  directories, and executable targets.
+- Pending native work is cancelled on Harness disconnect and never replayed by
+  automatic recovery.
