@@ -44,6 +44,8 @@ export interface DesktopBridge {
     list(): Promise<WorktreeSnapshot>
     previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
     confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
+    previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
+    confirmHandoff(input: DesktopWorktreeHandoffConfirmInput): Promise<WorktreeHandoffResult>
     onChanged(listener: (snapshot: WorktreeSnapshot) => void): () => void
   }
   computer: {
@@ -89,6 +91,8 @@ import type {
   DesktopGitReviewCommentsInput,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
+  DesktopWorktreeHandoffConfirmInput,
+  DesktopWorktreeHandoffPreflightInput,
   DeleteGitReviewCommentInput,
   GitReviewCommentSnapshot,
   GitReviewCommentsChangedEvent,
@@ -103,5 +107,7 @@ import type {
   SelectComputerTargetInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
+  WorktreeHandoffPreview,
+  WorktreeHandoffResult,
   WorktreeSnapshot,
 } from '@dolphinminer/dsh-desktop-protocol'

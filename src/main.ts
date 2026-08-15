@@ -34,6 +34,8 @@ import {
   parseDesktopGitReviewCommentsInput,
   parseDesktopWorktreeCleanupConfirmInput,
   parseDesktopWorktreeCleanupPreviewInput,
+  parseDesktopWorktreeHandoffConfirmInput,
+  parseDesktopWorktreeHandoffPreflightInput,
   parseSelectComputerTargetInput,
   WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -67,6 +69,8 @@ import { PersistedWindowState, WindowStateStore } from './window-state'
 import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 import { WorkspaceGitCapabilityService } from './workspace-git'
 import { WorktreeCleanupController } from './worktree-cleanup-controller'
+import { WorktreeHandoffController } from './worktree-handoff-controller'
+import { WorktreeHandoffJournal } from './worktree-handoff-journal'
 import { WorktreeManager } from './worktree-manager'
 import { summarizeWorktreeRecord, WorktreeRegistry } from './worktree-registry'
 
@@ -433,6 +437,7 @@ function installIpcHandlers(
   comments: GitReviewCommentController,
   worktrees: WorktreeManager,
   worktreeCleanup: WorktreeCleanupController,
+  worktreeHandoff: WorktreeHandoffController,
   publishWorktreeChange: (worktree: WorktreeSummary) => void,
 ): void {
   const assertTrustedSender = (event: Electron.IpcMainInvokeEvent): void => {
@@ -545,6 +550,16 @@ function installIpcHandlers(
     const result = await worktreeCleanup.confirm(input, new AbortController().signal)
     publishWorktreeChange(result.worktree)
     return result
+  })
+  ipcMain.handle('desktop:worktrees:handoff:preview', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeHandoffPreflightInput(value))
+    return worktreeHandoff.preview(input, new AbortController().signal)
+  })
+  ipcMain.handle('desktop:worktrees:handoff:confirm', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopWorktreeHandoffConfirmInput(value))
+    return worktreeHandoff.confirm(input, new AbortController().signal)
   })
   ipcMain.handle('desktop:computer:get-state', event => {
     assertTrustedSender(event)
@@ -810,6 +825,37 @@ app.whenReady().then(async () => {
       return result.response === 1
     },
   })
+  const worktreeHandoff = new WorktreeHandoffController(
+    worktreeManager,
+    new WorktreeHandoffJournal(join(desktopDataPath, 'worktree-handoffs.v1.json')),
+    gitMutationQueue,
+    {
+      isSessionRunning: sessionId => activityTracker.isRunning(sessionId),
+      isPathRunning: path => activitySnapshot.runningSessionIds.some(sessionId =>
+        activitySnapshot.workspacePaths[sessionId] === path),
+      approve: async details => {
+        if (mainWindow === undefined || mainWindow.isDestroyed()) return false
+        const sourceLabel = details.direction === 'local-to-worktree' ? 'local checkout' : 'managed worktree'
+        const destinationLabel = details.direction === 'local-to-worktree' ? 'managed worktree' : 'local checkout'
+        const count = details.fileCount
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Transfer reviewed changes?',
+          message: `Stage ${String(count)} ${count === 1 ? 'file' : 'files'} in the ${destinationLabel}?`,
+          detail: `Source (${sourceLabel}): ${details.sourcePath}\n` +
+            `Destination (${destinationLabel}): ${details.destinationPath}\n` +
+            `Source tree: ${details.sourceTree}\n\n` +
+            'The exact reviewed source tree will be applied as staged destination changes. ' +
+            'The source checkout is unchanged. Nothing is committed or pushed.',
+          buttons: ['Cancel', 'Transfer Changes'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return result.response === 1
+      },
+    },
+  )
 
   installMenu()
   installIpcHandlers(
@@ -857,6 +903,7 @@ app.whenReady().then(async () => {
     new GitReviewCommentController(reviewWorkspaceGit, reviewComments),
     worktreeManager,
     worktreeCleanup,
+    worktreeHandoff,
     publishWorktreeChange,
   )
 

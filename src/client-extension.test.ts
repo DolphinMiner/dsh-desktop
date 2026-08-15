@@ -42,6 +42,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /revokeActions/)
   assert.match(bundle, /previewCleanup/)
   assert.match(bundle, /confirmCleanup/)
+  assert.match(bundle, /previewHandoff/)
+  assert.match(bundle, /confirmHandoff/)
   assert.match(bundle, /Git review/)
   assert.match(bundle, /Unresolved comments/)
   assert.match(bundle, /Stale anchor/)

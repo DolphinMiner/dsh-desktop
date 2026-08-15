@@ -55,6 +55,8 @@ const bridge: DesktopBridge = {
     list: () => ipcRenderer.invoke('desktop:worktrees:list'),
     previewCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:preview', input),
     confirmCleanup: input => ipcRenderer.invoke('desktop:worktrees:cleanup:confirm', input),
+    previewHandoff: input => ipcRenderer.invoke('desktop:worktrees:handoff:preview', input),
+    confirmHandoff: input => ipcRenderer.invoke('desktop:worktrees:handoff:confirm', input),
     onChanged(listener) {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
         listener(snapshot)

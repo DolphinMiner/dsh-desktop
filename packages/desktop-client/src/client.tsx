@@ -8,6 +8,7 @@ import {
   IconBranchOutline16,
   IconCheckOutline16,
   IconCloseOutline16,
+  IconDownloadOutline16,
   IconLinkOutline16,
   IconPauseOutline16,
   IconPlayOutline16,
@@ -40,9 +41,15 @@ import type {
   DesktopRendererCommand,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
+  DesktopWorktreeHandoffConfirmInput,
+  DesktopWorktreeHandoffPreflightInput,
   SelectComputerTargetInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
+  WorktreeHandoffBlocker,
+  WorktreeHandoffDirection,
+  WorktreeHandoffPreview,
+  WorktreeHandoffResult,
   WorktreeSnapshot,
   WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -91,6 +98,8 @@ interface DesktopWorktreesBridge {
   list(): Promise<WorktreeSnapshot>
   previewCleanup(input: DesktopWorktreeCleanupPreviewInput): Promise<WorktreeCleanupPreview>
   confirmCleanup(input: DesktopWorktreeCleanupConfirmInput): Promise<WorktreeCleanupResult>
+  previewHandoff(input: DesktopWorktreeHandoffPreflightInput): Promise<WorktreeHandoffPreview>
+  confirmHandoff(input: DesktopWorktreeHandoffConfirmInput): Promise<WorktreeHandoffResult>
   onChanged(listener: (snapshot: WorktreeSnapshot) => void): () => void
 }
 
@@ -304,6 +313,54 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 13,
     gap: 9,
     lineHeight: '20px',
+  },
+  worktreeActions: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
+  handoffScroll: {
+    display: 'grid',
+    gap: 14,
+    maxHeight: 'min(460px, 58vh)',
+    overflowY: 'auto',
+    paddingRight: 4,
+  },
+  handoffPath: {
+    background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)',
+    borderRadius: 4,
+    display: 'grid',
+    gap: 3,
+    minWidth: 0,
+    padding: '9px 10px',
+  },
+  handoffFiles: {
+    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    borderRadius: 4,
+    display: 'grid',
+    maxHeight: 180,
+    overflowY: 'auto',
+  },
+  handoffFile: {
+    alignItems: 'center',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'grid',
+    fontSize: 12,
+    gap: 10,
+    gridTemplateColumns: '72px minmax(0, 1fr)',
+    minHeight: 34,
+    padding: '5px 9px',
+  },
+  handoffPatch: {
+    background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)',
+    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    borderRadius: 4,
+    boxSizing: 'border-box',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 11,
+    lineHeight: '17px',
+    margin: '8px 0 0',
+    maxHeight: 220,
+    overflow: 'auto',
+    padding: 10,
+    whiteSpace: 'pre',
+    width: '100%',
   },
 }
 
@@ -717,15 +774,48 @@ function worktreeRecoveryLabel(reason: WorktreeSummary['recoveryReason']): strin
   return labels[reason]
 }
 
+function handoffBlockerLabel(blocker: WorktreeHandoffBlocker): string {
+  const labels: Record<WorktreeHandoffBlocker, string> = {
+    'source-detached': 'The source checkout is detached.',
+    'source-conflicts': 'Resolve source merge conflicts first.',
+    'source-diverged': 'The source no longer descends from the managed base commit.',
+    'destination-detached': 'The destination checkout is detached.',
+    'destination-head-changed': 'The destination HEAD is no longer the managed base commit.',
+    'destination-dirty': 'The destination contains changes. Preserve or remove them first.',
+    'destination-collision': 'An ignored or untracked destination path collides with this transfer.',
+    'no-changes': 'The source has no changes relative to the managed base commit.',
+  }
+  return labels[blocker]
+}
+
+function handoffFileStatus(status: WorktreeHandoffPreview['preflight']['files'][number]['status']): string {
+  const labels = {
+    added: 'Added',
+    modified: 'Modified',
+    deleted: 'Deleted',
+    renamed: 'Renamed',
+    copied: 'Copied',
+    'type-changed': 'Type changed',
+    unmerged: 'Conflict',
+    untracked: 'Untracked',
+  }
+  return labels[status]
+}
+
 function WorktreesSection(): React.JSX.Element {
   const bridge = window.dshDesktop?.worktrees
   const [snapshot, setSnapshot] = useState<WorktreeSnapshot>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
-  const [previewingId, setPreviewingId] = useState<string>()
-  const [preview, setPreview] = useState<WorktreeCleanupPreview>()
-  const [acknowledged, setAcknowledged] = useState(false)
+  const [notice, setNotice] = useState<string>()
+  const [cleanupPreviewingId, setCleanupPreviewingId] = useState<string>()
+  const [cleanupPreview, setCleanupPreview] = useState<WorktreeCleanupPreview>()
+  const [cleanupAcknowledged, setCleanupAcknowledged] = useState(false)
   const [cleaning, setCleaning] = useState(false)
+  const [handoffPreviewingKey, setHandoffPreviewingKey] = useState<string>()
+  const [handoffPreview, setHandoffPreview] = useState<WorktreeHandoffPreview>()
+  const [handoffAcknowledged, setHandoffAcknowledged] = useState(false)
+  const [transferring, setTransferring] = useState(false)
 
   const applySnapshot = (next: WorktreeSnapshot): void => {
     setSnapshot(current => current === undefined || next.revision >= current.revision ? next : current)
@@ -776,39 +866,89 @@ function WorktreesSection(): React.JSX.Element {
 
   const inspectCleanup = async (worktreeId: string): Promise<void> => {
     if (bridge === undefined) return
-    setPreviewingId(worktreeId)
+    setCleanupPreviewingId(worktreeId)
     setError(undefined)
+    setNotice(undefined)
     try {
-      setPreview(await bridge.previewCleanup({ worktreeId }))
-      setAcknowledged(false)
+      setCleanupPreview(await bridge.previewCleanup({ worktreeId }))
+      setCleanupAcknowledged(false)
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
-      setPreviewingId(undefined)
+      setCleanupPreviewingId(undefined)
     }
   }
 
-  const closePreview = (): void => {
+  const closeCleanupPreview = (): void => {
     if (cleaning) return
-    setPreview(undefined)
-    setAcknowledged(false)
+    setCleanupPreview(undefined)
+    setCleanupAcknowledged(false)
   }
 
   const confirmCleanup = async (): Promise<void> => {
-    if (bridge === undefined || preview === undefined || !acknowledged) return
+    if (bridge === undefined || cleanupPreview === undefined || !cleanupAcknowledged) return
     setCleaning(true)
     setError(undefined)
+    setNotice(undefined)
     try {
-      await bridge.confirmCleanup({ previewId: preview.previewId, confirmed: true })
-      setPreview(undefined)
-      setAcknowledged(false)
+      await bridge.confirmCleanup({ previewId: cleanupPreview.previewId, confirmed: true })
+      setCleanupPreview(undefined)
+      setCleanupAcknowledged(false)
       applySnapshot(await bridge.list())
     } catch (cause) {
-      setPreview(undefined)
-      setAcknowledged(false)
+      setCleanupPreview(undefined)
+      setCleanupAcknowledged(false)
       setError(errorMessage(cause))
     } finally {
       setCleaning(false)
+    }
+  }
+
+  const inspectHandoff = async (
+    worktreeId: string,
+    direction: WorktreeHandoffDirection,
+  ): Promise<void> => {
+    if (bridge === undefined) return
+    setHandoffPreviewingKey(`${worktreeId}:${direction}`)
+    setError(undefined)
+    setNotice(undefined)
+    try {
+      setHandoffPreview(await bridge.previewHandoff({ worktreeId, direction }))
+      setHandoffAcknowledged(false)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setHandoffPreviewingKey(undefined)
+    }
+  }
+
+  const closeHandoffPreview = (): void => {
+    if (transferring) return
+    setHandoffPreview(undefined)
+    setHandoffAcknowledged(false)
+  }
+
+  const confirmHandoff = async (): Promise<void> => {
+    if (bridge === undefined || handoffPreview === undefined || !handoffAcknowledged ||
+      !handoffPreview.preflight.canTransfer) return
+    setTransferring(true)
+    setError(undefined)
+    setNotice(undefined)
+    const direction = handoffPreview.preflight.direction
+    try {
+      await bridge.confirmHandoff({ previewId: handoffPreview.previewId, confirmed: true })
+      setHandoffPreview(undefined)
+      setHandoffAcknowledged(false)
+      setNotice(direction === 'local-to-worktree'
+        ? 'Local changes were staged in the managed worktree. The local checkout is unchanged.'
+        : 'Worktree changes were staged in the local checkout. The managed worktree is unchanged.')
+      applySnapshot(await bridge.list())
+    } catch (cause) {
+      setHandoffPreview(undefined)
+      setHandoffAcknowledged(false)
+      setError(errorMessage(cause))
+    } finally {
+      setTransferring(false)
     }
   }
 
@@ -836,6 +976,11 @@ function WorktreesSection(): React.JSX.Element {
           {error}
         </div>
       )}
+      {notice !== undefined && (
+        <div role="status" style={{ ...styles.notice, background: 'var(--dsw-alias-state-success-secondary, #eaf7ee)' }}>
+          {notice}
+        </div>
+      )}
 
       {!loading && worktrees.length === 0 && <div style={styles.empty}>No managed worktrees.</div>}
       <div style={styles.list}>
@@ -844,6 +989,9 @@ function WorktreesSection(): React.JSX.Element {
           const recovery = worktreeRecoveryLabel(worktree.recoveryReason)
           const cleanupAvailable = worktree.executionMode === 'worktree' &&
             (worktree.lifecycle === 'ready' || worktree.lifecycle === 'orphaned')
+          const handoffAvailable = cleanupAvailable
+          const operationsBusy = cleanupPreviewingId !== undefined || handoffPreviewingKey !== undefined ||
+            cleaning || transferring
           return (
             <article key={worktree.id} style={styles.item}>
               <div style={styles.itemTop}>
@@ -873,17 +1021,41 @@ function WorktreesSection(): React.JSX.Element {
                 <span style={styles.metadata}>
                   {worktree.sessionState === 'bound' ? 'Session bound' : 'Awaiting session'}
                 </span>
-                {cleanupAvailable && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    icon={<IconTrashOutline16 />}
-                    disabled={previewingId !== undefined || cleaning}
-                    onClick={() => void inspectCleanup(worktree.id)}
-                  >
-                    Clean up
-                  </Button>
-                )}
+                <div style={styles.worktreeActions}>
+                  {handoffAvailable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconDownloadOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectHandoff(worktree.id, 'local-to-worktree')}
+                    >
+                      Import local
+                    </Button>
+                  )}
+                  {handoffAvailable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconRightUpOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectHandoff(worktree.id, 'worktree-to-local')}
+                    >
+                      Send to local
+                    </Button>
+                  )}
+                  {cleanupAvailable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconTrashOutline16 />}
+                      disabled={operationsBusy}
+                      onClick={() => void inspectCleanup(worktree.id)}
+                    >
+                      Clean up
+                    </Button>
+                  )}
+                </div>
               </div>
             </article>
           )
@@ -891,18 +1063,18 @@ function WorktreesSection(): React.JSX.Element {
       </div>
 
       <Modal
-        open={preview !== undefined}
-        onClose={closePreview}
+        open={cleanupPreview !== undefined}
+        onClose={closeCleanupPreview}
         title="Clean up worktree"
         closeLabel="Close cleanup preview"
         description="The clean checkout directory will be removed. Its Git branch will be kept."
         footer={(
           <div style={styles.formActions}>
-            <Button variant="outline" disabled={cleaning} onClick={closePreview}>Cancel</Button>
+            <Button variant="outline" disabled={cleaning} onClick={closeCleanupPreview}>Cancel</Button>
             <Button
               variant="primary"
               icon={<IconTrashOutline16 />}
-              disabled={!acknowledged || cleaning}
+              disabled={!cleanupAcknowledged || cleaning}
               onClick={() => void confirmCleanup()}
             >
               Clean up
@@ -910,32 +1082,125 @@ function WorktreesSection(): React.JSX.Element {
           </div>
         )}
       >
-        {preview !== undefined && (
+        {cleanupPreview !== undefined && (
           <div style={styles.worktreeConfirmBody}>
             <div style={styles.worktreeConfirmDetails}>
               <div style={styles.worktreeDetail}>
                 <span style={styles.label}>Branch</span>
-                <span style={styles.metadata}>{worktreeBranch(preview.worktree)}</span>
+                <span style={styles.metadata}>{worktreeBranch(cleanupPreview.worktree)}</span>
               </div>
               <div style={styles.worktreeDetail}>
                 <span style={styles.label}>Checkout</span>
-                <span style={styles.metadata}>{preview.inspection.worktreePath}</span>
+                <span style={styles.metadata}>{cleanupPreview.inspection.worktreePath}</span>
               </div>
               <div style={styles.worktreeDetail}>
                 <span style={styles.label}>Commit</span>
-                <span style={styles.metadata}>{preview.inspection.head}</span>
+                <span style={styles.metadata}>{cleanupPreview.inspection.head}</span>
               </div>
             </div>
             <label style={styles.worktreeAcknowledge}>
               <input
                 type="checkbox"
-                checked={acknowledged}
+                checked={cleanupAcknowledged}
                 disabled={cleaning}
-                onChange={event => setAcknowledged(event.currentTarget.checked)}
+                onChange={event => setCleanupAcknowledged(event.currentTarget.checked)}
                 style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
               />
               <span>I understand this removes the checkout directory and keeps the branch.</span>
             </label>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={handoffPreview !== undefined}
+        onClose={closeHandoffPreview}
+        title={handoffPreview?.preflight.direction === 'worktree-to-local'
+          ? 'Send changes to local checkout'
+          : 'Import local changes'}
+        closeLabel="Close handoff preview"
+        description="Review the exact combined source tree before staging it in the destination checkout."
+        footer={(
+          <div style={styles.formActions}>
+            <Button variant="outline" disabled={transferring} onClick={closeHandoffPreview}>
+              {handoffPreview?.preflight.canTransfer === false ? 'Close' : 'Cancel'}
+            </Button>
+            {handoffPreview?.preflight.canTransfer === true && (
+              <Button
+                variant="primary"
+                icon={<IconDownloadOutline16 />}
+                disabled={!handoffAcknowledged || transferring}
+                onClick={() => void confirmHandoff()}
+              >
+                Stage in destination
+              </Button>
+            )}
+          </div>
+        )}
+      >
+        {handoffPreview !== undefined && (
+          <div style={styles.handoffScroll}>
+            <div style={styles.handoffPath}>
+              <span style={styles.label}>Source remains unchanged</span>
+              <span style={styles.metadata}>{handoffPreview.preflight.source.path}</span>
+            </div>
+            <div style={styles.handoffPath}>
+              <span style={styles.label}>Destination receives staged changes</span>
+              <span style={styles.metadata}>{handoffPreview.preflight.destination.path}</span>
+            </div>
+            <div style={styles.worktreeConfirmDetails}>
+              <div style={styles.worktreeDetail}>
+                <span style={styles.label}>Base commit</span>
+                <span style={styles.metadata}>{handoffPreview.preflight.baseCommit}</span>
+              </div>
+              {handoffPreview.preflight.sourceTree !== undefined && (
+                <div style={styles.worktreeDetail}>
+                  <span style={styles.label}>Reviewed source tree</span>
+                  <span style={styles.metadata}>{handoffPreview.preflight.sourceTree}</span>
+                </div>
+              )}
+            </div>
+            {handoffPreview.preflight.blockers.length > 0 && (
+              <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-warning-secondary, #fff6df)', marginBottom: 0 }}>
+                {handoffPreview.preflight.blockers.map(blocker => (
+                  <div key={blocker}>{handoffBlockerLabel(blocker)}</div>
+                ))}
+              </div>
+            )}
+            <div style={styles.field}>
+              <span style={styles.label}>Files ({handoffPreview.preflight.files.length})</span>
+              <div style={styles.handoffFiles}>
+                {handoffPreview.preflight.files.map(file => (
+                  <div key={file.path} style={styles.handoffFile}>
+                    <span style={styles.label}>{handoffFileStatus(file.status)}</span>
+                    <span style={styles.metadata}>
+                      {file.originalPath === undefined ? file.path : `${file.originalPath} -> ${file.path}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {handoffPreview.preflight.patch !== '' && (
+              <details>
+                <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Review patch</summary>
+                <pre style={styles.handoffPatch}>{handoffPreview.preflight.patch}</pre>
+              </details>
+            )}
+            {handoffPreview.preflight.canTransfer && (
+              <label style={styles.worktreeAcknowledge}>
+                <input
+                  type="checkbox"
+                  checked={handoffAcknowledged}
+                  disabled={transferring}
+                  onChange={event => setHandoffAcknowledged(event.currentTarget.checked)}
+                  style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
+                />
+                <span>
+                  I understand the reviewed source tree will be staged in the destination. The source is unchanged,
+                  and nothing is committed or pushed.
+                </span>
+              </label>
+            )}
           </div>
         )}
       </Modal>
