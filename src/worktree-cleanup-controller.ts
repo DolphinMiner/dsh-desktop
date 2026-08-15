@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import type {
+  CleanWorktreeCleanupInspection,
   DesktopProtocolError,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
@@ -22,7 +23,7 @@ export interface WorktreeCleanupOperations {
   removeCleanWorktree(
     id: string,
     operationId: string,
-    expected: WorktreeCleanupInspection,
+    expected: CleanWorktreeCleanupInspection,
     signal: AbortSignal,
     beforeDispatch?: (record: WorktreeRecord) => void,
   ): Promise<WorktreeRecord>
@@ -45,7 +46,7 @@ interface PendingWorktreeCleanupPreview {
   previewId: string
   worktreeId: string
   fingerprint: string
-  inspection: WorktreeCleanupInspection
+  inspection: CleanWorktreeCleanupInspection
   expiresAt: string
 }
 
@@ -92,11 +93,18 @@ export class WorktreeCleanupController {
   ): Promise<WorktreeCleanupPreview> {
     const state = await this.worktrees.inspectCleanup(input.worktreeId, signal)
     this.assertInactive(state.record)
-    const now = this.now()
-    this.pruneExpired(now)
     for (const [id, pending] of this.previews) {
       if (pending.worktreeId === input.worktreeId) this.previews.delete(id)
     }
+    if (!state.inspection.clean) {
+      return {
+        canRemove: false,
+        worktree: summarizeWorktreeRecord(state.record),
+        inspection: state.inspection,
+      }
+    }
+    const now = this.now()
+    this.pruneExpired(now)
     while (this.previews.size >= MAX_PENDING_PREVIEWS) {
       const oldest = this.previews.keys().next().value as string | undefined
       if (oldest === undefined) break
@@ -118,6 +126,7 @@ export class WorktreeCleanupController {
       expiresAt,
     })
     return {
+      canRemove: true,
       previewId,
       expiresAt,
       worktree: summarizeWorktreeRecord(state.record),

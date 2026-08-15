@@ -344,7 +344,7 @@ const styles: Record<string, CSSProperties> = {
     display: 'grid',
     fontSize: 12,
     gap: 10,
-    gridTemplateColumns: '72px minmax(0, 1fr)',
+    gridTemplateColumns: '96px minmax(0, 1fr)',
     minHeight: 34,
     padding: '5px 9px',
   },
@@ -803,6 +803,15 @@ function handoffFileStatus(status: WorktreeHandoffPreview['preflight']['files'][
   return labels[status]
 }
 
+function cleanupChangeStatus(change: WorktreeCleanupPreview['inspection']['changes'][number]): string {
+  if (change.kind === 'ignored') return 'Ignored'
+  if (change.kind === 'untracked') return 'Untracked'
+  if (change.kind === 'unmerged') return 'Conflict'
+  if (change.kind === 'renamed') return 'Renamed'
+  if (change.indexStatus !== '.' && change.worktreeStatus !== '.') return 'Staged + changed'
+  return change.indexStatus !== '.' ? 'Staged' : 'Changed'
+}
+
 function WorktreesSection(): React.JSX.Element {
   const bridge = window.dshDesktop?.worktrees
   const [snapshot, setSnapshot] = useState<WorktreeSnapshot>()
@@ -887,7 +896,7 @@ function WorktreesSection(): React.JSX.Element {
   }
 
   const confirmCleanup = async (): Promise<void> => {
-    if (bridge === undefined || cleanupPreview === undefined || !cleanupAcknowledged) return
+    if (bridge === undefined || cleanupPreview?.canRemove !== true || !cleanupAcknowledged) return
     setCleaning(true)
     setError(undefined)
     setNotice(undefined)
@@ -903,6 +912,13 @@ function WorktreesSection(): React.JSX.Element {
     } finally {
       setCleaning(false)
     }
+  }
+
+  const reviewCleanupTransfer = (): void => {
+    if (cleanupPreview?.canRemove !== false) return
+    const worktreeId = cleanupPreview.worktree.id
+    closeCleanupPreview()
+    void inspectHandoff(worktreeId, 'worktree-to-local')
   }
 
   const inspectHandoff = async (
@@ -1066,20 +1082,35 @@ function WorktreesSection(): React.JSX.Element {
       <Modal
         open={cleanupPreview !== undefined}
         onClose={closeCleanupPreview}
-        title="Clean up worktree"
+        title={cleanupPreview?.canRemove === false ? 'Worktree has changes' : 'Clean up worktree'}
         closeLabel="Close cleanup preview"
-        description="The clean checkout directory will be removed. Its Git branch will be kept."
+        description={cleanupPreview?.canRemove === false
+          ? 'Cleanup is blocked so modified, untracked, and ignored files remain in the checkout.'
+          : 'The clean checkout directory will be removed. Its Git branch will be kept.'}
         footer={(
           <div style={styles.formActions}>
-            <Button variant="outline" disabled={cleaning} onClick={closeCleanupPreview}>Cancel</Button>
-            <Button
-              variant="primary"
-              icon={<IconTrashOutline16 />}
-              disabled={!cleanupAcknowledged || cleaning}
-              onClick={() => void confirmCleanup()}
-            >
-              Clean up
+            <Button variant="outline" disabled={cleaning} onClick={closeCleanupPreview}>
+              {cleanupPreview?.canRemove === false ? 'Keep worktree' : 'Cancel'}
             </Button>
+            {cleanupPreview?.canRemove === false ? (
+              <Button
+                variant="primary"
+                icon={<IconRightUpOutline16 />}
+                disabled={cleaning}
+                onClick={reviewCleanupTransfer}
+              >
+                Review transfer
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                icon={<IconTrashOutline16 />}
+                disabled={!cleanupAcknowledged || cleaning}
+                onClick={() => void confirmCleanup()}
+              >
+                Clean up
+              </Button>
+            )}
           </div>
         )}
       >
@@ -1099,16 +1130,37 @@ function WorktreesSection(): React.JSX.Element {
                 <span style={styles.metadata}>{cleanupPreview.inspection.head}</span>
               </div>
             </div>
-            <label style={styles.worktreeAcknowledge}>
-              <input
-                type="checkbox"
-                checked={cleanupAcknowledged}
-                disabled={cleaning}
-                onChange={event => setCleanupAcknowledged(event.currentTarget.checked)}
-                style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
-              />
-              <span>I understand this removes the checkout directory and keeps the branch.</span>
-            </label>
+            {cleanupPreview.canRemove ? (
+              <label style={styles.worktreeAcknowledge}>
+                <input
+                  type="checkbox"
+                  checked={cleanupAcknowledged}
+                  disabled={cleaning}
+                  onChange={event => setCleanupAcknowledged(event.currentTarget.checked)}
+                  style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
+                />
+                <span>I understand this removes the checkout directory and keeps the branch.</span>
+              </label>
+            ) : (
+              <div style={styles.field}>
+                <span style={styles.label}>Preserved changes ({cleanupPreview.inspection.changes.length})</span>
+                <div style={styles.handoffFiles}>
+                  {cleanupPreview.inspection.changes.map(change => (
+                    <div key={change.path} style={styles.handoffFile}>
+                      <span style={styles.label}>{cleanupChangeStatus(change)}</span>
+                      <span style={styles.metadata}>
+                        {change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {cleanupPreview.inspection.changes.some(change => change.kind === 'ignored') && (
+                  <p style={styles.statusMessage}>
+                    Ignored files stay only in this checkout and are not included in a Git transfer.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </Modal>

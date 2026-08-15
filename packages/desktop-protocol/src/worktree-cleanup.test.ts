@@ -30,6 +30,7 @@ const inspection = {
   branch: 'refs/heads/dsh/session-123',
   clean: true as const,
   locked: true as const,
+  changes: [] as [],
 }
 
 test('validates cleanup preview and explicit confirmation inputs', () => {
@@ -46,22 +47,48 @@ test('validates cleanup preview and explicit confirmation inputs', () => {
 
 test('binds cleanup previews to one clean locked managed checkout', () => {
   assert.deepEqual(parseWorktreeCleanupPreview({
+    canRemove: true,
     previewId,
     expiresAt: '2026-08-16T12:05:00.000Z',
     worktree,
     inspection,
   })?.inspection, inspection)
   assert.equal(parseWorktreeCleanupPreview({
+    canRemove: true,
     previewId,
     expiresAt: '2026-08-16T12:05:00.000Z',
     worktree,
-    inspection: { ...inspection, clean: false },
+    inspection: { ...inspection, clean: false, changes: [] },
   }), undefined)
   assert.equal(parseWorktreeCleanupPreview({
+    canRemove: true,
     previewId,
     expiresAt: '2026-08-16T12:05:00.000Z',
     worktree: { ...worktree, worktreePath: '/other' },
     inspection,
+  }), undefined)
+})
+
+test('returns a bounded dirty assessment without issuing a cleanup credential', () => {
+  const blocked = {
+    canRemove: false,
+    worktree,
+    inspection: {
+      ...inspection,
+      clean: false,
+      changes: [{
+        kind: 'ignored',
+        path: 'private.local',
+        indexStatus: '!',
+        worktreeStatus: '!',
+      }],
+    },
+  }
+  assert.deepEqual(parseWorktreeCleanupPreview(blocked), blocked)
+  assert.equal(parseWorktreeCleanupPreview({ ...blocked, previewId }), undefined)
+  assert.equal(parseWorktreeCleanupPreview({
+    ...blocked,
+    inspection: { ...blocked.inspection, changes: [] },
   }), undefined)
 })
 

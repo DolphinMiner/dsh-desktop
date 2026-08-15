@@ -102,7 +102,7 @@ function parseRepository(value: unknown): GitRepositoryIdentity | undefined {
   return { root: value.root, gitDir: value.gitDir, commonDir: value.commonDir }
 }
 
-function parseStatusEntry(value: unknown): GitStatusEntry | undefined {
+export function parseGitStatusEntry(value: unknown): GitStatusEntry | undefined {
   if (!isRecord(value) || !isBoundedString(value.path, MAX_PATH_LENGTH) ||
     typeof value.indexStatus !== 'string' || typeof value.worktreeStatus !== 'string') return undefined
   if (value.kind === 'untracked' || value.kind === 'ignored') {
@@ -217,7 +217,7 @@ export function parseGitStatusSnapshot(value: unknown): GitStatusSnapshot | unde
   if (value.branch !== undefined && !isBoundedString(value.branch, MAX_REF_LENGTH)) return undefined
   if (value.upstream !== undefined && !isBoundedString(value.upstream, MAX_REF_LENGTH)) return undefined
   if (value.upstream === undefined && (Number(value.ahead) !== 0 || Number(value.behind) !== 0)) return undefined
-  const entries = value.entries.map(parseStatusEntry)
+  const entries = value.entries.map(parseGitStatusEntry)
   if (entries.some(entry => entry === undefined) || value.clean !== (entries.length === 0)) return undefined
   return {
     repository,

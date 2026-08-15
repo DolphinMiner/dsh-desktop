@@ -45,6 +45,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /previewHandoff/)
   assert.match(bundle, /confirmHandoff/)
   assert.match(bundle, /Recheck worktrees/)
+  assert.match(bundle, /Keep worktree/)
+  assert.match(bundle, /Ignored files stay only in this checkout/)
   assert.match(bundle, /Git review/)
   assert.match(bundle, /Unresolved comments/)
   assert.match(bundle, /Stale anchor/)

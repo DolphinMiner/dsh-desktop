@@ -3,6 +3,7 @@ import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
+  CleanWorktreeCleanupInspection,
   DesktopProtocolError,
   GitRepositoryIdentity,
   WorktreeCleanupInspection,
@@ -208,8 +209,8 @@ function expectedLockReason(record: WorktreeRecord): string | undefined {
 }
 
 function sameCleanupInspection(
-  left: WorktreeCleanupInspection,
-  right: WorktreeCleanupInspection,
+  left: CleanWorktreeCleanupInspection,
+  right: CleanWorktreeCleanupInspection,
 ): boolean {
   return left.worktreePath === right.worktreePath && left.head === right.head && left.branch === right.branch &&
     left.clean === right.clean && left.locked === right.locked
@@ -390,6 +391,9 @@ export class WorktreeManager {
     signal: AbortSignal,
     beforeDispatch?: (record: WorktreeRecord) => void,
   ): Promise<WorktreeRecord> {
+    if (!expected.clean) {
+      throw new WorktreeManagerError('BAD_MESSAGE', 'A dirty worktree cannot be approved for cleanup.')
+    }
     const existingOperation = this.getByOperation(operationId)
     if (existingOperation !== undefined) {
       if (existingOperation.id !== id || existingOperation.removalOperationId !== operationId ||
@@ -403,6 +407,12 @@ export class WorktreeManager {
       return existingOperation
     }
     const current = await this.inspectCleanup(id, signal)
+    if (!current.inspection.clean) {
+      throw new WorktreeManagerError(
+        'CONFLICT',
+        'The managed worktree contains changes. Keep it or transfer those changes before cleanup.',
+      )
+    }
     if (!sameCleanupInspection(current.inspection, expected)) {
       throw new WorktreeManagerError('CONFLICT', 'The worktree changed after cleanup approval.')
     }

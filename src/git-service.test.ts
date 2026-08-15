@@ -511,8 +511,22 @@ test('refuses cleanup when ignored content would otherwise be discarded', async 
   await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH cleanup test', '-b', 'dirty-topic', target, 'HEAD')
   await writeFile(join(target, 'private.local'), 'must survive\n')
   const head = await gitOutput(target, 'rev-parse', 'HEAD')
+  const service = new GitService()
+  const inspection = await service.inspectWorktreeForRemoval({
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/dirty-topic',
+    lockReason: 'DSH cleanup test',
+  })
+  assert.equal(inspection.clean, false)
+  assert.deepEqual(inspection.changes, [{
+    kind: 'ignored',
+    path: 'private.local',
+    indexStatus: '!',
+    worktreeStatus: '!',
+  }])
 
-  await assert.rejects(new GitService().removeWorktree({
+  await assert.rejects(service.removeWorktree({
     repositoryRoot: await realpath(root),
     worktreePath: await realpath(target),
     head,

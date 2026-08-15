@@ -6,7 +6,10 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import type { GitRepositoryIdentity, WorktreeCleanupInspection } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  CleanWorktreeCleanupInspection,
+  GitRepositoryIdentity,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { GitCreateWorktreeInput, GitService, GitServiceError } from './git-service'
 import {
@@ -67,13 +70,17 @@ function readyWorktree(
   return registry.markReady(record.id, `create-${suffix}`)
 }
 
-function cleanupInspection(record: WorktreeRecord, head = record.baseCommit): WorktreeCleanupInspection {
+function cleanupInspection(
+  record: WorktreeRecord,
+  head = record.baseCommit,
+): CleanWorktreeCleanupInspection {
   return {
     worktreePath: record.worktreePath!,
     head,
     branch: record.branch!,
     clean: true,
     locked: true,
+    changes: [],
   }
 }
 
@@ -299,6 +306,7 @@ test('does not dispatch a concurrent duplicate while creation is in flight', asy
       branch: request.branch,
       clean: true,
       locked: true,
+      changes: [],
     }),
     inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
     transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },
@@ -343,6 +351,7 @@ test('persists an ambiguous create failure and never replays it', async t => {
       branch: request.branch,
       clean: true,
       locked: true,
+      changes: [],
     }),
     inspectWorktreeHandoff: async () => { throw new Error('must not inspect a handoff') },
     transferWorktreeHandoff: async () => { throw new Error('must not transfer a handoff') },

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { WorktreeCleanupInspection } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  CleanWorktreeCleanupInspection,
+  WorktreeCleanupInspection,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import {
   WorktreeCleanupController,
@@ -49,6 +52,7 @@ class FakeWorktrees implements WorktreeCleanupOperations {
     branch: 'refs/heads/dsh/session-123456789012345678901234',
     clean: true,
     locked: true,
+    changes: [],
   }
   inspectCalls = 0
   removeCalls = 0
@@ -71,7 +75,7 @@ class FakeWorktrees implements WorktreeCleanupOperations {
   async removeCleanWorktree(
     id: string,
     operationId: string,
-    expected: WorktreeCleanupInspection,
+    expected: CleanWorktreeCleanupInspection,
     _signal: AbortSignal,
     beforeDispatch?: (record: WorktreeRecord) => void,
   ): Promise<WorktreeRecord> {
@@ -109,6 +113,8 @@ test('binds cleanup to an exact preview and returns a successful retry without r
   })
 
   const preview = await controller.preview({ worktreeId }, signal)
+  assert.equal(preview.canRemove, true)
+  if (!preview.canRemove) assert.fail('expected a removable cleanup preview')
   assert.equal(preview.previewId, previewId)
   assert.equal(preview.expiresAt, '2026-08-16T12:05:00.000Z')
   assert.equal(preview.worktree.lifecycle, 'ready')
@@ -123,6 +129,39 @@ test('binds cleanup to an exact preview and returns a successful retry without r
     branch: 'refs/heads/dsh/session-123456789012345678901234',
     head: 'a'.repeat(40),
   })
+})
+
+test('returns dirty checkout evidence without creating a removable preview', async () => {
+  const worktrees = new FakeWorktrees()
+  worktrees.inspection = {
+    worktreePath: '/managed/worktree',
+    head: 'a'.repeat(40),
+    branch: 'refs/heads/dsh/session-123456789012345678901234',
+    clean: false,
+    locked: true,
+    changes: [{
+      kind: 'ignored',
+      path: 'private.local',
+      indexStatus: '!',
+      worktreeStatus: '!',
+    }],
+  }
+  let approvals = 0
+  const controller = new WorktreeCleanupController(worktrees, {
+    randomId: () => previewId,
+    approve: async () => {
+      approvals += 1
+      return true
+    },
+  })
+
+  const preview = await controller.preview({ worktreeId }, signal)
+  assert.equal(preview.canRemove, false)
+  if (preview.canRemove) assert.fail('expected cleanup to remain blocked')
+  assert.deepEqual(preview.inspection.changes, worktrees.inspection.changes)
+  assert.equal('previewId' in preview, false)
+  assert.equal(approvals, 0)
+  assert.equal(worktrees.removeCalls, 0)
 })
 
 test('expires previews and honors native cancellation before durable cleanup intent', async () => {
@@ -162,6 +201,26 @@ test('revalidates the complete worktree state before and after native approval',
   await assert.rejects(first.confirm({ previewId, confirmed: true }, signal),
     (error: WorktreeCleanupControllerError) => error.code === 'CONFLICT' && /after preview/i.test(error.message))
   assert.equal(changedBefore.removeCalls, 0)
+
+  const becameDirty = new FakeWorktrees()
+  const dirty = new WorktreeCleanupController(becameDirty, {
+    randomId: () => previewId,
+    approve: async () => true,
+  })
+  await dirty.preview({ worktreeId }, signal)
+  becameDirty.inspection = {
+    ...becameDirty.inspection,
+    clean: false,
+    changes: [{
+      kind: 'untracked',
+      path: 'notes.txt',
+      indexStatus: '?',
+      worktreeStatus: '?',
+    }],
+  }
+  await assert.rejects(dirty.confirm({ previewId, confirmed: true }, signal),
+    (error: WorktreeCleanupControllerError) => error.code === 'CONFLICT' && /after preview/i.test(error.message))
+  assert.equal(becameDirty.removeCalls, 0)
 
   const changedDuring = new FakeWorktrees()
   const second = new WorktreeCleanupController(changedDuring, {

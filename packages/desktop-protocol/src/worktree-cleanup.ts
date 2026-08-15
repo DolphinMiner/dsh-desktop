@@ -1,27 +1,54 @@
 import type { WorktreeSummary } from './worktree.js'
 import { parseWorktreeSummary } from './worktree.js'
+import type { GitStatusEntry } from './git.js'
+import { parseGitStatusEntry } from './git.js'
 
 const MAX_PATH_LENGTH = 4_096
 const MAX_REF_LENGTH = 1_024
+const MAX_CHANGES = 20_000
 
 export interface DesktopWorktreeCleanupPreviewInput {
   worktreeId: string
 }
 
-export interface WorktreeCleanupInspection {
+interface WorktreeCleanupInspectionBase {
   worktreePath: string
   head: string
   branch: string
-  clean: true
   locked: true
 }
 
-export interface WorktreeCleanupPreview {
+export interface CleanWorktreeCleanupInspection extends WorktreeCleanupInspectionBase {
+  clean: true
+  changes: []
+}
+
+export interface DirtyWorktreeCleanupInspection extends WorktreeCleanupInspectionBase {
+  clean: false
+  changes: GitStatusEntry[]
+}
+
+export type WorktreeCleanupInspection =
+  | CleanWorktreeCleanupInspection
+  | DirtyWorktreeCleanupInspection
+
+export interface RemovableWorktreeCleanupPreview {
+  canRemove: true
   previewId: string
   expiresAt: string
   worktree: WorktreeSummary
-  inspection: WorktreeCleanupInspection
+  inspection: CleanWorktreeCleanupInspection
 }
+
+export interface BlockedWorktreeCleanupPreview {
+  canRemove: false
+  worktree: WorktreeSummary
+  inspection: DirtyWorktreeCleanupInspection
+}
+
+export type WorktreeCleanupPreview =
+  | RemovableWorktreeCleanupPreview
+  | BlockedWorktreeCleanupPreview
 
 export interface DesktopWorktreeCleanupConfirmInput {
   previewId: string
@@ -67,28 +94,54 @@ export function parseDesktopWorktreeCleanupPreviewInput(
 }
 
 export function parseWorktreeCleanupInspection(value: unknown): WorktreeCleanupInspection | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['worktreePath', 'head', 'branch', 'clean', 'locked']) ||
+  if (!isRecord(value) || !hasOnlyKeys(value, ['worktreePath', 'head', 'branch', 'clean', 'locked', 'changes']) ||
     !isBoundedText(value.worktreePath, MAX_PATH_LENGTH) || !isObjectId(value.head) ||
     !isBoundedText(value.branch, MAX_REF_LENGTH) || !value.branch.startsWith('refs/heads/') ||
-    value.clean !== true || value.locked !== true) return undefined
+    typeof value.clean !== 'boolean' || value.locked !== true || !Array.isArray(value.changes) ||
+    value.changes.length > MAX_CHANGES) return undefined
+  const changes = value.changes.map(parseGitStatusEntry)
+  if (changes.some(change => change === undefined) || value.clean !== (changes.length === 0) ||
+    new Set((changes as GitStatusEntry[]).map(change => change.path)).size !== changes.length) return undefined
+  if (value.clean) {
+    return {
+      worktreePath: value.worktreePath,
+      head: value.head,
+      branch: value.branch,
+      clean: true,
+      locked: true,
+      changes: [],
+    }
+  }
   return {
     worktreePath: value.worktreePath,
     head: value.head,
     branch: value.branch,
-    clean: true,
+    clean: false,
     locked: true,
+    changes: changes as GitStatusEntry[],
   }
 }
 
 export function parseWorktreeCleanupPreview(value: unknown): WorktreeCleanupPreview | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['previewId', 'expiresAt', 'worktree', 'inspection']) ||
-    !isUuid(value.previewId) || !isIsoDate(value.expiresAt)) return undefined
+  if (!isRecord(value) || typeof value.canRemove !== 'boolean') return undefined
   const worktree = parseWorktreeSummary(value.worktree)
   const inspection = parseWorktreeCleanupInspection(value.inspection)
   if (worktree === undefined || inspection === undefined || worktree.executionMode !== 'worktree' ||
     worktree.worktreePath !== inspection.worktreePath || worktree.branch !== inspection.branch ||
     (worktree.lifecycle !== 'ready' && worktree.lifecycle !== 'orphaned')) return undefined
-  return { previewId: value.previewId, expiresAt: value.expiresAt, worktree, inspection }
+  if (!value.canRemove) {
+    if (!hasOnlyKeys(value, ['canRemove', 'worktree', 'inspection']) || inspection.clean) return undefined
+    return { canRemove: false, worktree, inspection }
+  }
+  if (!hasOnlyKeys(value, ['canRemove', 'previewId', 'expiresAt', 'worktree', 'inspection']) ||
+    !isUuid(value.previewId) || !isIsoDate(value.expiresAt) || !inspection.clean) return undefined
+  return {
+    canRemove: true,
+    previewId: value.previewId,
+    expiresAt: value.expiresAt,
+    worktree,
+    inspection,
+  }
 }
 
 export function parseDesktopWorktreeCleanupConfirmInput(

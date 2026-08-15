@@ -1561,6 +1561,12 @@ export class GitService {
     const deadline = Date.now() + this.timeoutMs
     const expectedHead = boundedObjectId(input.head, 'Expected worktree HEAD')!
     const inspected = await this.inspectWorktreeForRemovalBefore(input, signal, deadline)
+    if (!inspected.inspection.clean) {
+      throw new GitServiceError(
+        'GIT_FAILED',
+        'The managed worktree contains modified, untracked, ignored, or conflicting files.',
+      )
+    }
     if (inspected.inspection.head !== expectedHead) {
       throw new GitServiceError('GIT_FAILED', 'The managed worktree HEAD changed before cleanup.')
     }
@@ -1622,23 +1628,31 @@ export class GitService {
   ): Promise<InspectedWorktreeRemoval> {
     const managed = await this.inspectManagedWorktreeBefore(input, signal, deadline)
     const status = await this.statusBefore(managed.targetRepository, signal, deadline, true)
-    if (!status.clean || status.head !== managed.entry.head ||
-      status.branch !== managed.entry.branch!.slice('refs/heads/'.length) || status.entries.length !== 0) {
+    if (status.head !== managed.entry.head ||
+      status.branch !== managed.entry.branch!.slice('refs/heads/'.length)) {
       throw new GitServiceError(
         'GIT_FAILED',
-        'The managed worktree contains modified, untracked, ignored, or conflicting files.',
+        'The managed worktree HEAD or branch changed before cleanup inspection.',
       )
     }
     return {
       repository: managed.repository,
       target: managed.target,
       lockReason: managed.lockReason,
-      inspection: {
+      inspection: status.entries.length === 0 ? {
         worktreePath: managed.target,
         head: managed.entry.head!,
         branch: managed.entry.branch!,
         clean: true,
         locked: true,
+        changes: [],
+      } : {
+        worktreePath: managed.target,
+        head: managed.entry.head!,
+        branch: managed.entry.branch!,
+        clean: false,
+        locked: true,
+        changes: status.entries,
       },
     }
   }
