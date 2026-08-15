@@ -124,6 +124,27 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'auto',
     padding: '8px 0',
   },
+  fileSelectionHeader: {
+    alignItems: 'center',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    color: 'var(--dsw-alias-label-secondary, #5f6268)',
+    display: 'flex',
+    fontSize: 12,
+    gap: 8,
+    minHeight: 34,
+    padding: '5px 12px',
+  },
+  fileRow: {
+    alignItems: 'stretch',
+    display: 'grid',
+    gridTemplateColumns: '34px minmax(0, 1fr)',
+    minHeight: 36,
+  },
+  fileSelection: {
+    alignItems: 'center',
+    display: 'flex',
+    justifyContent: 'center',
+  },
   fileButton: {
     alignItems: 'center',
     background: 'transparent',
@@ -135,7 +156,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     gridTemplateColumns: '24px minmax(0, 1fr)',
     minHeight: 36,
-    padding: '6px 12px',
+    padding: '6px 12px 6px 4px',
     textAlign: 'left',
     width: '100%',
   },
@@ -822,6 +843,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   const [requestedScope, setRequestedScope] = useState<GitReviewScope>({ kind: 'unstaged' })
   const [snapshot, setSnapshot] = useState<GitReviewSnapshot>()
   const [selectedPath, setSelectedPath] = useState<string>()
+  const [selectedMutationPaths, setSelectedMutationPaths] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [comments, setComments] = useState<GitReviewCommentSnapshot>()
@@ -864,6 +886,11 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       setSelectedPath(previous => next.files.some(file => file.path === previous)
         ? previous
         : next.files[0]?.path)
+      setSelectedMutationPaths(previous => {
+        if (next.scope.kind !== 'unstaged' && next.scope.kind !== 'staged') return []
+        const available = previous.filter(path => next.files.some(file => file.path === path))
+        return available.length > 0 ? available : next.files.slice(0, 1).map(file => file.path)
+      })
     }).catch(cause => {
       if (!current) return
       setError(reviewErrorMessage(cause))
@@ -937,6 +964,12 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     return byAnchor
   }, [projectedComments])
   const unresolvedComments = projectedComments.filter(projected => projected.state !== 'active')
+  const mutationFiles = snapshot !== undefined &&
+    (snapshot.scope.kind === 'unstaged' || snapshot.scope.kind === 'staged')
+    ? snapshot.files.filter(file => selectedMutationPaths.includes(file.path))
+    : []
+  const allMutationFilesSelected = snapshot !== undefined && snapshot.files.length > 0 &&
+    mutationFiles.length === snapshot.files.length
 
   const requestReview = (): void => {
     const scope = scopeFrom(scopeKind, commitRef, baseRef)
@@ -946,6 +979,7 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
     }
     setCommentDraft(undefined)
     setCommentBody('')
+    setSelectedMutationPaths([])
     setMutationError(undefined)
     setMutationNotice(undefined)
     setCommitPreview(undefined)
@@ -958,20 +992,22 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
   }
 
   const mutateSelected = (): void => {
-    if (bridge === undefined || workspaceRoot === undefined || snapshot === undefined || selected === undefined ||
+    if (bridge === undefined || workspaceRoot === undefined || snapshot === undefined || mutationFiles.length === 0 ||
       (snapshot.scope.kind !== 'unstaged' && snapshot.scope.kind !== 'staged')) return
     const kind = snapshot.scope.kind === 'unstaged' ? 'stage' : 'unstage'
     setPendingMutation(kind)
     setMutationError(undefined)
-    setMutationNotice(undefined)
     void bridge.mutateIndex({
       sessionId,
       workspaceRoot,
       requestId: crypto.randomUUID(),
       kind,
-      paths: [selected.path],
+      paths: mutationFiles.map(file => file.path),
     }).then(() => {
       setMutationError(undefined)
+      const count = mutationFiles.length
+      setMutationNotice(`${kind === 'stage' ? 'Staged' : 'Unstaged'} ${String(count)} ` +
+        `${count === 1 ? 'file' : 'files'}.`)
       setRequestedScope({ ...snapshot.scope })
     }).catch(cause => {
       setMutationError(reviewErrorMessage(cause))
@@ -1228,27 +1264,63 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
       {error === undefined && !loading && snapshot !== undefined && snapshot.files.length > 0 && (
         <div style={styles.content}>
           <nav style={styles.files} aria-label="Changed files">
+            {(snapshot.scope.kind === 'unstaged' || snapshot.scope.kind === 'staged') && (
+              <label style={styles.fileSelectionHeader}>
+                <input
+                  type="checkbox"
+                  aria-label="Select all changed files"
+                  checked={allMutationFilesSelected}
+                  disabled={pendingMutation !== undefined || pendingCommit !== undefined ||
+                    pendingRevert !== undefined || pendingPush !== undefined}
+                  onChange={event => setSelectedMutationPaths(event.currentTarget.checked
+                    ? snapshot.files.map(file => file.path)
+                    : [])}
+                />
+                <span>{String(mutationFiles.length)} of {String(snapshot.files.length)} selected</span>
+              </label>
+            )}
             {snapshot.files.map(file => (
-              <button
-                key={file.path}
-                type="button"
-                style={{
-                  ...styles.fileButton,
-                  ...(file.path === selectedPath
-                    ? { background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)' }
-                    : {}),
-                }}
-                title={file.path}
-                aria-current={file.path === selectedPath ? 'true' : undefined}
-                onClick={() => {
-                  setSelectedPath(file.path)
-                  setCommentDraft(undefined)
-                  setCommentBody('')
-                }}
-              >
-                <span style={styles.fileStatus}>{statusLabels[file.status]}</span>
-                <span style={styles.filePath}>{file.path}</span>
-              </button>
+              <div key={file.path} style={styles.fileRow}>
+                {(snapshot.scope.kind === 'unstaged' || snapshot.scope.kind === 'staged') && (
+                  <label style={styles.fileSelection} title={`Select ${file.path}`}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${file.path}`}
+                      checked={selectedMutationPaths.includes(file.path)}
+                      disabled={pendingMutation !== undefined || pendingCommit !== undefined ||
+                        pendingRevert !== undefined || pendingPush !== undefined}
+                      onChange={event => {
+                        const checked = event.currentTarget.checked
+                        setSelectedMutationPaths(previous => checked
+                          ? [...new Set([...previous, file.path])]
+                          : previous.filter(path => path !== file.path))
+                      }}
+                    />
+                  </label>
+                )}
+                <button
+                  type="button"
+                  style={{
+                    ...styles.fileButton,
+                    ...((snapshot.scope.kind === 'commit' || snapshot.scope.kind === 'branch')
+                      ? { gridColumn: '1 / -1', paddingLeft: 12 }
+                      : {}),
+                    ...(file.path === selectedPath
+                      ? { background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)' }
+                      : {}),
+                  }}
+                  title={file.path}
+                  aria-current={file.path === selectedPath ? 'true' : undefined}
+                  onClick={() => {
+                    setSelectedPath(file.path)
+                    setCommentDraft(undefined)
+                    setCommentBody('')
+                  }}
+                >
+                  <span style={styles.fileStatus}>{statusLabels[file.status]}</span>
+                  <span style={styles.filePath}>{file.path}</span>
+                </button>
+              </div>
             ))}
           </nav>
           <div style={styles.patch}>
@@ -1274,9 +1346,10 @@ export function GitReviewView({ bridge, sessionId, useSessions }: GitReviewViewP
                     size="sm"
                     variant="toolbar"
                     icon={<IconBranchOutline16 />}
-                    disabled={loading || pendingMutation !== undefined || pendingCommit !== undefined ||
-                      pendingRevert !== undefined || pendingPush !== undefined}
-                    title={snapshot.scope.kind === 'unstaged' ? 'Stage selected file' : 'Unstage selected file'}
+                    disabled={loading || mutationFiles.length === 0 || pendingMutation !== undefined ||
+                      pendingCommit !== undefined || pendingRevert !== undefined || pendingPush !== undefined}
+                    title={`${snapshot.scope.kind === 'unstaged' ? 'Stage' : 'Unstage'} ` +
+                      `${String(mutationFiles.length)} selected ${mutationFiles.length === 1 ? 'file' : 'files'}`}
                     onClick={mutateSelected}
                   >
                     {snapshot.scope.kind === 'unstaged' ? 'Stage' : 'Unstage'}
