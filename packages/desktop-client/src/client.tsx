@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   Button,
+  IconCheckOutline16,
   IconCloseOutline16,
   IconLinkOutline16,
+  IconPauseOutline16,
+  IconPlayOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
   IconRightUpOutline16,
@@ -38,6 +41,8 @@ import type {
 
 import {
   canReconnect,
+  computerActionStateDot,
+  computerActionStatusLabel,
   computerPermissionLabel,
   computerTargetGroupLabel,
   connectionStateDot,
@@ -64,6 +69,10 @@ interface DesktopComputerBridge {
   getState(): Promise<ComputerControlSnapshot>
   refresh(): Promise<ComputerControlSnapshot>
   selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
+  grantPendingActions(): Promise<ComputerControlSnapshot>
+  pauseActions(): Promise<ComputerControlSnapshot>
+  resumeActions(): Promise<ComputerControlSnapshot>
+  revokeActions(): Promise<ComputerControlSnapshot>
   stop(): Promise<ComputerControlSnapshot>
   openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
   onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
@@ -220,6 +229,43 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 20,
     paddingTop: 16,
   },
+  computerSection: {
+    borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'grid',
+    gap: 12,
+    marginTop: 20,
+    paddingTop: 16,
+  },
+  computerSectionHeader: {
+    alignItems: 'center',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'space-between',
+  },
+  computerSectionTitle: { fontSize: 13, fontWeight: 650, lineHeight: '20px', margin: 0 },
+  computerActions: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
+  grantNotice: {
+    alignItems: 'center',
+    background: 'var(--dsw-alias-state-warning-secondary, #fff6df)',
+    borderRadius: 4,
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'space-between',
+    padding: '12px 14px',
+  },
+  computerRecordList: { borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)' },
+  computerRecord: {
+    alignItems: 'center',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
+    display: 'grid',
+    gap: 12,
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    minHeight: 48,
+    padding: '6px 0',
+  },
+  computerRecordIdentity: { display: 'grid', gap: 1, minWidth: 0 },
 }
 
 interface PendingOAuth {
@@ -229,7 +275,7 @@ interface PendingOAuth {
 }
 
 function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return 'The connection operation failed.'
+  if (!(error instanceof Error)) return 'The desktop operation failed.'
   const marker = 'Error invoking remote method'
   const index = error.message.indexOf(marker)
   return index < 0 ? error.message : error.message.slice(error.message.indexOf(':', index) + 1).trim()
@@ -689,8 +735,45 @@ function ComputerSection(): React.JSX.Element {
     }
   }
 
+  const runActionControl = async (
+    operation: 'grant' | 'pause' | 'resume' | 'revoke',
+  ): Promise<void> => {
+    if (bridge === undefined) return
+    setLoading(true)
+    try {
+      const next = operation === 'grant'
+        ? await bridge.grantPendingActions()
+        : operation === 'pause'
+          ? await bridge.pauseActions()
+          : operation === 'resume'
+            ? await bridge.resumeActions()
+            : await bridge.revokeActions()
+      setSnapshot(next)
+      setError(undefined)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const groups: ComputerTargetKind[] = ['application', 'window', 'display']
   const permissions = snapshot?.permissions
+  const grants = snapshot?.actionGrants ?? []
+  const pendingGrant = snapshot?.pendingActionGrant
+  const selectedForActions = snapshot?.selectedTarget !== undefined &&
+    snapshot.selectedTarget.kind !== 'display'
+  const actionState = snapshot?.acting === true
+    ? { dot: 'ongoing' as const, label: 'Acting' }
+    : snapshot?.auditAvailable === false
+      ? { dot: 'error' as const, label: 'Audit unavailable' }
+      : permissions?.canAct !== true
+        ? { dot: 'error' as const, label: 'Permission required' }
+        : !selectedForActions
+          ? { dot: 'warning' as const, label: 'Observation only' }
+          : snapshot?.actionsPaused !== false
+            ? { dot: 'warning' as const, label: 'Paused' }
+            : { dot: 'done' as const, label: 'Enabled' }
   return (
     <section style={styles.root} aria-labelledby="desktop-computer-heading">
       <header style={styles.header}>
@@ -760,6 +843,8 @@ function ComputerSection(): React.JSX.Element {
         <span style={styles.metadata}>
           {snapshot?.observing === true
             ? 'Observing'
+            : snapshot?.acting === true
+              ? 'Performing approved action'
             : snapshot?.lastObservation === undefined
               ? snapshot?.enabled === true ? 'Ready' : 'Stopped'
               : `Last observed ${new Date(snapshot.lastObservation.observedAt).toLocaleString()} / ` +
@@ -775,6 +860,116 @@ function ComputerSection(): React.JSX.Element {
           >
             Stop
           </Button>
+        )}
+      </div>
+
+      <div style={styles.computerSection}>
+        <div style={styles.computerSectionHeader}>
+          <h3 style={styles.computerSectionTitle}>Computer actions</h3>
+          <span style={styles.status}>
+            <StateDot state={actionState.dot} />
+            {actionState.label}
+          </span>
+        </div>
+
+        <div style={styles.computerActions}>
+          {grants.length > 0 && snapshot?.actionsPaused === false ? (
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<IconPauseOutline16 />}
+              disabled={loading}
+              onClick={() => void runActionControl('pause')}
+            >
+              Pause
+            </Button>
+          ) : grants.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<IconPlayOutline16 />}
+              disabled={loading || permissions?.canAct !== true || snapshot?.auditAvailable !== true}
+              onClick={() => void runActionControl('resume')}
+            >
+              Resume
+            </Button>
+          ) : null}
+          {(grants.length > 0 || pendingGrant !== undefined) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<IconTrashOutline16 />}
+              disabled={loading}
+              onClick={() => void runActionControl('revoke')}
+            >
+              Revoke
+            </Button>
+          )}
+        </div>
+
+        {snapshot?.auditAvailable === false && (
+          <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-error-secondary, #fef0ef)', marginBottom: 0 }}>
+            Action audit is unavailable. Computer actions are blocked.
+          </div>
+        )}
+
+        {pendingGrant !== undefined && (
+          <div style={styles.grantNotice}>
+            <div style={styles.computerRecordIdentity}>
+              <span style={styles.itemTitle}>{pendingGrant.application.name}</span>
+              <span style={styles.metadata}>Session {pendingGrant.sessionId}</span>
+            </div>
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<IconCheckOutline16 />}
+              disabled={loading || permissions?.canAct !== true || snapshot?.auditAvailable !== true}
+              onClick={() => void runActionControl('grant')}
+            >
+              Allow for this session
+            </Button>
+          </div>
+        )}
+
+        {grants.length === 0 && pendingGrant === undefined && (
+          <span style={styles.metadata}>No session grants</span>
+        )}
+        {grants.length > 0 && (
+          <div style={styles.computerRecordList}>
+            {grants.map(grant => (
+              <div key={`${grant.sessionId}:${grant.application.id}`} style={styles.computerRecord}>
+                <div style={styles.computerRecordIdentity}>
+                  <span style={styles.permissionName}>{grant.application.name}</span>
+                  <span style={styles.metadata}>Session {grant.sessionId}</span>
+                </div>
+                <span style={styles.metadata}>{new Date(grant.grantedAt).toLocaleTimeString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={styles.computerSection}>
+        <div style={styles.computerSectionHeader}>
+          <h3 style={styles.computerSectionTitle}>Recent actions</h3>
+          <span style={styles.metadata}>{snapshot?.recentActions.length ?? 0}</span>
+        </div>
+        {snapshot?.recentActions.length === 0 && <span style={styles.metadata}>No actions recorded</span>}
+        {snapshot !== undefined && snapshot.recentActions.length > 0 && (
+          <div style={styles.computerRecordList}>
+            {snapshot.recentActions.map(action => (
+              <div key={action.actionId} style={styles.computerRecord}>
+                <div style={styles.computerRecordIdentity}>
+                  <span style={styles.permissionName}>{action.kind} / {action.targetName}</span>
+                  <span style={styles.metadata}>{new Date(action.updatedAt).toLocaleString()}</span>
+                </div>
+                <span style={styles.status}>
+                  <StateDot state={computerActionStateDot(action.status)} />
+                  {computerActionStatusLabel(action.status)}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </section>

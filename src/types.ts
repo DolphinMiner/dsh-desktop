@@ -28,6 +28,10 @@ export interface DesktopBridge {
     getState(): Promise<ComputerControlSnapshot>
     refresh(): Promise<ComputerControlSnapshot>
     selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
+    grantPendingActions(): Promise<ComputerControlSnapshot>
+    pauseActions(): Promise<ComputerControlSnapshot>
+    resumeActions(): Promise<ComputerControlSnapshot>
+    revokeActions(): Promise<ComputerControlSnapshot>
     stop(): Promise<ComputerControlSnapshot>
     openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
     onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void

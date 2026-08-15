@@ -432,6 +432,22 @@ function installIpcHandlers(connections: ConnectionManager, computer: ComputerOb
     if (input === undefined) throw new Error('The computer target request is invalid.')
     return computer.selectTarget(input.targetId)
   })
+  ipcMain.handle('desktop:computer:grant-pending-actions', event => {
+    assertTrustedSender(event)
+    return computer.grantPendingActions()
+  })
+  ipcMain.handle('desktop:computer:pause-actions', event => {
+    assertTrustedSender(event)
+    return computer.pauseActions()
+  })
+  ipcMain.handle('desktop:computer:resume-actions', event => {
+    assertTrustedSender(event)
+    return computer.resumeActions()
+  })
+  ipcMain.handle('desktop:computer:revoke-actions', event => {
+    assertTrustedSender(event)
+    return computer.revokeActions()
+  })
   ipcMain.handle('desktop:computer:stop', async event => {
     assertTrustedSender(event)
     return computer.stop()

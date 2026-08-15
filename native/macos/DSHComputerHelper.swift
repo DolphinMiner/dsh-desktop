@@ -208,12 +208,18 @@ private func permissions() -> PermissionResult {
     )
 }
 
+private func nonEmpty(_ value: String?) -> String? {
+    guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !normalized.isEmpty else { return nil }
+    return normalized
+}
+
 private func applicationTarget(_ application: NSRunningApplication) -> Target? {
     guard application.activationPolicy == .regular,
           !application.isTerminated,
           let name = application.localizedName,
           !name.isEmpty else { return nil }
-    let bundle = application.bundleIdentifier
+    let bundle = nonEmpty(application.bundleIdentifier)
     let id = "application:\(application.processIdentifier):\(bundle ?? "-")"
     return Target(
         id: id,
@@ -281,8 +287,8 @@ private func targetList() async throws -> TargetListResult {
             id: "window:\(window.windowID):\(owner.processID)",
             kind: "window",
             name: name,
-            applicationName: owner.applicationName,
-            bundleId: owner.bundleIdentifier,
+            applicationName: nonEmpty(owner.applicationName),
+            bundleId: nonEmpty(owner.bundleIdentifier),
             pid: owner.processID,
             frontmost: nil,
             bounds: Bounds(window.frame),

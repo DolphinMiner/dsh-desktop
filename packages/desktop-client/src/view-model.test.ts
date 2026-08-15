@@ -3,6 +3,8 @@ import test from 'node:test'
 
 import {
   canReconnect,
+  computerActionStateDot,
+  computerActionStatusLabel,
   computerPermissionLabel,
   computerTargetGroupLabel,
   connectionStateDot,
@@ -25,4 +27,9 @@ test('maps computer permissions and target kinds to truthful labels', () => {
   assert.equal(computerPermissionLabel('not-determined'), 'Not requested')
   assert.equal(computerTargetGroupLabel('window'), 'Windows')
   assert.equal(computerTargetGroupLabel('display'), 'Displays')
+  assert.equal(computerActionStatusLabel('dispatch'), 'Dispatched')
+  assert.equal(computerActionStatusLabel('ambiguous'), 'Result uncertain')
+  assert.equal(computerActionStateDot('succeeded'), 'done')
+  assert.equal(computerActionStateDot('cancelled'), 'warning')
+  assert.equal(computerActionStateDot('ambiguous'), 'error')
 })

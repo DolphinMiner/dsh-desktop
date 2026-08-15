@@ -268,6 +268,29 @@ test('redacts typed values and OCR from the post-action result', async t => {
   assert.equal(JSON.stringify(result).includes('private draft'), false)
 })
 
+test('projects pause, resume, and revoke controls from the authoritative action state', async t => {
+  const { root, observer } = await fixture({}, true)
+  t.after(() => observer.dispose())
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await observer.selectTarget('window:7')
+  const source = await observer.observe('session-1')
+  await assert.rejects(observer.act({
+    actionId: '88888888-8888-4888-8888-888888888888',
+    sessionId: 'session-1',
+    snapshotId: source.snapshotId,
+    action: { kind: 'key', key: 'escape', modifiers: [] },
+  }), (error: ComputerUseError) => error.code === 'PERMISSION_DENIED')
+
+  const granted = observer.grantPendingActions()
+  assert.equal(granted.actionsPaused, false)
+  assert.equal(granted.actionGrants.length, 1)
+  assert.equal(observer.pauseActions().actionsPaused, true)
+  assert.equal(observer.resumeActions().actionsPaused, false)
+  const revoked = observer.revokeActions()
+  assert.equal(revoked.actionsPaused, true)
+  assert.equal(revoked.actionGrants.length, 0)
+})
+
 test('rejects stale snapshots and secure fields before dispatch', async t => {
   const { root, helper, observer, audit } = await fixture({}, true)
   t.after(() => observer.dispose())
