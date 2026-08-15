@@ -27,6 +27,7 @@ function preflight(overrides: Partial<WorktreeHandoffPreflight> = {}): WorktreeH
     direction: 'local-to-worktree',
     worktree,
     baseCommit: 'a'.repeat(40),
+    sourceTree: 'c'.repeat(40),
     source: { kind: 'local', path: '/repo', branch: 'main', head: 'b'.repeat(40), clean: false },
     destination: {
       kind: 'worktree',
@@ -37,7 +38,7 @@ function preflight(overrides: Partial<WorktreeHandoffPreflight> = {}): WorktreeH
     },
     files: [
       { status: 'modified', path: 'src/index.ts', patchAvailable: true },
-      { status: 'untracked', path: 'notes.txt', patchAvailable: false },
+      { status: 'added', path: 'notes.txt', patchAvailable: true },
     ],
     patch: 'diff --git a/src/index.ts b/src/index.ts\n',
     blockers: [],
@@ -63,9 +64,7 @@ test('binds handoff endpoints to the managed worktree direction', () => {
   assert.equal(parseWorktreeHandoffPreflight(preflight({
     destination: { ...preflight().destination, path: '/other' },
   })), undefined)
-  assert.equal(parseWorktreeHandoffPreflight(preflight({
-    files: [{ status: 'untracked', path: 'notes.txt', patchAvailable: true }],
-  })), undefined)
+  assert.equal(parseWorktreeHandoffPreflight({ ...preflight(), sourceTree: 'not-an-object' }), undefined)
 })
 
 test('requires blocker and transfer truth to agree', () => {

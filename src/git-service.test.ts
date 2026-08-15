@@ -548,11 +548,137 @@ test('preflights local changes into an exact clean managed worktree', async t =>
   assert.equal(preflight.source.clean, false)
   assert.equal(preflight.destination.kind, 'worktree')
   assert.equal(preflight.destination.clean, true)
+  assert.match(preflight.sourceTree ?? '', /^[a-f0-9]{40,64}$/)
   assert.deepEqual(preflight.files.map(file => [file.status, file.path]), [
     ['modified', 'README.md'],
-    ['untracked', 'notes.txt'],
+    ['added', 'notes.txt'],
   ])
   assert.match(preflight.patch, /local change/)
+  assert.match(preflight.patch, /untracked/)
+})
+
+test('transfers the exact combined local tree into a clean managed worktree without changing the source', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-transfer-local-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  const baseCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH handoff test', '-b', 'handoff-topic', target, baseCommit)
+  await writeFile(join(root, 'committed.txt'), 'committed source\n')
+  await git(root, 'add', 'committed.txt')
+  await git(root, 'commit', '-m', 'source commit')
+  await writeFile(join(root, 'staged.txt'), 'staged version\n')
+  await git(root, 'add', 'staged.txt')
+  await writeFile(join(root, 'staged.txt'), 'final working version\n')
+  await writeFile(join(root, 'README.md'), 'unstaged source\n')
+  await writeFile(join(root, 'untracked.txt'), 'untracked source\n')
+  const sourceHeadBefore = await gitOutput(root, 'rev-parse', 'HEAD')
+  const sourceIndexBefore = await gitOutput(root, 'write-tree')
+  const sourceStatusBefore = await gitOutput(root, 'status', '--porcelain=v2', '--untracked-files=all')
+  const service = new GitService()
+  const input = {
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/handoff-topic',
+    lockReason: 'DSH handoff test',
+    baseCommit,
+    direction: 'local-to-worktree' as const,
+  }
+
+  const preflight = await service.inspectWorktreeHandoff(input)
+  assert.equal(preflight.canTransfer, true)
+  assert.ok(preflight.sourceTree)
+  const result = await service.transferWorktreeHandoff({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+  })
+
+  assert.equal(result.sourceTree, preflight.sourceTree)
+  assert.equal(await gitOutput(target, 'rev-parse', 'HEAD'), baseCommit)
+  assert.equal(await gitOutput(target, 'write-tree'), preflight.sourceTree)
+  assert.equal(await gitOutput(target, 'diff', '--name-only'), '')
+  assert.deepEqual(result.destination.entries.every(entry =>
+    entry.indexStatus !== '.' && entry.worktreeStatus === '.'), true)
+  assert.equal(await readFile(join(target, 'staged.txt'), 'utf8'), 'final working version\n')
+  assert.equal(await readFile(join(target, 'untracked.txt'), 'utf8'), 'untracked source\n')
+  assert.equal(await gitOutput(root, 'rev-parse', 'HEAD'), sourceHeadBefore)
+  assert.equal(await gitOutput(root, 'write-tree'), sourceIndexBefore)
+  assert.equal(await gitOutput(root, 'status', '--porcelain=v2', '--untracked-files=all'), sourceStatusBefore)
+})
+
+test('transfers the exact managed worktree tree back to a clean local checkout without changing the source', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-transfer-worktree-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  const baseCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH handoff test', '-b', 'handoff-topic', target, baseCommit)
+  await writeFile(join(target, 'committed.txt'), 'worktree commit\n')
+  await git(target, 'add', 'committed.txt')
+  await git(target, 'commit', '-m', 'worktree source commit')
+  await writeFile(join(target, 'README.md'), 'worktree final\n')
+  await writeFile(join(target, 'new.txt'), 'worktree untracked\n')
+  const sourceHeadBefore = await gitOutput(target, 'rev-parse', 'HEAD')
+  const sourceIndexBefore = await gitOutput(target, 'write-tree')
+  const sourceStatusBefore = await gitOutput(target, 'status', '--porcelain=v2', '--untracked-files=all')
+  const service = new GitService()
+  const input = {
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/handoff-topic',
+    lockReason: 'DSH handoff test',
+    baseCommit,
+    direction: 'worktree-to-local' as const,
+  }
+
+  const preflight = await service.inspectWorktreeHandoff(input)
+  assert.equal(preflight.canTransfer, true)
+  assert.ok(preflight.sourceTree)
+  await service.transferWorktreeHandoff({ ...input, expectedSourceTree: preflight.sourceTree })
+
+  assert.equal(await gitOutput(root, 'rev-parse', 'HEAD'), baseCommit)
+  assert.equal(await gitOutput(root, 'write-tree'), preflight.sourceTree)
+  assert.equal(await gitOutput(root, 'diff', '--name-only'), '')
+  assert.equal(await readFile(join(root, 'README.md'), 'utf8'), 'worktree final\n')
+  assert.equal(await readFile(join(root, 'new.txt'), 'utf8'), 'worktree untracked\n')
+  assert.equal(await gitOutput(target, 'rev-parse', 'HEAD'), sourceHeadBefore)
+  assert.equal(await gitOutput(target, 'write-tree'), sourceIndexBefore)
+  assert.equal(await gitOutput(target, 'status', '--porcelain=v2', '--untracked-files=all'), sourceStatusBefore)
+})
+
+test('rejects handoff source drift before the mutation dispatch boundary', async t => {
+  const root = await repositoryFixture()
+  const parent = await mkdtemp(join(tmpdir(), 'dsh-git-handoff-drift-test-'))
+  const target = join(parent, 'managed worktree')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(parent, { recursive: true, force: true }))
+  const baseCommit = await gitOutput(root, 'rev-parse', 'HEAD')
+  await git(root, 'worktree', 'add', '--lock', '--reason', 'DSH handoff test', '-b', 'handoff-topic', target, baseCommit)
+  await writeFile(join(root, 'README.md'), 'reviewed source\n')
+  const service = new GitService()
+  const input = {
+    repositoryRoot: await realpath(root),
+    worktreePath: await realpath(target),
+    branch: 'refs/heads/handoff-topic',
+    lockReason: 'DSH handoff test',
+    baseCommit,
+    direction: 'local-to-worktree' as const,
+  }
+  const preflight = await service.inspectWorktreeHandoff(input)
+  assert.ok(preflight.sourceTree)
+  await writeFile(join(root, 'README.md'), 'changed after review\n')
+  let dispatches = 0
+
+  await assert.rejects(service.transferWorktreeHandoff({
+    ...input,
+    expectedSourceTree: preflight.sourceTree,
+  }, undefined, () => { dispatches += 1 }), (error: GitServiceError) =>
+    error.code === 'GIT_FAILED' && /source changed/.test(error.message))
+  assert.equal(dispatches, 0)
+  assert.equal(await gitOutput(target, 'status', '--porcelain=v2', '--untracked-files=all'), '')
+  assert.equal(await gitOutput(target, 'rev-parse', 'HEAD'), baseCommit)
 })
 
 test('blocks a handoff that would overwrite an ignored destination path', async t => {

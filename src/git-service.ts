@@ -1,8 +1,8 @@
-import { spawn, type ChildProcessByStdio } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, realpath, stat } from 'node:fs/promises'
+import { lstat, mkdtemp, realpath, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, normalize, posix, win32 } from 'node:path'
-import type { Readable } from 'node:stream'
 
 import type {
   GitCommitResult,
@@ -30,6 +30,7 @@ const MAX_COMMIT_MESSAGE_LENGTH = 8_192
 const MAX_GIT_REF_LENGTH = 1_024
 const MAX_REMOTE_NAME_LENGTH = 256
 const MAX_REMOTE_URL_LENGTH = 4_096
+const MAX_GIT_STDIN_BYTES = 8 * 1024 * 1024
 
 export type GitServiceErrorCode =
   | 'BAD_OUTPUT'
@@ -77,7 +78,16 @@ export interface GitInspectWorktreeHandoffInput extends GitInspectWorktreeInput 
   direction: WorktreeHandoffDirection
 }
 
+export interface GitTransferWorktreeHandoffInput extends GitInspectWorktreeHandoffInput {
+  expectedSourceTree: string
+}
+
 export type GitWorktreeHandoffInspection = Omit<WorktreeHandoffPreflight, 'worktree'>
+
+export interface GitWorktreeHandoffTransferResult {
+  sourceTree: string
+  destination: GitStatusSnapshot
+}
 
 interface InspectedManagedWorktree {
   repository: GitRepositoryIdentity
@@ -114,11 +124,16 @@ interface GitCommandResult {
   stderr: Buffer
 }
 
+interface GitRunOptions {
+  indexFile?: string
+  stdin?: Buffer
+}
+
 function isRecordWithCode(value: unknown): value is { code: string } {
   return typeof value === 'object' && value !== null && 'code' in value && typeof value.code === 'string'
 }
 
-function gitEnvironment(): NodeJS.ProcessEnv {
+function gitEnvironment(indexFile?: string): NodeJS.ProcessEnv {
   const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')),
   )
@@ -127,6 +142,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
     GCM_INTERACTIVE: 'Never',
     GIT_PAGER: 'cat',
     GIT_TERMINAL_PROMPT: '0',
+    ...(indexFile === undefined ? {} : { GIT_INDEX_FILE: indexFile }),
     LANG: 'C',
     LC_ALL: 'C',
     PAGER: 'cat',
@@ -955,12 +971,13 @@ export class GitService {
     repositoryRoot: string,
     signal: AbortSignal | undefined,
     deadline: number,
+    indexFile?: string,
   ): Promise<string> {
     const tree = parseCommandValue(await this.run([
       '--no-optional-locks',
       '-C', repositoryRoot,
       'write-tree',
-    ], signal, deadline), 'index tree identity')
+    ], signal, deadline, { indexFile }), 'index tree identity')
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(tree)) {
       throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid index tree identity.')
     }
@@ -1256,6 +1273,14 @@ export class GitService {
     signal?: AbortSignal,
   ): Promise<GitWorktreeHandoffInspection> {
     const deadline = Date.now() + this.timeoutMs
+    return this.inspectWorktreeHandoffBefore(input, signal, deadline)
+  }
+
+  private async inspectWorktreeHandoffBefore(
+    input: GitInspectWorktreeHandoffInput,
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<GitWorktreeHandoffInspection> {
     if (input.direction !== 'local-to-worktree' && input.direction !== 'worktree-to-local') {
       throw new GitServiceError('INVALID_INPUT', 'The worktree handoff direction is invalid.')
     }
@@ -1281,6 +1306,7 @@ export class GitService {
       : managed.repository
     const sourceKind = input.direction === 'local-to-worktree' ? 'local' as const : 'worktree' as const
     const destinationKind = input.direction === 'local-to-worktree' ? 'worktree' as const : 'local' as const
+    const sourceConflicts = sourceStatus.entries.some(entry => entry.kind === 'unmerged')
     const diffOptions = [
       '--no-ext-diff',
       '--no-textconv',
@@ -1289,23 +1315,39 @@ export class GitService {
       '--full-index',
       '--submodule=short',
     ]
-    const [names, patchResult] = await Promise.all([
-      this.run([
-        '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
-        'diff', ...diffOptions, '--name-status', '-z', baseCommit, '--',
-      ], signal, deadline),
-      this.run([
-        '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
-        'diff', ...diffOptions, '--patch', baseCommit, '--',
-      ], signal, deadline),
-    ])
-    const files = parseGitNameStatus(names.stdout)
-    for (const entry of sourceStatus.entries) {
-      if (entry.kind !== 'untracked' || files.some(file => file.path === entry.path)) continue
-      files.push({ status: 'untracked', path: entry.path, patchAvailable: false })
+    let sourceTree: string | undefined
+    let files: GitReviewFile[]
+    let patch: string
+    if (sourceConflicts) {
+      const [names, patchResult] = await Promise.all([
+        this.run([
+          '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
+          'diff', ...diffOptions, '--name-status', '-z', baseCommit, '--',
+        ], signal, deadline),
+        this.run([
+          '--no-optional-locks', '-C', sourceRepository.root, '-c', 'color.ui=false',
+          'diff', ...diffOptions, '--binary', '--patch', baseCommit, '--',
+        ], signal, deadline),
+      ])
+      files = parseGitNameStatus(names.stdout)
+      for (const entry of sourceStatus.entries) {
+        if (entry.kind !== 'untracked' || files.some(file => file.path === entry.path)) continue
+        files.push({ status: 'untracked', path: entry.path, patchAvailable: false })
+      }
+      patch = patchResult.stdout.toString('utf8')
+    } else {
+      const captured = await this.captureHandoffSourceBefore(
+        sourceRepository.root,
+        baseCommit,
+        diffOptions,
+        signal,
+        deadline,
+      )
+      sourceTree = captured.sourceTree
+      files = captured.files
+      patch = captured.patch
     }
     files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
-    const patch = patchResult.stdout.toString('utf8')
     if (patch.includes('\0')) throw new GitServiceError('BAD_OUTPUT', 'Git returned an invalid handoff patch.')
 
     const blockers: GitWorktreeHandoffInspection['blockers'] = []
@@ -1313,7 +1355,7 @@ export class GitService {
       if (!blockers.includes(reason)) blockers.push(reason)
     }
     if (sourceStatus.branch === undefined) block('source-detached')
-    if (sourceStatus.entries.some(entry => entry.kind === 'unmerged')) block('source-conflicts')
+    if (sourceConflicts) block('source-conflicts')
     if (sourceStatus.head === undefined) {
       block('source-diverged')
     } else if (sourceStatus.head !== baseCommit) {
@@ -1341,7 +1383,8 @@ export class GitService {
       const collides = destinationWithIgnored.entries.some(entry => {
         if (entry.kind !== 'ignored' && entry.kind !== 'untracked') return false
         const entryPath = entry.path.endsWith('/') ? entry.path.slice(0, -1) : entry.path
-        return transferPaths.some(path => path === entryPath || path.startsWith(`${entryPath}/`))
+        return transferPaths.some(path => path === entryPath || path.startsWith(`${entryPath}/`) ||
+          entryPath.startsWith(`${path}/`))
       })
       if (collides) block('destination-collision')
     }
@@ -1349,6 +1392,7 @@ export class GitService {
     return {
       direction: input.direction,
       baseCommit,
+      ...(sourceTree === undefined ? {} : { sourceTree }),
       source: {
         kind: sourceKind,
         path: sourceRepository.root,
@@ -1367,6 +1411,97 @@ export class GitService {
       patch,
       blockers,
       canTransfer: blockers.length === 0,
+    }
+  }
+
+  async transferWorktreeHandoff(
+    input: GitTransferWorktreeHandoffInput,
+    signal?: AbortSignal,
+    beforeDispatch?: () => void,
+  ): Promise<GitWorktreeHandoffTransferResult> {
+    const deadline = Date.now() + this.timeoutMs
+    const expectedSourceTree = boundedObjectId(input.expectedSourceTree, 'Expected handoff source tree')!
+    const inspected = await this.inspectWorktreeHandoffBefore(input, signal, deadline)
+    if (!inspected.canTransfer || inspected.sourceTree === undefined) {
+      throw new GitServiceError('GIT_FAILED', 'The worktree handoff is blocked and cannot be transferred.')
+    }
+    if (inspected.sourceTree !== expectedSourceTree) {
+      throw new GitServiceError('GIT_FAILED', 'The handoff source changed after approval.')
+    }
+    const patch = Buffer.from(inspected.patch, 'utf8')
+    if (patch.length === 0 || patch.length > MAX_GIT_STDIN_BYTES) {
+      throw new GitServiceError('OUTPUT_LIMIT', 'The handoff patch is outside the supported size limit.')
+    }
+    beforeDispatch?.()
+    await this.run([
+      '--no-optional-locks',
+      '-C', inspected.destination.path,
+      '-c', 'color.ui=false',
+      '-c', 'core.fsmonitor=false',
+      'apply',
+      '--index',
+      '--binary',
+      '--',
+    ], signal, deadline, { stdin: patch })
+
+    const destinationRepository = await this.discoverRepositoryBefore(inspected.destination.path, signal, deadline)
+    const [destination, destinationTree, destinationHead] = await Promise.all([
+      this.statusBefore(destinationRepository, signal, deadline),
+      this.indexTreeBefore(destinationRepository.root, signal, deadline),
+      this.resolveCommitBefore(destinationRepository.root, 'HEAD', signal, deadline),
+    ])
+    const hasOnlyStagedChanges = destination.entries.length > 0 && destination.entries.every(entry =>
+      entry.kind !== 'untracked' && entry.kind !== 'ignored' && entry.kind !== 'unmerged' &&
+      entry.indexStatus !== '.' && entry.worktreeStatus === '.')
+    if (destinationRepository.root !== inspected.destination.path || destinationHead !== inspected.baseCommit ||
+      destination.branch !== inspected.destination.branch || destinationTree !== expectedSourceTree ||
+      !hasOnlyStagedChanges) {
+      throw new GitServiceError(
+        'BAD_OUTPUT',
+        'Git applied the handoff but its destination state could not be verified safely.',
+      )
+    }
+    return { sourceTree: expectedSourceTree, destination }
+  }
+
+  private async captureHandoffSourceBefore(
+    sourceRoot: string,
+    baseCommit: string,
+    diffOptions: readonly string[],
+    signal: AbortSignal | undefined,
+    deadline: number,
+  ): Promise<{ sourceTree: string; files: GitReviewFile[]; patch: string }> {
+    const sourceIndexTree = await this.indexTreeBefore(sourceRoot, signal, deadline)
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'dsh-handoff-index-'))
+    const indexFile = join(temporaryDirectory, 'index')
+    try {
+      await this.run([
+        '--no-optional-locks', '-C', sourceRoot,
+        'read-tree', sourceIndexTree,
+      ], signal, deadline, { indexFile })
+      await this.run([
+        '--no-optional-locks', '-C', sourceRoot,
+        '-c', 'core.fsmonitor=false',
+        'add', '-A', '--', '.',
+      ], signal, deadline, { indexFile })
+      const sourceTree = await this.indexTreeBefore(sourceRoot, signal, deadline, indexFile)
+      const [names, patchResult] = await Promise.all([
+        this.run([
+          '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
+          'diff', ...diffOptions, '--name-status', '-z', baseCommit, sourceTree, '--',
+        ], signal, deadline),
+        this.run([
+          '--no-optional-locks', '-C', sourceRoot, '-c', 'color.ui=false',
+          'diff', ...diffOptions, '--binary', '--patch', baseCommit, sourceTree, '--',
+        ], signal, deadline),
+      ])
+      return {
+        sourceTree,
+        files: parseGitNameStatus(names.stdout),
+        patch: patchResult.stdout.toString('utf8'),
+      }
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true })
     }
   }
 
@@ -1471,7 +1606,7 @@ export class GitService {
     }
     const targetValue = boundedInput(input.worktreePath, 'Worktree path')
     if (!isAbsolute(targetValue) || normalize(targetValue) !== targetValue || targetValue === repository.root) {
-      throw new GitServiceError('INVALID_INPUT', 'The worktree removal path is invalid.')
+      throw new GitServiceError('INVALID_INPUT', 'The managed worktree path is invalid.')
     }
     const target = await this.canonicalDirectory(targetValue)
     if (target !== targetValue) {
@@ -1490,7 +1625,7 @@ export class GitService {
     const entry = entries.find(candidate => candidate.path === target)
     if (entry === undefined || entry.bare || entry.detached || entry.head === undefined || entry.branch !== branch ||
       !entry.locked || entry.lockReason !== lockReason || entry.prunable) {
-      throw new GitServiceError('GIT_FAILED', 'The managed worktree identity changed before cleanup.')
+      throw new GitServiceError('GIT_FAILED', 'The managed worktree identity changed before the operation.')
     }
     return {
       repository,
@@ -1557,6 +1692,7 @@ export class GitService {
     args: readonly string[],
     signal: AbortSignal | undefined,
     deadline: number,
+    options: GitRunOptions = {},
   ): Promise<GitCommandResult> {
     if (signal?.aborted === true) {
       return Promise.reject(new GitServiceError('CANCELLED', 'The Git operation was cancelled.'))
@@ -1565,14 +1701,17 @@ export class GitService {
     if (remainingMs <= 0) {
       return Promise.reject(new GitServiceError('TIMEOUT', 'The Git operation timed out.'))
     }
+    if (options.stdin !== undefined && options.stdin.length > MAX_GIT_STDIN_BYTES) {
+      return Promise.reject(new GitServiceError('INVALID_INPUT', 'The Git operation input is too large.'))
+    }
     return new Promise((resolve, reject) => {
-      let child: ChildProcessByStdio<null, Readable, Readable>
+      let child: ChildProcessWithoutNullStreams
       try {
         child = spawn(this.executable, [...args], {
           detached: process.platform !== 'win32',
-          env: gitEnvironment(),
+          env: gitEnvironment(options.indexFile),
           shell: false,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
         })
       } catch {
@@ -1614,6 +1753,10 @@ export class GitService {
       }
       child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk))
       child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk))
+      child.stdin.on('error', () => {
+        // Process exit and stderr remain the authoritative command outcome.
+      })
+      child.stdin.end(options.stdin)
 
       const timeout = setTimeout(() => {
         fail(new GitServiceError('TIMEOUT', 'The Git operation timed out.'))

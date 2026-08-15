@@ -562,6 +562,7 @@ test('binds handoff preflight to the immutable managed worktree identity', async
       return {
         direction: input.direction,
         baseCommit: input.baseCommit,
+        sourceTree: 'b'.repeat(40),
         source: {
           kind: 'worktree',
           path: record.worktreePath!,

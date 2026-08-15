@@ -43,6 +43,7 @@ export interface WorktreeHandoffPreflight {
   direction: WorktreeHandoffDirection
   worktree: WorktreeSummary
   baseCommit: string
+  sourceTree?: string
   source: WorktreeHandoffEndpoint
   destination: WorktreeHandoffEndpoint
   files: WorktreeHandoffFile[]
@@ -128,8 +129,11 @@ export function parseDesktopWorktreeHandoffPreflightInput(
 
 export function parseWorktreeHandoffPreflight(value: unknown): WorktreeHandoffPreflight | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'direction', 'worktree', 'baseCommit', 'source', 'destination', 'files', 'patch', 'blockers', 'canTransfer',
-  ]) || !isDirection(value.direction) || !isObjectId(value.baseCommit) || !Array.isArray(value.files) ||
+    'direction', 'worktree', 'baseCommit', 'sourceTree', 'source', 'destination', 'files', 'patch', 'blockers',
+    'canTransfer',
+  ]) || !isDirection(value.direction) || !isObjectId(value.baseCommit) ||
+    (value.sourceTree !== undefined && !isObjectId(value.sourceTree)) ||
+    !Array.isArray(value.files) ||
     value.files.length > MAX_FILES || typeof value.patch !== 'string' || value.patch.length > MAX_PATCH_LENGTH ||
     value.patch.includes('\0') || !Array.isArray(value.blockers) || typeof value.canTransfer !== 'boolean') {
     return undefined
@@ -144,6 +148,7 @@ export function parseWorktreeHandoffPreflight(value: unknown): WorktreeHandoffPr
     destination === undefined || files.some(file => file === undefined) || blockers.length !== value.blockers.length ||
     new Set((files as WorktreeHandoffFile[]).map(file => file.path)).size !== files.length ||
     new Set(blockers).size !== blockers.length || value.canTransfer !== (blockers.length === 0) ||
+    (value.canTransfer && value.sourceTree === undefined) ||
     (value.direction === 'local-to-worktree' &&
       (source.kind !== 'local' || source.path !== worktree.repositoryRoot || destination.kind !== 'worktree' ||
         destination.path !== worktree.worktreePath)) ||
@@ -154,6 +159,7 @@ export function parseWorktreeHandoffPreflight(value: unknown): WorktreeHandoffPr
     direction: value.direction,
     worktree,
     baseCommit: value.baseCommit,
+    ...(value.sourceTree === undefined ? {} : { sourceTree: value.sourceTree }),
     source,
     destination,
     files: files as WorktreeHandoffFile[],
