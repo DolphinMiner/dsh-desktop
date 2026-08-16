@@ -62,6 +62,7 @@ import {
 } from './worktree.js'
 
 export * from './computer.js'
+export * from './app-snapshot.js'
 export * from './automation.js'
 export * from './git.js'
 export * from './git-turn.js'

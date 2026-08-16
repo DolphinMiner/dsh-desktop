@@ -24,6 +24,16 @@ export interface DesktopBridge {
   pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+  appSnapshots: {
+    getState(): Promise<AppSnapshotState>
+    refresh(): Promise<AppSnapshotState>
+    update(input: UpdateAppSnapshotSettingsInput): Promise<AppSnapshotState>
+    capture(): Promise<void>
+    openScreenRecordingSettings(): Promise<void>
+    onChanged(listener: (state: AppSnapshotState) => void): () => void
+    onCaptured(listener: (capture: AppSnapshotCapture) => void): () => void
+    onError(listener: (notice: AppSnapshotErrorNotice) => void): () => void
+  }
   git: {
     review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
     mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
@@ -85,6 +95,9 @@ export interface DesktopBridge {
   }
 }
 import type {
+  AppSnapshotCapture,
+  AppSnapshotErrorNotice,
+  AppSnapshotState,
   AutomationChangedNotice,
   AutomationRunPage,
   AutomationTaskCenterSnapshot,
@@ -131,6 +144,7 @@ import type {
   GitRevertPreview,
   GitRevertResult,
   SelectComputerTargetInput,
+  UpdateAppSnapshotSettingsInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
   WorktreeRecoveryPreview,

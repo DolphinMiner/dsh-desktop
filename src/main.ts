@@ -7,8 +7,10 @@ import {
   app,
   BrowserWindow,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   Notification,
   safeStorage,
   screen,
@@ -47,9 +49,15 @@ import {
   parseDesktopWorktreeHandoffConfirmInput,
   parseDesktopWorktreeHandoffPreflightInput,
   parseSelectComputerTargetInput,
+  parseUpdateAppSnapshotSettingsInput,
   WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
 
+import {
+  AppSnapshotController,
+  AppSnapshotImage,
+  AppSnapshotSettingsStore,
+} from './app-snapshots'
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
 import { AutomationController } from './automation-controller'
@@ -116,6 +124,7 @@ let windowStateStore: WindowStateStore | undefined
 let harnessOrigin: string | undefined
 let oauthCoordinator: LinearOAuthCoordinator | undefined
 let automationScheduler: AutomationScheduler | undefined
+let appSnapshots: AppSnapshotController | undefined
 let shuttingDown = false
 let shutdownComplete = false
 let state: HarnessState = {
@@ -237,6 +246,51 @@ function dispatchRendererCommand(command: DesktopRendererCommand): void {
   commandQueue.enqueue(command)
   focusMainWindow()
   flushRendererCommands()
+}
+
+function prepareAppSnapshotImage(data: Uint8Array): AppSnapshotImage {
+  const source = nativeImage.createFromBuffer(Buffer.from(data))
+  if (source.isEmpty()) throw new Error('The captured app snapshot is not a valid image.')
+  const sourceSize = source.getSize()
+  const scale = Math.min(1, 2_048 / Math.max(sourceSize.width, sourceSize.height))
+  const image = scale === 1
+    ? source
+    : source.resize({
+        width: Math.max(1, Math.round(sourceSize.width * scale)),
+        height: Math.max(1, Math.round(sourceSize.height * scale)),
+        quality: 'best',
+      })
+  const size = image.getSize()
+  return {
+    data: new Uint8Array(image.toJPEG(88)),
+    mediaType: 'image/jpeg',
+    pixelWidth: size.width,
+    pixelHeight: size.height,
+  }
+}
+
+async function captureAppSnapshot(): Promise<void> {
+  const controller = appSnapshots
+  if (controller === undefined) return
+  if (!canDeliverRendererCommand()) {
+    focusMainWindow()
+    return
+  }
+  try {
+    const capture = await controller.capture()
+    if (!canDeliverRendererCommand() || mainWindow === undefined || mainWindow.isDestroyed()) {
+      throw new Error('The Harness conversation is not ready for an app snapshot.')
+    }
+    mainWindow.webContents.send('desktop:app-snapshots:captured', capture)
+    focusMainWindow()
+  } catch (error) {
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('desktop:app-snapshots:error', {
+        message: error instanceof Error ? error.message : 'The app snapshot could not be captured.',
+      })
+    }
+    focusMainWindow()
+  }
 }
 
 function showAutomationRunNotification(run: AutomationRunSummary): void {
@@ -467,6 +521,7 @@ function publishRecoveryExhausted(maxAttempts: number): void {
 }
 
 function installIpcHandlers(
+  snapshots: AppSnapshotController,
   connections: ConnectionManager,
   computer: ComputerObserver,
   automations: AutomationController,
@@ -517,6 +572,28 @@ function installIpcHandlers(
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('desktop:app-snapshots:get-state', event => {
+    assertTrustedSender(event)
+    return snapshots.snapshot()
+  })
+  ipcMain.handle('desktop:app-snapshots:refresh', async event => {
+    assertTrustedSender(event)
+    return snapshots.refresh()
+  })
+  ipcMain.handle('desktop:app-snapshots:update', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return snapshots.update(validInput(parseUpdateAppSnapshotSettingsInput(value)))
+  })
+  ipcMain.handle('desktop:app-snapshots:capture', async event => {
+    assertTrustedSender(event)
+    await captureAppSnapshot()
+  })
+  ipcMain.handle('desktop:app-snapshots:open-screen-recording-settings', async event => {
+    assertTrustedSender(event)
+    await shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+    )
   })
   ipcMain.handle('desktop:git:review', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -864,8 +941,33 @@ app.whenReady().then(async () => {
   mcpProxy = new McpCredentialProxy(connections)
   await mcpProxy.start()
 
+  const computerHelper = new NativeComputerHelper(resolveComputerHelper())
+  appSnapshots = new AppSnapshotController(
+    new AppSnapshotSettingsStore(
+      join(desktopDataPath, 'app-snapshots.v1.json'),
+      error => console.error('Could not load App Snapshot settings.', error),
+    ),
+    computerHelper,
+    new ComputerCaptureStore(
+      join(app.getPath('temp'), 'com.dolphinminer.dsh-desktop', 'app-snapshots'),
+      { maxFiles: 2, maxAgeMs: 2 * 60_000, maxFileBytes: 50 * 1024 * 1024 },
+    ),
+    {
+      register: (accelerator, callback) => globalShortcut.register(accelerator, callback),
+      unregister: accelerator => globalShortcut.unregister(accelerator),
+    },
+    {
+      processImage: data => prepareAppSnapshotImage(data),
+      playCaptureSound: () => shell.beep(),
+      onChange: snapshot => {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('desktop:app-snapshots:changed', snapshot)
+        }
+      },
+    },
+  )
   computerObserver = new ComputerObserver(
-    new NativeComputerHelper(resolveComputerHelper()),
+    computerHelper,
     new ComputerCaptureStore(join(app.getPath('temp'), 'com.dolphinminer.dsh-desktop', 'computer-captures')),
     {
       audit: new ComputerActionAuditStore(join(desktopDataPath, 'computer-actions.v1.json')),
@@ -1079,6 +1181,7 @@ app.whenReady().then(async () => {
 
   installMenu()
   installIpcHandlers(
+    appSnapshots,
     connections,
     computerObserver,
     automationController,
@@ -1138,6 +1241,7 @@ app.whenReady().then(async () => {
   )
   mainWindow = createWindow(restoredWindowState)
   await showLoadingPage()
+  await appSnapshots.start(() => { void captureAppSnapshot() })
 
   const logPath = join(app.getPath('logs'), 'harness.log')
   const dshHome = join(app.getPath('userData'), 'harness')
@@ -1346,6 +1450,7 @@ app.on('before-quit', event => {
   const stopServices = Promise.all([
     harness?.stop() ?? Promise.resolve(),
     mcpProxy?.stop() ?? Promise.resolve(),
+    appSnapshots?.dispose() ?? Promise.resolve(),
     computerObserver?.dispose() ?? Promise.resolve(),
     windowStateStore?.flush() ?? Promise.resolve(),
   ])

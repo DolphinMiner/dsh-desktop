@@ -29,6 +29,34 @@ const bridge: DesktopBridge = {
     for (const command of pendingCommands.splice(0)) listener(command)
     return () => { commandListeners.delete(listener) }
   },
+  appSnapshots: {
+    getState: () => ipcRenderer.invoke('desktop:app-snapshots:get-state'),
+    refresh: () => ipcRenderer.invoke('desktop:app-snapshots:refresh'),
+    update: input => ipcRenderer.invoke('desktop:app-snapshots:update', input),
+    capture: () => ipcRenderer.invoke('desktop:app-snapshots:capture'),
+    openScreenRecordingSettings: () => ipcRenderer.invoke('desktop:app-snapshots:open-screen-recording-settings'),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => {
+        listener(state)
+      }
+      ipcRenderer.on('desktop:app-snapshots:changed', handler)
+      return () => ipcRenderer.removeListener('desktop:app-snapshots:changed', handler)
+    },
+    onCaptured(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, capture: Parameters<typeof listener>[0]): void => {
+        listener(capture)
+      }
+      ipcRenderer.on('desktop:app-snapshots:captured', handler)
+      return () => ipcRenderer.removeListener('desktop:app-snapshots:captured', handler)
+    },
+    onError(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, notice: Parameters<typeof listener>[0]): void => {
+        listener(notice)
+      }
+      ipcRenderer.on('desktop:app-snapshots:error', handler)
+      return () => ipcRenderer.removeListener('desktop:app-snapshots:error', handler)
+    },
+  },
   git: {
     review: input => ipcRenderer.invoke('desktop:git:review', input),
     mutateIndex: input => ipcRenderer.invoke('desktop:git:index:mutate', input),

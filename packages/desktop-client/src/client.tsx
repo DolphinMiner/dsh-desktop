@@ -66,6 +66,11 @@ import {
   connectionStatusLabel,
 } from './view-model.js'
 import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automations.js'
+import {
+  AppSnapshotsSection,
+  type DesktopAppSnapshotsBridge,
+  installAppSnapshotDelivery,
+} from './app-snapshots.js'
 import { runDesktopCommand } from './desktop-command.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
@@ -115,6 +120,7 @@ declare global {
     dshDesktop?: {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
+      appSnapshots: DesktopAppSnapshotsBridge
       git: DesktopGitBridge
       automations: DesktopAutomationsBridge
       worktrees: DesktopWorktreesBridge
@@ -1973,17 +1979,24 @@ export function apply(ctx: ClientContext): void {
         console.warn('Desktop command failed:', error instanceof Error ? error.message : String(error))
       })
     }), 'dsh-desktop: native command bridge')
+    ctx.effect(() => installAppSnapshotDelivery(ctx, bridge.appSnapshots), 'dsh-desktop: App Snapshot delivery')
   }
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
-    id: 'automations',
+    id: 'snapshots',
     order: 11,
+    label: 'App Snapshots',
+  }, () => <AppSnapshotsSection bridge={bridge?.appSnapshots} sessions={ctx.sessions.list} />))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'automations',
+    order: 30,
     label: 'Tasks',
   }, AutomationsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'connections',
-    order: 12,
+    order: 31,
     label: 'Connections',
   }, ConnectionsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
@@ -1995,7 +2008,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'worktrees',
-    order: 14,
+    order: 32,
     label: 'Worktrees',
   }, WorktreesSection))
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
