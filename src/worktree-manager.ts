@@ -85,6 +85,10 @@ export interface ProvisionWorktreeInput {
   baseRef: string
 }
 
+export interface ProvisionAutomationWorktreeInput extends ProvisionWorktreeInput {
+  repository: GitRepositoryIdentity
+}
+
 export interface ProvisionWorktreeResult {
   record: WorktreeRecord
   created: boolean
@@ -1135,13 +1139,51 @@ export class WorktreeManager {
     const repository = await withMappedError(() =>
       this.git.discoverRepository(input.workspaceRoot, signal))
     this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+    return this.provisionVerified(input, repository, signal, () => {
+      this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+    })
+  }
+
+  async provisionAutomation(
+    input: ProvisionAutomationWorktreeInput,
+    signal: AbortSignal,
+  ): Promise<ProvisionWorktreeResult> {
+    validateInput(input)
+    const repository = await withMappedError(() =>
+      this.git.discoverRepository(input.workspaceRoot, signal), true)
+    if (!sameRepositoryIdentity(repository, input.repository)) {
+      throw new WorktreeManagerError(
+        'TARGET_CHANGED',
+        'The automation repository identity changed before worktree creation.',
+        true,
+      )
+    }
+    return this.provisionVerified(input, repository, signal, async () => {
+      const observed = await withMappedError(() =>
+        this.git.discoverRepository(input.workspaceRoot, signal), true)
+      if (!sameRepositoryIdentity(observed, input.repository)) {
+        throw new WorktreeManagerError(
+          'TARGET_CHANGED',
+          'The automation repository identity changed during worktree creation.',
+          true,
+        )
+      }
+    })
+  }
+
+  private async provisionVerified(
+    input: ProvisionWorktreeInput,
+    repository: GitRepositoryIdentity,
+    signal: AbortSignal,
+    assertAuthority: () => void | Promise<void>,
+  ): Promise<ProvisionWorktreeResult> {
     const baseCommit = await withMappedError(() =>
       this.git.resolveCommit(repository.root, input.baseRef, signal))
     const root = await withMappedError(async () => {
       await mkdir(this.managedRoot, { recursive: true, mode: 0o700 })
       return realpath(this.managedRoot)
     })
-    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+    await assertAuthority()
 
     const digest = createHash('sha256')
       .update(repository.commonDir)
@@ -1186,7 +1228,7 @@ export class WorktreeManager {
           }
           mapError(error, true)
         }
-        this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+        await assertAuthority()
         return { record, created: false }
       }
       throw new WorktreeManagerError(
@@ -1221,7 +1263,7 @@ export class WorktreeManager {
     }
 
     const ready = withMappedErrorSync(() => this.registry.markReady(record.id, input.operationId), true)
-    this.authorize(input.requestedBySessionId, input.workspaceRoot, signal)
+    await assertAuthority()
     return { record: ready, created: true }
   }
 

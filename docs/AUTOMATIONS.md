@@ -103,7 +103,9 @@ old dispatch identity.
 3. Main emits a best-effort `automations.changed` wakeup. Failure leaves the
    queued run durable.
 4. The Host plugin lists pending work and claims one exact run through the
-   typed desktop capability bridge.
+   typed protocol-v19 desktop capability bridge. A repeated pull from the same
+   live Host identity returns the already-persisted claim instead of preparing
+   or dispatching the run again.
 5. Main atomically persists `dispatching` before returning the claim. This is
    the no-replay boundary.
 6. Host creates one top-level official Agent with a run-bound Session id and
@@ -116,10 +118,20 @@ old dispatch identity.
 The parent-to-child event is only a wakeup, never the durable queue and never an
 acknowledgement. Host reconnect always begins by listing durable queued work.
 
+Main prepares the approved workspace before granting the Host claim. Local
+mode revalidates the exact reviewed project and repository identity. Worktree
+mode reuses the existing durable WorktreeManager with an idempotent operation
+derived from the run id, then maps a nested project path into that checkout. A
+clear or uncertain worktree-preparation failure never grants an Agent claim;
+the run records a failed startup while the separate worktree journal retains
+any recovery requirement.
+
 ## Recovery Rules
 
 - A crash before a durable claim leaves the run `queued` and dispatchable.
 - A crash after a durable claim never causes automatic replay.
+- App startup and Harness disconnect atomically mark every claimed run lacking
+  terminal Session evidence as `ambiguous`; queued runs remain dispatchable.
 - A published run-bound Session may refine `dispatching` to `running`.
 - A matching terminal `turn/end` may refine the run to `succeeded`, `failed`,
   `cancelled`, or `interrupted` according to the exact Harness reason.

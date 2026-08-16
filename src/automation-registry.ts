@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { isAbsolute, normalize } from 'node:path'
+import { isAbsolute, normalize, relative, sep } from 'node:path'
 
 import type {
   AutomationDefinition,
@@ -131,6 +131,10 @@ export interface FinishAutomationRunInput {
   detail?: string
 }
 
+export interface RecoverAbandonedAutomationRunsInput {
+  detail?: string
+}
+
 type DefinitionOperationKind = 'create' | 'replace' | 'pause' | 'resume' | 'trigger' | 'delete'
 
 interface DefinitionOperationRecord {
@@ -225,6 +229,11 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 
 function isCanonicalAbsolutePath(value: string): boolean {
   return value.length <= MAX_PATH_LENGTH && isAbsolute(value) && normalize(value) === value
+}
+
+function isWithinRepository(repositoryRoot: string, projectPath: string): boolean {
+  const child = relative(repositoryRoot, projectPath)
+  return child === '' || child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
 }
 
 function hashJson(value: unknown): string {
@@ -358,7 +367,8 @@ function normalizeDraft(value: unknown): AutomationDefinitionDraft {
   })
   if (parsed === undefined || !isCanonicalAbsolutePath(parsed.projectPath) ||
     !isCanonicalAbsolutePath(parsed.repository.root) || !isCanonicalAbsolutePath(parsed.repository.gitDir) ||
-    !isCanonicalAbsolutePath(parsed.repository.commonDir)) {
+    !isCanonicalAbsolutePath(parsed.repository.commonDir) ||
+    !isWithinRepository(parsed.repository.root, parsed.projectPath)) {
     throw new AutomationRegistryError('BAD_MESSAGE', 'The automation definition is invalid.')
   }
   if (!hasConsistentTriggerState(parsed)) {
@@ -375,7 +385,8 @@ function parseStoredRecord(value: unknown): StoredAutomationRecord | undefined {
     if (definition === undefined || !isCanonicalAbsolutePath(definition.projectPath) ||
       !isCanonicalAbsolutePath(definition.repository.root) ||
       !isCanonicalAbsolutePath(definition.repository.gitDir) ||
-      !isCanonicalAbsolutePath(definition.repository.commonDir)) return undefined
+      !isCanonicalAbsolutePath(definition.repository.commonDir) ||
+      !isWithinRepository(definition.repository.root, definition.projectPath)) return undefined
     if (!hasConsistentTriggerState(definition)) return undefined
     return { status: value.status, definition }
   }
@@ -1096,6 +1107,34 @@ export class AutomationRegistry {
       ...(input.sessionEventSeq === undefined ? {} : { sessionEventSeq: input.sessionEventSeq }),
       ...(input.detail === undefined ? {} : { detail: input.detail }),
     })
+  }
+
+  recoverAbandonedRuns(
+    input: RecoverAbandonedAutomationRunsInput = {},
+  ): AutomationRunSummary[] {
+    this.assertAvailable()
+    if (input.detail !== undefined && !isBoundedString(input.detail, MAX_DETAIL_LENGTH)) {
+      throw new AutomationRegistryError('BAD_MESSAGE', 'The automation recovery detail is invalid.')
+    }
+    const active = this.state.runs.filter(run => run.phase === 'dispatching' || run.phase === 'running')
+    if (active.length === 0) return []
+    const recovered = active.map(run => {
+      const operationId = `recover:${run.id}:${run.events.length + 1}`
+      this.assertUnusedOperationId(operationId)
+      return nextRunWithEvent(run, {
+        seq: run.events.length + 1,
+        operationId,
+        at: this.nextTimestamp(run.updatedAt),
+        type: 'terminal',
+        outcome: 'ambiguous',
+        ...(input.detail === undefined ? {} : { detail: input.detail }),
+      })
+    })
+    const byId = new Map(recovered.map(run => [run.id, run]))
+    this.commit(next => {
+      next.runs = next.runs.map(run => byId.get(run.id) ?? run)
+    })
+    return recovered.map(cloneRun)
   }
 
   private buildQueuedRun(

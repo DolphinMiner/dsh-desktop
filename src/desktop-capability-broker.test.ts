@@ -168,6 +168,33 @@ test('never caches worktree provisioning responses at the capability broker', as
   assert.ok(replies.every(reply => !reply.ok && reply.error.ambiguous === true))
 })
 
+test('never caches Host automation claim responses at the capability broker', async () => {
+  let calls = 0
+  const handlers = testHandlers()
+  handlers['automations.claimNext'] = () => {
+    calls += 1
+    throw {
+      code: 'DESKTOP_UNAVAILABLE',
+      message: 'The durable automation registry must resolve this claim.',
+      ambiguous: true,
+    }
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  const request = createRequest('automation-claim', 'automations.claimNext', {
+    hostInstanceId: '11111111-1111-4111-8111-111111111111',
+  })
+
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(calls, 2)
+  assert.equal(replies.length, 2)
+  assert.ok(replies.every(reply => !reply.ok && reply.error.ambiguous === true))
+})
+
 test('returns a structured failure when a capability handler throws synchronously', async () => {
   const handlers = testHandlers()
   handlers['desktop.ping'] = () => {

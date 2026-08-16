@@ -179,6 +179,53 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   assert.equal(firstAfterDrift?.recoveryReason, 'locked')
 })
 
+test('provisions an automation worktree from exact durable repository authority', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-automation-worktree-manager-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const repositoryRoot = await repositoryFixture(root)
+  const gitService = new GitService()
+  const repository = await gitService.discoverRepository(repositoryRoot)
+  const registry = new WorktreeRegistry(join(root, 'data', 'worktrees.v1.json'))
+  let interactiveAuthorizations = 0
+  const manager = new WorktreeManager(
+    gitService,
+    registry,
+    join(root, 'managed-worktrees'),
+    () => {
+      interactiveAuthorizations += 1
+      throw new Error('automation provisioning must not borrow a foreground session')
+    },
+  )
+  const params = {
+    operationId: 'automation-worktree:11111111-1111-4111-8111-111111111111',
+    requestedBySessionId: '22222222-2222-4222-8222-222222222222',
+    workspaceRoot: repositoryRoot,
+    baseRef: 'refs/heads/main',
+    repository,
+  }
+
+  const first = await manager.provisionAutomation(params, new AbortController().signal)
+  assert.equal(first.created, true)
+  assert.equal(first.record.lifecycle, 'ready')
+  assert.equal(first.record.repository.root, repository.root)
+  assert.equal(interactiveAuthorizations, 0)
+  assert.equal(await git(first.record.worktreePath!, 'rev-parse', 'HEAD'), first.record.baseCommit)
+
+  const duplicate = await manager.provisionAutomation(params, new AbortController().signal)
+  assert.equal(duplicate.created, false)
+  assert.equal(duplicate.record.id, first.record.id)
+  assert.equal(interactiveAuthorizations, 0)
+
+  await assert.rejects(manager.provisionAutomation({
+    ...params,
+    operationId: 'automation-worktree:33333333-3333-4333-8333-333333333333',
+    requestedBySessionId: '44444444-4444-4444-8444-444444444444',
+    repository: { ...repository, gitDir: join(repositoryRoot, '.replacement-git') },
+  }, new AbortController().signal),
+  (error: WorktreeManagerError) => error.code === 'TARGET_CHANGED' && error.ambiguous)
+  assert.equal(registry.list().length, 1)
+})
+
 test('discovers a previously ready checkout with no bound Harness session as orphaned', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-worktree-orphan-reconcile-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

@@ -150,6 +150,32 @@ export interface AutomationSnapshot {
   runs: AutomationRunSummary[]
 }
 
+export interface AutomationClaimNextParams {
+  hostInstanceId: string
+}
+
+export interface AutomationDispatchClaim {
+  run: AutomationRunSummary
+  workspacePath: string
+  worktreeId?: string
+}
+
+export interface AutomationClaimNextResult {
+  dispatch?: AutomationDispatchClaim
+}
+
+export interface AutomationMarkRunningParams extends AutomationClaimNextParams {
+  runId: string
+  sessionEventSeq: number
+}
+
+export interface AutomationFinishParams extends AutomationClaimNextParams {
+  runId: string
+  outcome: AutomationRunTerminalPhase
+  sessionEventSeq?: number
+  detail?: string
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -469,4 +495,63 @@ export function parseAutomationSnapshot(value: unknown): AutomationSnapshot | un
     }
   }
   return { revision: Number(value.revision), automations: exactAutomations, runs: exactRuns }
+}
+
+export function parseAutomationClaimNextParams(value: unknown): AutomationClaimNextParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['hostInstanceId']) || !isUuid(value.hostInstanceId)) {
+    return undefined
+  }
+  return { hostInstanceId: value.hostInstanceId }
+}
+
+export function parseAutomationDispatchClaim(value: unknown): AutomationDispatchClaim | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['run', 'workspacePath', 'worktreeId']) ||
+    !isBoundedString(value.workspacePath, MAX_PATH_LENGTH) ||
+    (value.worktreeId !== undefined && !isUuid(value.worktreeId))) return undefined
+  const run = parseAutomationRunSummary(value.run)
+  const dispatch = run === undefined
+    ? undefined
+    : [...run.events].reverse().find(event => event.type === 'dispatch')
+  if (run?.phase !== 'dispatching' || dispatch?.type !== 'dispatch' ||
+    dispatch.workspacePath !== value.workspacePath || dispatch.worktreeId !== value.worktreeId) return undefined
+  return {
+    run,
+    workspacePath: value.workspacePath,
+    ...(value.worktreeId === undefined ? {} : { worktreeId: value.worktreeId }),
+  }
+}
+
+export function parseAutomationClaimNextResult(value: unknown): AutomationClaimNextResult | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['dispatch'])) return undefined
+  if (value.dispatch === undefined) return {}
+  const dispatch = parseAutomationDispatchClaim(value.dispatch)
+  return dispatch === undefined ? undefined : { dispatch }
+}
+
+export function parseAutomationMarkRunningParams(value: unknown): AutomationMarkRunningParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['hostInstanceId', 'runId', 'sessionEventSeq']) ||
+    !isUuid(value.hostInstanceId) || !isUuid(value.runId) ||
+    !isNonNegativeSafeInteger(value.sessionEventSeq)) return undefined
+  return {
+    hostInstanceId: value.hostInstanceId,
+    runId: value.runId,
+    sessionEventSeq: Number(value.sessionEventSeq),
+  }
+}
+
+export function parseAutomationFinishParams(value: unknown): AutomationFinishParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'hostInstanceId', 'runId', 'outcome', 'sessionEventSeq', 'detail',
+  ]) || !isUuid(value.hostInstanceId) || !isUuid(value.runId) ||
+    (value.outcome !== 'succeeded' && value.outcome !== 'failed' && value.outcome !== 'cancelled' &&
+      value.outcome !== 'interrupted' && value.outcome !== 'ambiguous') ||
+    (value.sessionEventSeq !== undefined && !isNonNegativeSafeInteger(value.sessionEventSeq)) ||
+    (value.detail !== undefined && !isBoundedString(value.detail, MAX_DETAIL_LENGTH))) return undefined
+  return {
+    hostInstanceId: value.hostInstanceId,
+    runId: value.runId,
+    outcome: value.outcome,
+    ...(value.sessionEventSeq === undefined ? {} : { sessionEventSeq: Number(value.sessionEventSeq) }),
+    ...(value.detail === undefined ? {} : { detail: value.detail }),
+  }
 }

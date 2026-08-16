@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  parseAutomationClaimNextParams,
+  parseAutomationClaimNextResult,
   parseAutomationDefinition,
+  parseAutomationFinishParams,
+  parseAutomationMarkRunningParams,
   parseAutomationRunSummary,
   parseAutomationSnapshot,
   parseAutomationTrigger,
@@ -195,6 +199,61 @@ test('allows one cancellation request without changing the authoritative run pha
       type: 'cancel-requested',
     }],
   }), undefined)
+})
+
+test('binds Host automation claims and lifecycle evidence to exact run state', () => {
+  const hostInstanceId = '77777777-7777-4777-8777-777777777777'
+  const worktreeId = '44444444-4444-4444-8444-444444444444'
+  const queued = queuedRun()
+  const dispatching = {
+    ...queued,
+    phase: 'dispatching' as const,
+    updatedAt: '2026-08-17T01:00:01.000Z',
+    events: [...queued.events, {
+      seq: 2,
+      operationId: 'dispatch-run-1',
+      at: '2026-08-17T01:00:01.000Z',
+      type: 'dispatch' as const,
+      hostInstanceId,
+      workspacePath: '/managed/run-1',
+      worktreeId,
+    }],
+  }
+  assert.deepEqual(parseAutomationClaimNextParams({ hostInstanceId }), { hostInstanceId })
+  assert.equal(parseAutomationClaimNextParams({ hostInstanceId: 'host-1' }), undefined)
+  assert.deepEqual(parseAutomationClaimNextResult({ dispatch: {
+    run: dispatching,
+    workspacePath: '/managed/run-1',
+    worktreeId,
+  } }), {
+    dispatch: { run: dispatching, workspacePath: '/managed/run-1', worktreeId },
+  })
+  assert.deepEqual(parseAutomationClaimNextResult({}), {})
+  assert.equal(parseAutomationClaimNextResult({ dispatch: {
+    run: dispatching,
+    workspacePath: '/different-path',
+    worktreeId,
+  } }), undefined)
+  assert.deepEqual(parseAutomationMarkRunningParams({
+    hostInstanceId,
+    runId,
+    sessionEventSeq: 2,
+  }), { hostInstanceId, runId, sessionEventSeq: 2 })
+  assert.equal(parseAutomationMarkRunningParams({ hostInstanceId, runId, sessionEventSeq: -1 }), undefined)
+  assert.deepEqual(parseAutomationFinishParams({
+    hostInstanceId,
+    runId,
+    outcome: 'failed',
+    sessionEventSeq: 8,
+    detail: 'The Agent turn failed.',
+  }), {
+    hostInstanceId,
+    runId,
+    outcome: 'failed',
+    sessionEventSeq: 8,
+    detail: 'The Agent turn failed.',
+  })
+  assert.equal(parseAutomationFinishParams({ hostInstanceId, runId, outcome: 'unknown' }), undefined)
 })
 
 test('rejects duplicate occurrence, session, operation, and retry identities in a snapshot', () => {

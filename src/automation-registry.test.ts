@@ -50,6 +50,11 @@ test('persists revisioned definitions, state changes, and a deletion tombstone',
   assert.equal(created.duplicate, false)
   assert.equal(registry.createDefinition({ operationId: 'create-1', definition: definition() }).duplicate, true)
   assert.equal(registry.status().revision, 1)
+  assert.throws(() => registry.createDefinition({
+    operationId: 'create-outside-repository',
+    definition: definition({ projectPath: '/another-repository' }),
+  }), (error: AutomationRegistryError) => error.code === 'BAD_MESSAGE')
+  assert.equal(registry.status().revision, 1)
 
   const stored = registry.getDefinition(created.automationId)!
   stored.repository.root = '/mutated'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { ComputerObservation } from '@dolphinminer/dsh-desktop-protocol'
+import type { AutomationRunSummary, ComputerObservation } from '@dolphinminer/dsh-desktop-protocol'
 
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 
@@ -393,5 +393,88 @@ test('routes worktree provisioning as a caller-cancellable capability', async ()
   assert.deepEqual(calls, [
     'provision-1:session-1:refs/heads/main',
     'bind:session-created:/other',
+  ])
+})
+
+test('routes Host automation claim and lifecycle evidence through Main', async () => {
+  const hostInstanceId = '11111111-1111-4111-8111-111111111111'
+  const runId = '22222222-2222-4222-8222-222222222222'
+  const automationId = '33333333-3333-4333-8333-333333333333'
+  const sessionId = '44444444-4444-4444-8444-444444444444'
+  const queuedAt = '2026-08-16T12:00:00.000Z'
+  const dispatchAt = '2026-08-16T12:00:01.000Z'
+  const dispatching: AutomationRunSummary = {
+    id: runId,
+    automationId,
+    payloadHash: 'a'.repeat(64),
+    payload: {
+      definitionRevision: 1,
+      definitionName: 'Repository review',
+      prompt: 'Review the repository.',
+      projectPath: '/repo',
+      repository: { root: '/repo', gitDir: '/repo/.git', commonDir: '/repo/.git' },
+      trigger: { kind: 'once', at: queuedAt },
+      execution: { mode: 'worktree', baseRef: 'refs/heads/main' },
+      concurrencyPolicy: 'skip',
+      skillIds: [],
+      connectionIds: [],
+      invocation: { kind: 'manual', requestedAt: queuedAt },
+      sessionId,
+    },
+    phase: 'dispatching',
+    cancellationRequested: false,
+    createdAt: queuedAt,
+    updatedAt: dispatchAt,
+    events: [{ seq: 1, operationId: 'queue-run', at: queuedAt, type: 'queued' }, {
+      seq: 2,
+      operationId: 'dispatch-run',
+      at: dispatchAt,
+      type: 'dispatch',
+      hostInstanceId,
+      workspacePath: '/managed/run',
+    }],
+  }
+  const calls: string[] = []
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    connections,
+    git,
+    worktrees,
+    automations: {
+      claimNext: async (params, signal) => {
+        assert.equal(signal.aborted, false)
+        calls.push(`claim:${params.hostInstanceId}`)
+        return { dispatch: { run: dispatching, workspacePath: '/managed/run' } }
+      },
+      markRunning: params => {
+        calls.push(`running:${params.runId}:${String(params.sessionEventSeq)}`)
+        return { ...dispatching, phase: 'running' }
+      },
+      finish: params => {
+        calls.push(`finish:${params.runId}:${params.outcome}`)
+        return { ...dispatching, phase: params.outcome }
+      },
+    },
+  })
+  const context = { requestId: 'automation-1', signal: new AbortController().signal }
+
+  assert.equal((await handlers['automations.claimNext']({ hostInstanceId }, context)).dispatch?.run.id, runId)
+  assert.equal((await handlers['automations.markRunning']({
+    hostInstanceId,
+    runId,
+    sessionEventSeq: 3,
+  }, context)).phase, 'running')
+  assert.equal((await handlers['automations.finish']({
+    hostInstanceId,
+    runId,
+    outcome: 'failed',
+  }, context)).phase, 'failed')
+  assert.deepEqual(calls, [
+    `claim:${hostInstanceId}`,
+    `running:${runId}:3`,
+    `finish:${runId}:failed`,
   ])
 })

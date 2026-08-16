@@ -15,6 +15,7 @@ import {
   parseGitTurnBoundaryParams,
   parseRendererCommand,
   isLikelyReadOnlyMcpTool,
+  isSensitiveCapabilityMethod,
   parseComputerActParams,
   parseComputerActionResult,
   parseComputerObservation,
@@ -57,6 +58,14 @@ test('validates connection inputs, snapshots, and desktop events', () => {
   assert.deepEqual(parseDesktopProtocolMessage(event), event)
   assert.equal(isLikelyReadOnlyMcpTool('list_issues'), true)
   assert.equal(isLikelyReadOnlyMcpTool('create_issue'), false)
+  const automationEvent = createEvent('automations.changed', { revision: 7 })
+  assert.deepEqual(parseDesktopProtocolMessage(automationEvent), automationEvent)
+  assert.equal(isSensitiveCapabilityMethod('automations.claimNext'), true)
+  assert.deepEqual(parseCapabilityParams('automations.claimNext', {
+    hostInstanceId: '11111111-1111-4111-8111-111111111111',
+  }), {
+    hostInstanceId: '11111111-1111-4111-8111-111111111111',
+  })
 })
 
 test('rejects malformed envelopes and capability payloads', () => {

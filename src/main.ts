@@ -44,6 +44,7 @@ import {
 
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
+import { AutomationDispatcher, AutomationWorkspaceManager } from './automation-dispatcher'
 import { AutomationRegistry } from './automation-registry'
 import { AutomationScheduler } from './automation-scheduler'
 import { ConnectionManager } from './connection-manager'
@@ -830,16 +831,35 @@ app.whenReady().then(async () => {
   const gitMutationQueue = new GitRepositoryMutationQueue()
   const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
   const automationRegistry = new AutomationRegistry(join(desktopDataPath, 'automations.v1.json'))
-  automationScheduler = new AutomationScheduler(automationRegistry, {
-    onError: error => console.error('Automation scheduling stopped safely.', error),
-  })
-  automationScheduler.start()
   const worktreeManager = new WorktreeManager(
     gitService,
     worktreeRegistry,
     join(desktopDataPath, 'worktrees'),
     assertActiveWorkspace,
   )
+  const automationDispatcher = new AutomationDispatcher(
+    automationRegistry,
+    new AutomationWorkspaceManager(gitService, worktreeManager),
+  )
+  try {
+    automationDispatcher.recoverAbandonedRuns()
+  } catch (error) {
+    console.error('Could not recover abandoned automation runs safely.', error)
+  }
+  const publishAutomationChange = (): void => {
+    const revision = automationRegistry.status().revision
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('desktop:automations-changed', { revision })
+    }
+    harness?.send(createEvent('automations.changed', { revision }))
+  }
+  automationScheduler = new AutomationScheduler(automationRegistry, {
+    onAdmissions: admissions => {
+      if (admissions.some(admission => admission.decision === 'queued')) publishAutomationChange()
+    },
+    onError: error => console.error('Automation scheduling stopped safely.', error),
+  })
+  automationScheduler.start()
   const publishWorktreeReconciliation = (
     snapshot: ReturnType<WorktreeManager['snapshot']>,
   ): void => {
@@ -1128,6 +1148,27 @@ app.whenReady().then(async () => {
         return { managed: true, worktree: summary }
       },
     },
+    automations: {
+      claimNext: async (params, signal) => {
+        const revision = automationRegistry.status().revision
+        try {
+          const dispatch = await automationDispatcher.claimNext(params, signal)
+          return dispatch === undefined ? {} : { dispatch }
+        } finally {
+          if (automationRegistry.status().revision !== revision) publishAutomationChange()
+        }
+      },
+      markRunning: params => {
+        const run = automationDispatcher.markRunning(params)
+        publishAutomationChange()
+        return run
+      },
+      finish: params => {
+        const run = automationDispatcher.finish(params)
+        publishAutomationChange()
+        return run
+      },
+    },
     computer: {
       getPermissions: signal => computerObserver!.getPermissions(signal),
       listApplications: signal => computerObserver!.listApplications(signal),
@@ -1170,6 +1211,11 @@ app.whenReady().then(async () => {
       activityTracker.clear()
       connections.hostDisconnected()
       void computerObserver?.stop().catch(() => undefined)
+      try {
+        if (automationDispatcher.recoverAbandonedRuns().length > 0) publishAutomationChange()
+      } catch (error) {
+        console.error('Could not recover disconnected automation runs safely.', error)
+      }
     },
     onUnexpectedFailure: () => harnessRecovery?.handleUnexpectedFailure(),
     onState: publishState,

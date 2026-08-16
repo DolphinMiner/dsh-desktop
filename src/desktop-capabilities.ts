@@ -1,5 +1,10 @@
 import {
   DESKTOP_PROTOCOL_VERSION,
+  AutomationClaimNextParams,
+  AutomationClaimNextResult,
+  AutomationFinishParams,
+  AutomationMarkRunningParams,
+  AutomationRunSummary,
   ConnectionRuntimeStatusParams,
   ConnectionSnapshot,
   ConnectionSummary,
@@ -73,12 +78,24 @@ export interface DesktopCapabilityDependencies {
       signal: AbortSignal,
     ): Promise<WorktreeSessionBindingResult>
   }
+  automations?: {
+    claimNext(params: AutomationClaimNextParams, signal: AbortSignal): Promise<AutomationClaimNextResult>
+    markRunning(params: AutomationMarkRunningParams): AutomationRunSummary
+    finish(params: AutomationFinishParams): AutomationRunSummary
+  }
 }
 
 function unsupportedComputer(): never {
   throw {
     code: 'UNSUPPORTED',
     message: 'Computer observation is unavailable on this platform or build.',
+  }
+}
+
+function unsupportedAutomations(): never {
+  throw {
+    code: 'UNSUPPORTED',
+    message: 'Durable automations are unavailable in this desktop build.',
   }
 }
 
@@ -120,6 +137,12 @@ export function createDesktopCapabilityHandlers(
     'worktrees.list': () => dependencies.worktrees.snapshot(),
     'desktop.reportSessionBinding': (params, context) =>
       dependencies.worktrees.reportSessionBinding(params, context.signal),
+    'automations.claimNext': (params, context) =>
+      dependencies.automations?.claimNext(params, context.signal) ?? unsupportedAutomations(),
+    'automations.markRunning': params =>
+      dependencies.automations?.markRunning(params) ?? unsupportedAutomations(),
+    'automations.finish': params =>
+      dependencies.automations?.finish(params) ?? unsupportedAutomations(),
     'connections.list': () => dependencies.connections.snapshot(),
     'connections.resolveMcpTransport': (params, context) =>
       dependencies.connections.resolveMcpTransport(params.connectionId, context.signal),

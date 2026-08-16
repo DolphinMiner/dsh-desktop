@@ -13,6 +13,18 @@ import {
   parseComputerPermissions,
 } from './computer.js'
 import {
+  AutomationClaimNextParams,
+  AutomationClaimNextResult,
+  AutomationFinishParams,
+  AutomationMarkRunningParams,
+  AutomationRunSummary,
+  parseAutomationClaimNextParams,
+  parseAutomationClaimNextResult,
+  parseAutomationFinishParams,
+  parseAutomationMarkRunningParams,
+  parseAutomationRunSummary,
+} from './automation.js'
+import {
   GitDiscoverParams,
   GitRepositoryIdentity,
   GitReviewParams,
@@ -62,7 +74,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 18 as const
+export const DESKTOP_PROTOCOL_VERSION = 19 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -280,6 +292,18 @@ export interface DesktopCapabilityMap {
     params: WorktreeSessionBindingParams
     result: WorktreeSessionBindingResult
   }
+  'automations.claimNext': {
+    params: AutomationClaimNextParams
+    result: AutomationClaimNextResult
+  }
+  'automations.markRunning': {
+    params: AutomationMarkRunningParams
+    result: AutomationRunSummary
+  }
+  'automations.finish': {
+    params: AutomationFinishParams
+    result: AutomationRunSummary
+  }
   'connections.list': {
     params: Record<string, never>
     result: ConnectionSnapshot
@@ -300,6 +324,9 @@ export interface DesktopEventMap {
   }
   'worktrees.changed': WorktreeChangedEvent
   'worktrees.snapshot': WorktreeSnapshot
+  'automations.changed': {
+    revision: number
+  }
 }
 
 export type DesktopCapabilityMethod = keyof DesktopCapabilityMap
@@ -609,6 +636,10 @@ export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMess
       const data = parseWorktreeSnapshot(value.data)
       return data === undefined ? undefined : createEvent('worktrees.snapshot', data)
     }
+    if (value.event === 'automations.changed' && isRecord(value.data) &&
+      Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
+      return createEvent('automations.changed', { revision: Number(value.data.revision) })
+    }
     return undefined
   }
 
@@ -709,6 +740,15 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'desktop.reportSessionBinding') {
     return parseWorktreeSessionBindingParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'automations.claimNext') {
+    return parseAutomationClaimNextParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'automations.markRunning') {
+    return parseAutomationMarkRunningParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'automations.finish') {
+    return parseAutomationFinishParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'connections.list') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
@@ -794,6 +834,12 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'desktop.reportSessionBinding') {
     return parseWorktreeSessionBindingResult(value) as DesktopCapabilityResult<M> | undefined
   }
+  if (method === 'automations.claimNext') {
+    return parseAutomationClaimNextResult(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'automations.markRunning' || method === 'automations.finish') {
+    return parseAutomationRunSummary(value) as DesktopCapabilityResult<M> | undefined
+  }
   if (method === 'connections.list') {
     return parseConnectionSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
@@ -877,7 +923,9 @@ export function createEvent<E extends DesktopEventName>(
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
-    method === 'computer.act' || method === 'worktrees.provision'
+    method === 'computer.act' || method === 'worktrees.provision' ||
+    method === 'automations.claimNext' || method === 'automations.markRunning' ||
+    method === 'automations.finish'
 }
 
 const READ_ONLY_MCP_TOOL_PREFIXES = [
