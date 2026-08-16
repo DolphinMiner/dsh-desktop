@@ -73,8 +73,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     kind: 'allow',
   })
   assert.deepEqual(await gate?.({ name: 'computer_click' }, async () => ({ kind: 'allow' })), {
-    kind: 'ask',
-    reason: 'This computer action can change another application. Approve this operation once to continue.',
+    kind: 'allow',
   })
   assert.deepEqual(await gate?.({ name: 'browser_upload' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',

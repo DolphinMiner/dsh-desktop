@@ -812,14 +812,31 @@ export class ComputerObserver {
         `${target.name} is not allowed in Computer Control settings.`,
       )
     }
-    return cloneTarget(target)
+    const lockScreen = target.bundleId === 'com.apple.loginwindow' ||
+      target.bundleId === 'com.apple.ScreenSaver.Engine' || /lock screen|loginwindow/i.test(target.name)
+    if (lockScreen) return cloneTarget(target)
+
+    const windows = this.targets.filter(candidate =>
+      candidate.kind === 'window' && candidate.pid === target.pid &&
+      (target.bundleId === undefined || candidate.bundleId === target.bundleId))
+    const window = windows.reduce<ComputerTarget | undefined>((largest, candidate) => {
+      if (largest === undefined) return candidate
+      const largestArea = (largest.bounds?.width ?? 0) * (largest.bounds?.height ?? 0)
+      const candidateArea = (candidate.bounds?.width ?? 0) * (candidate.bounds?.height ?? 0)
+      return candidateArea > largestArea ? candidate : largest
+    }, undefined)
+    if (window === undefined) {
+      throw new ComputerUseError('NOT_FOUND', `${target.name} has no visible window to observe.`)
+    }
+    return cloneTarget(window)
   }
 
   private targetAllowed(target: ComputerTarget): boolean {
-    if (target.kind !== 'application' || target.pid === undefined) return false
+    if ((target.kind !== 'application' && target.kind !== 'window') || target.pid === undefined) return false
     const bundleId = target.bundleId
     const lockScreen = bundleId === 'com.apple.loginwindow' ||
-      bundleId === 'com.apple.ScreenSaver.Engine' || /lock screen|loginwindow/i.test(target.name)
+      bundleId === 'com.apple.ScreenSaver.Engine' ||
+      /lock screen|loginwindow/i.test(target.applicationName ?? target.name)
     if (lockScreen && !this.policy.lockScreenOperations) return false
     const rule = bundleId === undefined
       ? undefined

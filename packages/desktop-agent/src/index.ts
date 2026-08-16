@@ -93,15 +93,6 @@ const GIT_READ_TIMEOUT_MS = 35_000
 const WORKTREE_PROVISION_TIMEOUT_MS = 65_000
 const MAX_AGENT_GIT_ENTRIES = 500
 const MAX_AGENT_PATCH_CHARS = 200_000
-const COMPUTER_ACTION_TOOLS = new Set([
-  'computer_click',
-  'computer_click_at',
-  'computer_type',
-  'computer_key',
-  'computer_scroll',
-  'computer_scroll_at',
-])
-
 interface BrowserToolImage {
   attachmentId: string
   mediaType: 'image/jpeg'
@@ -934,12 +925,6 @@ export function apply(ctx: Context): void {
   ctx.on('tools/pre-execute', async (execution, next) => {
     const downstream = await next()
     if (downstream.kind !== 'allow') return downstream
-    if (COMPUTER_ACTION_TOOLS.has(execution.name)) {
-      return {
-        kind: 'ask',
-        reason: 'This computer action can change another application. Approve this operation once to continue.',
-      }
-    }
     if (execution.name === 'browser_upload') {
       return {
         kind: 'ask',

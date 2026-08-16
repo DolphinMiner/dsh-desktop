@@ -35,7 +35,15 @@ const targets: ComputerTarget[] = [
   { id: 'display:1', kind: 'display', name: 'Built-in Display', displayScale: 2 },
   { id: 'display:2', kind: 'display', name: 'Studio Display', displayScale: 1.5 },
   { id: 'application:42', kind: 'application', name: 'Editor', bundleId: 'dev.editor', pid: 42, frontmost: true },
-  { id: 'window:7', kind: 'window', name: 'README.md', applicationName: 'Editor', pid: 42 },
+  {
+    id: 'window:7',
+    kind: 'window',
+    name: 'README.md',
+    applicationName: 'Editor',
+    bundleId: 'dev.editor',
+    pid: 42,
+    bounds: { x: 0, y: 0, width: 800, height: 600 },
+  },
 ]
 
 class FakeHelper implements ComputerHelper {
@@ -211,7 +219,7 @@ test('persists one app policy and resolves it by name or bundle identifier after
     name: 'Editor',
     access: 'allow',
   }])
-  assert.equal((await observer.observe('session-1', 'Editor')).target.id, 'application:42')
+  assert.equal((await observer.observe('session-1', 'Editor')).target.id, 'window:7')
 
   const restarted = new ComputerObserver(
     new FakeHelper(),
@@ -219,7 +227,42 @@ test('persists one app policy and resolves it by name or bundle identifier after
     { policyStore: new ComputerControlPolicyStore(policyPath) },
   )
   t.after(() => restarted.dispose())
-  assert.equal((await restarted.observe('session-2', 'dev.editor')).target.id, 'application:42')
+  assert.equal((await restarted.observe('session-2', 'dev.editor')).target.id, 'window:7')
+})
+
+test('binds a named application to its largest current window before native capture', async t => {
+  const { root, helper, observer } = await fixture()
+  t.after(() => observer.dispose())
+  t.after(() => rm(root, { recursive: true, force: true }))
+  helper.targetList = {
+    permissions: granted,
+    targets: [
+      { id: 'application:91', kind: 'application', name: 'Google Chrome', bundleId: 'com.google.Chrome', pid: 91 },
+      {
+        id: 'window:small',
+        kind: 'window',
+        name: 'Downloads',
+        applicationName: 'Google Chrome',
+        bundleId: 'com.google.Chrome',
+        pid: 91,
+        bounds: { x: 10, y: 10, width: 480, height: 320 },
+      },
+      {
+        id: 'window:large',
+        kind: 'window',
+        name: 'ailoha.ai',
+        applicationName: 'Google Chrome',
+        bundleId: 'com.google.Chrome',
+        pid: 91,
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      },
+    ],
+  }
+
+  const observation = await observer.observe('session-chrome', 'Google Chrome')
+  assert.equal(observation.target.id, 'window:large')
+  assert.equal(helper.observeCalls[0]?.target.id, 'window:large')
+  assert.equal(observer.snapshot().activeTarget?.bundleId, 'com.google.Chrome')
 })
 
 test('keeps lock screen targets denied until the dedicated policy is enabled', async t => {
