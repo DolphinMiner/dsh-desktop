@@ -9,7 +9,7 @@ interface SnapshotSource<T> {
 export interface DesktopCommandEnvironment {
   ctx: Pick<ClientContext, 'sessions' | 'workspaces' | 'layout'>
   pickProjectDirectory(): Promise<string | null>
-  openSettings(sectionId?: string): void
+  openSettings(sectionId?: string): void | Promise<void>
 }
 
 function waitForSnapshot<T>(
@@ -89,7 +89,7 @@ export async function runDesktopCommand(
     return
   }
   if (command.type === 'settings.open') {
-    environment.openSettings(command.sectionId)
+    await environment.openSettings(command.sectionId)
     return
   }
   ctx.layout.toggleSidebar()

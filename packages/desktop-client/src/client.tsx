@@ -7,7 +7,6 @@ import {
   Button,
   IconBranchOutline16,
   IconCheckOutline16,
-  IconChecklistOutline14,
   IconCloseOutline16,
   IconDownloadOutline16,
   IconLinkOutline16,
@@ -16,7 +15,6 @@ import {
   IconPlusOutline16,
   IconRefreshOutline16,
   IconRightUpOutline16,
-  IconSettingsOutline16,
   IconStopFill16,
   IconTrashOutline16,
   Input,
@@ -25,7 +23,6 @@ import {
   StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {
   BeginOAuthInput,
@@ -71,6 +68,7 @@ import {
 import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automations.js'
 import { runDesktopCommand } from './desktop-command.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
+import { openOfficialSettings } from './settings-navigation.js'
 
 interface OAuthResultNotice {
   ok: boolean
@@ -213,27 +211,6 @@ const styles: Record<string, CSSProperties> = {
     overflowWrap: 'anywhere',
   },
   confirm: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
-  footerButton: {
-    alignItems: 'center',
-    background: 'transparent',
-    border: 0,
-    borderRadius: 4,
-    color: 'inherit',
-    cursor: 'pointer',
-    display: 'flex',
-    font: 'inherit',
-    gap: 8,
-    minHeight: 32,
-    padding: '6px 8px',
-  },
-  tabs: {
-    alignItems: 'center',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    display: 'flex',
-    gap: 4,
-    marginBottom: 20,
-    paddingBottom: 10,
-  },
   permissionList: { borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)', marginBottom: 22 },
   permissionRow: {
     alignItems: 'center',
@@ -1971,12 +1948,6 @@ function ComputerSection(): React.JSX.Element {
   )
 }
 
-const settingsListeners = new Set<(sectionId?: string) => void>()
-
-function openDesktopSettings(sectionId?: string): void {
-  for (const listener of settingsListeners) listener(sectionId)
-}
-
 function AutomationsSection(): React.JSX.Element {
   const desktop = window.dshDesktop
   return (
@@ -1985,103 +1956,6 @@ function AutomationsSection(): React.JSX.Element {
       pickProjectDirectory={() => desktop?.pickProjectDirectory() ?? Promise.resolve(null)}
       listConnections={desktop?.connections.list}
     />
-  )
-}
-
-function DesktopTaskCenterLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      style={styles.footerButton}
-      aria-label="Task Center"
-      title="Task Center"
-      onClick={() => openDesktopSettings('automations')}
-    >
-      <IconChecklistOutline14 size={wide ? 14 : 18} />
-      {wide && <span>Tasks</span>}
-    </button>
-  )
-}
-
-function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [section, setSection] = useState<'automations' | 'connections' | 'computer' | 'worktrees'>('connections')
-
-  useEffect(() => {
-    const listener = (sectionId?: string): void => {
-      if (sectionId === 'automations') setSection('automations')
-      else if (sectionId === 'computer') setSection('computer')
-      else if (sectionId === 'worktrees') setSection('worktrees')
-      else if (sectionId === undefined || sectionId === 'connections') setSection('connections')
-      if (sectionId === undefined || sectionId === 'automations' || sectionId === 'connections' || sectionId === 'computer' ||
-        sectionId === 'worktrees') setOpen(true)
-    }
-    settingsListeners.add(listener)
-    return () => { settingsListeners.delete(listener) }
-  }, [])
-
-  return (
-    <>
-      <button
-        type="button"
-        style={styles.footerButton}
-        aria-label="Desktop settings"
-        title="Desktop settings"
-        onClick={() => setOpen(true)}
-      >
-        <IconSettingsOutline16 size={wide ? 14 : 18} />
-        {wide && <span>Desktop</span>}
-      </button>
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Desktop settings"
-        closeLabel="Close desktop settings"
-      >
-        <div style={styles.tabs} role="tablist" aria-label="Desktop settings sections">
-          <Pill
-            type="button"
-            role="tab"
-            aria-selected={section === 'automations'}
-            active={section === 'automations'}
-            onClick={() => setSection('automations')}
-          >
-            Tasks
-          </Pill>
-          <Pill
-            type="button"
-            role="tab"
-            aria-selected={section === 'connections'}
-            active={section === 'connections'}
-            onClick={() => setSection('connections')}
-          >
-            Connections
-          </Pill>
-          <Pill
-            type="button"
-            role="tab"
-            aria-selected={section === 'computer'}
-            active={section === 'computer'}
-            onClick={() => setSection('computer')}
-          >
-            Computer
-          </Pill>
-          <Pill
-            type="button"
-            role="tab"
-            aria-selected={section === 'worktrees'}
-            active={section === 'worktrees'}
-            onClick={() => setSection('worktrees')}
-          >
-            Worktrees
-          </Pill>
-        </div>
-        {section === 'automations' && <AutomationsSection />}
-        {section === 'connections' && <ConnectionsSection />}
-        {section === 'computer' && <ComputerSection />}
-        {section === 'worktrees' && <WorktreesSection />}
-      </Modal>
-    </>
   )
 }
 
@@ -2094,7 +1968,7 @@ export function apply(ctx: ClientContext): void {
       void runDesktopCommand({
         ctx,
         pickProjectDirectory: () => bridge.pickProjectDirectory(),
-        openSettings: openDesktopSettings,
+        openSettings: openOfficialSettings,
       }, command).catch(error => {
         console.warn('Desktop command failed:', error instanceof Error ? error.message : String(error))
       })
@@ -2130,14 +2004,4 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     label: 'Review',
   }, (props: ConvViewProps) => <GitReviewView {...props} bridge={bridge?.git} />))
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-    name: 'sidebar.footer.action',
-    id: 'task-center',
-    order: 9,
-  }, DesktopTaskCenterLauncher))
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-    name: 'sidebar.footer.action',
-    id: 'desktop-settings',
-    order: 10,
-  }, DesktopSettingsLauncher))
 }

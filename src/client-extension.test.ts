@@ -22,7 +22,6 @@ test('packages desktop settings and navigation through the official Harness load
     '@deepseek-ai/dsh-client-runtime',
     '@deepseek-ai/dsh-client-ui-conversation',
     '@deepseek-ai/dsh-client-ui-layout',
-    '@deepseek-ai/dsh-client-ui-sidebar',
     '@deepseek-ai/dsh-client-ui-settings',
   ])
   assert.match(patch, /name: '@dolphinminer\/dsh-desktop-client'/)
@@ -32,7 +31,9 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /id: "computer"/)
   assert.match(bundle, /id: "worktrees"/)
   assert.match(bundle, /id: "review"/)
-  assert.match(bundle, /id: "desktop-settings"/)
+  assert.match(bundle, /openOfficialSettings/)
+  assert.doesNotMatch(bundle, /id: "desktop-settings"/)
+  assert.doesNotMatch(bundle, /id: "task-center"/)
   assert.match(bundle, /Screen Recording/)
   assert.match(bundle, /Allow for this session/)
   assert.match(bundle, /Recent actions/)
