@@ -37,6 +37,33 @@ const worktrees = {
   reportSessionBinding: () => Promise.reject(new Error('not configured')),
 }
 
+test('projects the Main-owned plugin policy to the Harness host without mutation access', async () => {
+  const policy = {
+    revision: 3,
+    overrides: {
+      'include:skill-badge': {
+        moduleName: '@deepseek-ai/dsh-skill-badge',
+        enabled: true,
+      },
+    },
+  }
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    plugins: { snapshot: () => policy },
+    git,
+    worktrees,
+    connections,
+  })
+
+  assert.deepEqual(await handlers['plugins.getPolicy']({}, {
+    requestId: 'plugins-1',
+    signal: new AbortController().signal,
+  }), policy)
+})
+
 test('suppresses native notifications while the app is focused', async () => {
   let shown = 0
   const handlers = createDesktopCapabilityHandlers({

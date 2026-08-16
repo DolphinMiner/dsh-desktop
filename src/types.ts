@@ -24,6 +24,11 @@ export interface DesktopBridge {
   pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+  plugins: {
+    getState(): Promise<DesktopPluginPolicySnapshot>
+    update(input: UpdateDesktopPluginPolicyInput): Promise<DesktopPluginPolicySnapshot>
+    onChanged(listener: (snapshot: DesktopPluginPolicySnapshot) => void): () => void
+  }
   appSnapshots: {
     getState(): Promise<AppSnapshotState>
     refresh(): Promise<AppSnapshotState>
@@ -153,6 +158,7 @@ import type {
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DesktopOpenAutomationSessionInput,
+  DesktopPluginPolicySnapshot,
   DesktopQueueAutomationRunInput,
   DesktopSetAutomationStateInput,
   DesktopWorktreeCleanupConfirmInput,
@@ -173,6 +179,7 @@ import type {
   GitRevertPreview,
   GitRevertResult,
   UpdateComputerControlPolicyInput,
+  UpdateDesktopPluginPolicyInput,
   UpdateBrowserSettingsInput,
   UpdateAppSnapshotSettingsInput,
   WorktreeCleanupPreview,

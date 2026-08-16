@@ -47,6 +47,7 @@ import {
   parseDesktopGitReviewCommentsInput,
   parseDesktopListAutomationRunsInput,
   parseDesktopOpenAutomationSessionInput,
+  parseUpdateDesktopPluginPolicyInput,
   parseDesktopQueueAutomationRunInput,
   parseDesktopSetAutomationStateInput,
   parseDesktopWorktreeCleanupConfirmInput,
@@ -103,6 +104,7 @@ import { GitTurnAttributionJournal } from './git-turn-attribution-journal'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
 import { PlaywrightBrowserEngine } from './playwright-browser'
+import { PluginPolicyController, PluginPolicyStore } from './plugin-policy'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
@@ -550,6 +552,7 @@ function installIpcHandlers(
   snapshots: AppSnapshotController,
   browser: BrowserController,
   connections: ConnectionManager,
+  plugins: PluginPolicyController,
   computer: ComputerObserver,
   automations: AutomationController,
   git: WorkspaceGitCapabilityService,
@@ -599,6 +602,14 @@ function installIpcHandlers(
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('desktop:plugins:get-state', event => {
+    assertTrustedSender(event)
+    return plugins.snapshot()
+  })
+  ipcMain.handle('desktop:plugins:update', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return plugins.update(validInput(parseUpdateDesktopPluginPolicyInput(value)))
   })
   ipcMain.handle('desktop:app-snapshots:get-state', event => {
     assertTrustedSender(event)
@@ -1029,6 +1040,22 @@ app.whenReady().then(async () => {
     new CredentialVault(join(desktopDataPath, 'credentials.v1.json'), encryption),
     oauthCoordinator,
   )
+  const pluginPolicy = new PluginPolicyController(
+    new PluginPolicyStore(
+      join(desktopDataPath, 'plugins.v1.json'),
+      error => console.error('Could not load plugin preferences.', error),
+    ),
+    snapshot => {
+      try {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('desktop:plugins:changed', snapshot)
+        }
+      } catch (error) {
+        console.error('Could not publish plugin preferences to the desktop window.', error)
+      }
+      harness?.send(createEvent('plugins.changed', { revision: snapshot.revision }))
+    },
+  )
   mcpProxy = new McpCredentialProxy(connections)
   await mcpProxy.start()
 
@@ -1315,6 +1342,7 @@ app.whenReady().then(async () => {
     appSnapshots,
     controlledBrowser,
     connections,
+    pluginPolicy,
     computerObserver,
     automationController,
     reviewWorkspaceGit,
@@ -1423,6 +1451,9 @@ app.whenReady().then(async () => {
         if (error !== '') throw new Error(`The operating system could not open this file: ${error}`)
         return { opened: true, path }
       },
+    },
+    plugins: {
+      snapshot: () => pluginPolicy.snapshot(),
     },
     git: {
       discover: (params, signal) => workspaceGit.discover(params, signal),

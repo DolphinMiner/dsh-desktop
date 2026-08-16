@@ -218,6 +218,10 @@ const styles = `
 }
 `
 
+export function SettingsStyles(): React.JSX.Element {
+  return <style>{styles}</style>
+}
+
 export function SettingsPage({
   title,
   subtitle,
@@ -229,7 +233,7 @@ export function SettingsPage({
 }): React.JSX.Element {
   return (
     <section className="dsh-desktop-settings-page" aria-label={title}>
-      <style>{styles}</style>
+      <SettingsStyles />
       <header className="dsh-desktop-settings-header">
         <h2 className="dsh-desktop-settings-title">{title}</h2>
         {subtitle !== undefined && <p className="dsh-desktop-settings-subtitle">{subtitle}</p>}

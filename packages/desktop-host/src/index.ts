@@ -13,6 +13,7 @@ import {
   DesktopCapabilityResult,
   DesktopEventData,
   DesktopEventName,
+  DesktopPluginPolicySnapshot,
   GitTurnBoundaryParams,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -30,12 +31,17 @@ import {
 import { DesktopConnectionClient, McpConnectionSupervisor } from './mcp-supervisor.js'
 import { GitTurnBoundaryCoordinator, reportTurnBoundaryAndActivity } from './git-turn-boundary.js'
 import { WorktreeSessionGuard } from './worktree-guard.js'
+import {
+  isMutablePluginModule,
+  PluginPolicyReconciler,
+} from './plugin-policy.js'
 
 export * from './bridge.js'
 export * from './automation-runner.js'
 export * from './mcp-supervisor.js'
 export * from './git-turn-boundary.js'
 export * from './worktree-guard.js'
+export * from './plugin-policy.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -75,6 +81,46 @@ export const inject = ['agentDefaultModel', 'agents', 'sessions', 'skills', 'too
 export async function apply(ctx: Context): Promise<void> {
   const bridge = new DesktopBridgeService(ctx)
   ctx.effect(() => () => bridge.dispose(), 'dsh-desktop: capability bridge')
+
+  const pluginPolicy = new PluginPolicyReconciler(ctx.loader, (message, error) => {
+    ctx.logger('dsh-desktop').warn('%s%s', message, error === undefined
+      ? ''
+      : ` ${error instanceof Error ? error.message : String(error)}`)
+  })
+  let pluginPolicySource: DesktopPluginPolicySnapshot = { revision: 0, overrides: {} }
+  const schedulePluginPolicy = (): void => pluginPolicy.schedule(pluginPolicySource)
+  const acceptPluginPolicy = (snapshot: DesktopPluginPolicySnapshot): void => {
+    if (snapshot.revision < pluginPolicySource.revision) return
+    pluginPolicySource = snapshot
+    schedulePluginPolicy()
+  }
+  const refreshPluginPolicy = async (): Promise<void> => {
+    acceptPluginPolicy(await bridge.call('plugins.getPolicy', {}))
+  }
+  ctx.effect(() => () => pluginPolicy.dispose(), 'dsh-desktop: plugin policy')
+  ctx.on('loader/entry-init', entry => {
+    queueMicrotask(() => {
+      if (isMutablePluginModule(entry.options.name ?? '')) schedulePluginPolicy()
+    })
+  })
+  ctx.on('loader/partial-dispose', entry => {
+    if (isMutablePluginModule(entry.options.name)) schedulePluginPolicy()
+  })
+  bridge.on('plugins.changed', event => {
+    if (event.revision <= pluginPolicySource.revision) return
+    void refreshPluginPolicy().catch(error => {
+      ctx.logger('dsh-desktop').warn(
+        'Plugin preferences could not be refreshed: %s',
+        error instanceof Error ? error.message : String(error),
+      )
+    })
+  })
+  void refreshPluginPolicy().catch(error => {
+    ctx.logger('dsh-desktop').warn(
+      'Plugin preferences are unavailable: %s',
+      error instanceof Error ? error.message : String(error),
+    )
+  })
 
   const connections: DesktopConnectionClient = {
     list: () => bridge.call('connections.list', {}),

@@ -37,6 +37,25 @@ test('round-trips a valid capability request', () => {
   )
 })
 
+test('round-trips the read-only desktop plugin policy capability and invalidation', () => {
+  const snapshot = {
+    revision: 2,
+    overrides: {
+      'include:skill-badge': {
+        moduleName: '@deepseek-ai/dsh-skill-badge',
+        enabled: true,
+      },
+    },
+  }
+  assert.deepEqual(parseCapabilityParams('plugins.getPolicy', {}), {})
+  assert.equal(parseCapabilityParams('plugins.getPolicy', { extra: true }), undefined)
+  assert.deepEqual(parseCapabilityResult('plugins.getPolicy', snapshot), snapshot)
+  assert.equal(parseCapabilityResult('plugins.getPolicy', { revision: -1, overrides: {} }), undefined)
+
+  const event = createEvent('plugins.changed', { revision: snapshot.revision })
+  assert.deepEqual(parseDesktopProtocolMessage(event), event)
+})
+
 test('validates connection inputs, snapshots, and desktop events', () => {
   assert.deepEqual(parseConnectApiKeyInput({
     requestId: 'request-2',

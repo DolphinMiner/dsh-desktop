@@ -94,6 +94,10 @@ import {
   WorktreeChangedEvent,
   WorktreeSummary,
 } from './worktree.js'
+import {
+  DesktopPluginPolicySnapshot,
+  parseDesktopPluginPolicySnapshot,
+} from './plugin-policy.js'
 
 export * from './computer.js'
 export * from './app-snapshot.js'
@@ -111,8 +115,9 @@ export * from './worktree.js'
 export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
+export * from './plugin-policy.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 26 as const
+export const DESKTOP_PROTOCOL_VERSION = 27 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -286,6 +291,10 @@ export interface DesktopCapabilityMap {
     params: DesktopWorkspacePathParams
     result: DesktopWorkspacePathResult
   }
+  'plugins.getPolicy': {
+    params: Record<string, never>
+    result: DesktopPluginPolicySnapshot
+  }
   'computer.getPermissions': {
     params: Record<string, never>
     result: ComputerPermissions
@@ -409,6 +418,9 @@ export interface DesktopCapabilityMap {
 }
 
 export interface DesktopEventMap {
+  'plugins.changed': {
+    revision: number
+  }
   'connections.changed': {
     revision: number
   }
@@ -718,6 +730,10 @@ export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMess
   if (!isRecord(value) || !hasEnvelope(value)) return undefined
 
   if (value.kind === 'event') {
+    if (value.event === 'plugins.changed' && isRecord(value.data) &&
+      Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
+      return createEvent('plugins.changed', { revision: Number(value.data.revision) })
+    }
     if (value.event === 'connections.changed' && isRecord(value.data) &&
       Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
       return createEvent('connections.changed', { revision: Number(value.data.revision) })
@@ -805,6 +821,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
       workspaceRoot: value.workspaceRoot,
       path: value.path,
     } as DesktopCapabilityParams<M>
+  }
+  if (method === 'plugins.getPolicy') {
+    return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
   if (method === 'computer.getPermissions' || method === 'computer.listApps') {
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
@@ -938,6 +957,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'desktop.revealPath' || method === 'desktop.openPath') {
     if (value.opened !== true || !isBoundedString(value.path, 4_096)) return undefined
     return { opened: true, path: value.path } as DesktopCapabilityResult<M>
+  }
+  if (method === 'plugins.getPolicy') {
+    return parseDesktopPluginPolicySnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'computer.getPermissions') {
     return parseComputerPermissions(value) as DesktopCapabilityResult<M> | undefined

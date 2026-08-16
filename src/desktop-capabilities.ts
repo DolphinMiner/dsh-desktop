@@ -45,6 +45,7 @@ import {
   WorktreeSummary,
   McpTransportDescriptor,
   DesktopNotificationParams,
+  DesktopPluginPolicySnapshot,
   DesktopSessionActivityParams,
   DesktopWorkspacePathParams,
   DesktopWorkspacePathResult,
@@ -66,6 +67,9 @@ export interface DesktopCapabilityDependencies {
   workspaceFiles: {
     reveal(params: DesktopWorkspacePathParams, signal: AbortSignal): Promise<DesktopWorkspacePathResult>
     open(params: DesktopWorkspacePathParams, signal: AbortSignal): Promise<DesktopWorkspacePathResult>
+  }
+  plugins?: {
+    snapshot(): DesktopPluginPolicySnapshot
   }
   connections: {
     snapshot(): ConnectionSnapshot
@@ -124,6 +128,13 @@ function unsupportedComputer(): never {
   }
 }
 
+function unsupportedPlugins(): never {
+  throw {
+    code: 'UNSUPPORTED',
+    message: 'Desktop plugin preferences are unavailable in this build.',
+  }
+}
+
 function unsupportedBrowser(): never {
   throw {
     code: 'UNSUPPORTED',
@@ -159,6 +170,7 @@ export function createDesktopCapabilityHandlers(
     }),
     'desktop.revealPath': (params, context) => dependencies.workspaceFiles.reveal(params, context.signal),
     'desktop.openPath': (params, context) => dependencies.workspaceFiles.open(params, context.signal),
+    'plugins.getPolicy': () => dependencies.plugins?.snapshot() ?? unsupportedPlugins(),
     'computer.getPermissions': (_params, context) =>
       dependencies.computer?.getPermissions(context.signal) ?? unsupportedComputer(),
     'computer.listApps': (_params, context) =>

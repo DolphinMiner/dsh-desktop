@@ -35,6 +35,7 @@ import type {
   ConnectionAccess,
   ConnectionSnapshot,
   ConnectionSummary,
+  DesktopPluginPolicySnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
   DesktopWorktreeCleanupConfirmInput,
@@ -53,6 +54,7 @@ import type {
   WorktreeHandoffResult,
   WorktreeSnapshot,
   WorktreeSummary,
+  UpdateDesktopPluginPolicyInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import {
@@ -75,6 +77,7 @@ import {
 } from './browser.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
+import { SettingsStyles, SettingsToggle } from './settings-ui.js'
 
 interface OAuthResultNotice {
   ok: boolean
@@ -89,6 +92,12 @@ interface DesktopConnectionsBridge {
   cancelOAuth(input: CancelOAuthInput): Promise<void>
   onChanged(listener: (snapshot: ConnectionSnapshot) => void): () => void
   onOAuthResult(listener: (result: OAuthResultNotice) => void): () => void
+}
+
+interface DesktopPluginPolicyBridge {
+  getState(): Promise<DesktopPluginPolicySnapshot>
+  update(input: UpdateDesktopPluginPolicyInput): Promise<DesktopPluginPolicySnapshot>
+  onChanged(listener: (snapshot: DesktopPluginPolicySnapshot) => void): () => void
 }
 
 interface DesktopWorktreesBridge {
@@ -108,6 +117,7 @@ declare global {
     dshDesktop?: {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
+      plugins: DesktopPluginPolicyBridge
       appSnapshots: DesktopAppSnapshotsBridge
       browser: DesktopBrowserBridge
       git: DesktopGitBridge
@@ -818,6 +828,9 @@ const pluginCenterStyles = `
   flex: 0 0 auto;
   gap: 7px;
 }
+.dsh-plugin-center__runtime-error {
+  color: var(--dsw-alias-label-error, #b42318);
+}
 .dsh-plugin-center__empty {
   border-top: 1px solid var(--dsw-alias-border-l1, #ecece8);
   padding: 26px 10px;
@@ -867,18 +880,12 @@ function isUserFacingPlugin(entry: PluginInventoryEntry): boolean {
     !entry.moduleName.startsWith('@dolphinminer/')
 }
 
-function pluginRuntimeLabel(entry: PluginInventoryEntry): string {
+function pluginRuntimeLabel(entry: PluginInventoryEntry, desiredEnabled = entry.enabled): string {
+  if (desiredEnabled !== entry.enabled) return desiredEnabled ? 'Unavailable' : 'Still running'
   if (!entry.enabled) return 'Disabled'
   if (entry.fiberPhase === 'active') return 'Installed'
   if (entry.fiberPhase === 'failed') return 'Unavailable'
   return 'Starting'
-}
-
-function pluginRuntimeState(entry: PluginInventoryEntry): 'done' | 'warning' | 'ongoing' | 'error' {
-  if (!entry.enabled) return 'warning'
-  if (entry.fiberPhase === 'active') return 'done'
-  if (entry.fiberPhase === 'failed') return 'error'
-  return 'ongoing'
 }
 
 function PluginCatalogTab({
@@ -886,11 +893,17 @@ function PluginCatalogTab({
   loading,
   failure,
   query,
+  policy,
+  pending,
+  onToggle,
 }: {
   entries: readonly PluginInventoryEntry[]
   loading: boolean
   failure?: string
   query: string
+  policy?: DesktopPluginPolicySnapshot
+  pending: ReadonlySet<string>
+  onToggle: (entry: PluginInventoryEntry, enabled: boolean) => void
 }): React.JSX.Element {
   const normalized = query.trim().toLocaleLowerCase()
   const filtered = normalized.length === 0
@@ -909,21 +922,31 @@ function PluginCatalogTab({
         </div>
       )}
       <ul className="dsh-plugin-center__list">
-        {filtered.map(entry => (
-          <li className="dsh-plugin-center__row" key={String(entry.entryId)}>
-            <span className="dsh-plugin-center__icon" aria-hidden="true">
-              <IconCordisPluginOutline14 size={18} />
-            </span>
-            <span className="dsh-plugin-center__identity">
-              <span className="dsh-plugin-center__name">{pluginDisplayName(entry.moduleName)}</span>
-              <span className="dsh-plugin-center__description">{entry.moduleName}</span>
-            </span>
-            <span className="dsh-plugin-center__status">
-              <StateDot state={pluginRuntimeState(entry)} />
-              {pluginRuntimeLabel(entry)}
-            </span>
-          </li>
-        ))}
+        {filtered.map(entry => {
+          const entryId = String(entry.entryId)
+          const override = policy?.overrides[entryId]
+          const desiredEnabled = override?.moduleName === entry.moduleName ? override.enabled : entry.enabled
+          const drifting = desiredEnabled !== entry.enabled
+          return (
+            <li className="dsh-plugin-center__row" key={entryId}>
+              <span className="dsh-plugin-center__icon" aria-hidden="true">
+                <IconCordisPluginOutline14 size={18} />
+              </span>
+              <span className="dsh-plugin-center__identity">
+                <span className="dsh-plugin-center__name">{pluginDisplayName(entry.moduleName)}</span>
+                <span className={`dsh-plugin-center__description${drifting ? ' dsh-plugin-center__runtime-error' : ''}`}>
+                  {pluginRuntimeLabel(entry, desiredEnabled)} · {entry.moduleName}
+                </span>
+              </span>
+              <SettingsToggle
+                checked={desiredEnabled}
+                label={`${desiredEnabled ? 'Disable' : 'Enable'} ${pluginDisplayName(entry.moduleName)}`}
+                disabled={policy === undefined || pending.has(entryId)}
+                onChange={enabled => onToggle(entry, enabled)}
+              />
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -994,9 +1017,11 @@ function MarketplaceTab(): React.JSX.Element {
 function PluginsSettingsSection({
   bridge,
   listPlugins,
+  pluginPolicyBridge,
 }: {
   bridge?: DesktopConnectionsBridge
   listPlugins: () => Promise<PluginInventorySnapshot>
+  pluginPolicyBridge?: DesktopPluginPolicyBridge
 }): React.JSX.Element {
   const [active, setActive] = useState<PluginCenterTabId>('plugins')
   const [query, setQuery] = useState('')
@@ -1005,7 +1030,10 @@ function PluginsSettingsSection({
   const [pluginsLoading, setPluginsLoading] = useState(true)
   const [connectionsLoading, setConnectionsLoading] = useState(true)
   const [pluginsFailure, setPluginsFailure] = useState<string>()
+  const [pluginPolicyFailure, setPluginPolicyFailure] = useState<string>()
   const [connectionsFailure, setConnectionsFailure] = useState<string>()
+  const [pendingPlugins, setPendingPlugins] = useState<ReadonlySet<string>>(() => new Set())
+  const [pluginPolicySnapshot, setPluginPolicySnapshot] = useState<DesktopPluginPolicySnapshot>()
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const refreshPlugins = async (): Promise<void> => {
@@ -1042,6 +1070,29 @@ function PluginsSettingsSection({
   }, [listPlugins])
 
   useEffect(() => {
+    if (pluginPolicyBridge === undefined) {
+      setPluginPolicyFailure('Desktop plugin preferences are unavailable.')
+      return
+    }
+    let active = true
+    void pluginPolicyBridge.getState().then(snapshot => {
+      if (!active) return
+      setPluginPolicySnapshot(snapshot)
+      setPluginPolicyFailure(snapshot.statusMessage)
+    }).catch(cause => {
+      if (active) setPluginPolicyFailure(errorMessage(cause))
+    })
+    const dispose = pluginPolicyBridge.onChanged(snapshot => {
+      setPluginPolicySnapshot(snapshot)
+      setPluginPolicyFailure(snapshot.statusMessage)
+    })
+    return () => {
+      active = false
+      dispose()
+    }
+  }, [pluginPolicyBridge])
+
+  useEffect(() => {
     void refreshConnections()
     if (bridge === undefined) return
     return bridge.onChanged(snapshot => {
@@ -1064,8 +1115,58 @@ function PluginsSettingsSection({
     { id: 'marketplace', label: 'Marketplace', count: 1 },
   ]
 
+  const togglePlugin = async (entry: PluginInventoryEntry, enabled: boolean): Promise<void> => {
+    const entryId = String(entry.entryId)
+    setPendingPlugins(current => new Set([...current, entryId]))
+    setPluginsFailure(undefined)
+    try {
+      const current = pluginPolicySnapshot
+      if (pluginPolicyBridge === undefined || current === undefined) {
+        throw new Error('Plugin settings are unavailable.')
+      }
+      const saved = await pluginPolicyBridge.update({
+        expectedRevision: current.revision,
+        entryId,
+        moduleName: entry.moduleName,
+        enabled,
+      })
+      setPluginPolicySnapshot(saved)
+      setPluginPolicyFailure(saved.statusMessage)
+      const savedOverride = saved.overrides[entryId]
+      if (savedOverride?.moduleName !== entry.moduleName || savedOverride.enabled !== enabled) {
+        throw new Error('The plugin preference could not be saved.')
+      }
+
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline) {
+        const next = await listPlugins()
+        setPlugins(next)
+        const runtime = next.entries.find(candidate => String(candidate.entryId) === entryId)
+        if (runtime === undefined || runtime.moduleName !== entry.moduleName) {
+          throw new Error('The plugin is no longer installed.')
+        }
+        if (runtime.enabled === enabled && (!enabled || runtime.fiberPhase === 'active')) return
+        if (enabled && runtime.fiberPhase === 'failed') throw new Error('The plugin failed to start.')
+        await new Promise(resolve => setTimeout(resolve, 125))
+      }
+      throw new Error(enabled ? 'The plugin did not start.' : 'The plugin did not stop.')
+    } catch (cause) {
+      setPluginsFailure(errorMessage(cause))
+      if (pluginPolicyBridge !== undefined) {
+        void pluginPolicyBridge.getState().then(setPluginPolicySnapshot).catch(() => undefined)
+      }
+    } finally {
+      setPendingPlugins(current => {
+        const next = new Set(current)
+        next.delete(entryId)
+        return next
+      })
+    }
+  }
+
   return (
     <section className="dsh-plugin-center" aria-label="Plugins">
+      <SettingsStyles />
       <style>{pluginCenterStyles}</style>
       <header className="dsh-plugin-center__header">
         <div>
@@ -1129,8 +1230,11 @@ function PluginsSettingsSection({
           <PluginCatalogTab
             entries={pluginEntries}
             loading={pluginsLoading}
-            failure={pluginsFailure}
+            failure={pluginsFailure ?? pluginPolicyFailure}
             query={query}
+            policy={pluginPolicySnapshot}
+            pending={pendingPlugins}
+            onToggle={(entry, enabled) => { void togglePlugin(entry, enabled) }}
           />
         )}
         {active === 'apps' && <ConnectionsSection bridge={bridge} />}
@@ -2048,7 +2152,15 @@ function AutomationsSection(): React.JSX.Element {
   )
 }
 
-export const inject = ['slots', 'sessions', 'workspaces', 'layout', 'remote', 'remote.pluginInventory']
+export const inject = [
+  'connection',
+  'slots',
+  'sessions',
+  'workspaces',
+  'layout',
+  'remote',
+  'remote.pluginInventory',
+]
 
 export function apply(ctx: ClientContext): void {
   const bridge = window.dshDesktop
@@ -2094,7 +2206,13 @@ export function apply(ctx: ClientContext): void {
     id: 'plugins',
     order: 15,
     label: 'Plugins',
-  }, () => <PluginsSettingsSection bridge={bridge?.connections} listPlugins={listPlugins} />))
+  }, () => (
+    <PluginsSettingsSection
+      bridge={bridge?.connections}
+      listPlugins={listPlugins}
+      pluginPolicyBridge={bridge?.plugins}
+    />
+  )))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'computer',

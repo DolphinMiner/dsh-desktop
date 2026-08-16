@@ -29,6 +29,17 @@ const bridge: DesktopBridge = {
     for (const command of pendingCommands.splice(0)) listener(command)
     return () => { commandListeners.delete(listener) }
   },
+  plugins: {
+    getState: () => ipcRenderer.invoke('desktop:plugins:get-state'),
+    update: input => ipcRenderer.invoke('desktop:plugins:update', input),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
+        listener(snapshot)
+      }
+      ipcRenderer.on('desktop:plugins:changed', handler)
+      return () => ipcRenderer.removeListener('desktop:plugins:changed', handler)
+    },
+  },
   appSnapshots: {
     getState: () => ipcRenderer.invoke('desktop:app-snapshots:get-state'),
     refresh: () => ipcRenderer.invoke('desktop:app-snapshots:refresh'),
