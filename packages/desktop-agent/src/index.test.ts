@@ -36,6 +36,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'browser_type',
     'browser_select',
     'browser_scroll',
+    'browser_upload',
     'desktop_reveal_file',
     'desktop_open_file',
     'desktop_git_status',
@@ -73,6 +74,10 @@ test('registers workspace-bound file tools and asks before opening', async () =>
   assert.deepEqual(await gate?.({ name: 'computer_click' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',
     reason: 'This computer action can change another application. Approve this operation once to continue.',
+  })
+  assert.deepEqual(await gate?.({ name: 'browser_upload' }, async () => ({ kind: 'allow' })), {
+    kind: 'ask',
+    reason: 'Choosing local files can send workspace data to a website. Approve this operation once to continue.',
   })
   assert.deepEqual(await gate?.({ name: 'desktop_create_worktree' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',
@@ -410,6 +415,12 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Country',
     option: 'China',
   }, execution)
+  const uploadTool = definitions.find(definition => definition.name === 'browser_upload')!
+  await uploadTool.execute({
+    snapshot_id: 'snapshot-3',
+    name: 'Resume',
+    paths: ['resume.pdf'],
+  }, execution)
 
   assert.equal(calls[0]!.method, 'browser.navigate')
   assert.match(String(calls[0]!.params.actionId), /^[a-f0-9-]{36}$/i)
@@ -447,6 +458,16 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Country',
     option: 'China',
   })
+  assert.equal(calls[6]!.method, 'browser.upload')
+  assert.match(String(calls[6]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[6]!.params, actionId: '<id>' }, {
+    actionId: '<id>',
+    sessionId: 'session-browser',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-3',
+    name: 'Resume',
+    paths: ['resume.pdf'],
+  })
   assert.deepEqual(typeTool.presentCall?.({
     snapshot_id: 'snapshot-1',
     role: 'textbox',
@@ -470,6 +491,16 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Account',
     option: 'private account',
   })).includes('private account'), false)
+  assert.deepEqual(uploadTool.presentCall?.({
+    snapshot_id: 'snapshot-3',
+    name: 'Resume',
+    paths: ['resume.pdf'],
+  }), {
+    card: 'generic',
+    title: 'Choose 1 file in browser',
+    kind: 'execute',
+    locations: [{ path: 'resume.pdf' }],
+  })
 })
 
 test('commits Browser screenshots through the official attachment store for vision routes', async () => {

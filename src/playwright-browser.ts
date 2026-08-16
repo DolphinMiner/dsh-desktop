@@ -52,6 +52,12 @@ export interface BrowserEngineObservation {
   }
 }
 
+export interface BrowserUploadFile {
+  name: string
+  mediaType: string
+  data: Buffer
+}
+
 export interface BrowserEngine {
   start(options: PlaywrightBrowserLaunchOptions, signal: AbortSignal): Promise<void>
   stop(): Promise<void>
@@ -68,6 +74,13 @@ export interface BrowserEngine {
   ): Promise<void>
   type(tabId: string, role: string, name: string, text: string, submit: boolean, signal: AbortSignal): Promise<void>
   select(tabId: string, name: string, option: string, exact: boolean, signal: AbortSignal): Promise<void>
+  upload(
+    tabId: string,
+    name: string,
+    files: readonly BrowserUploadFile[],
+    exact: boolean,
+    signal: AbortSignal,
+  ): Promise<void>
   scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void>
   scrollAt(
     tabId: string,
@@ -316,6 +329,38 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     await locator.selectOption({ label: option })
     await settlePage(page)
     throwIfAborted(signal)
+  }
+
+  async upload(
+    tabId: string,
+    name: string,
+    files: readonly BrowserUploadFile[],
+    exact: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    const locator = page.getByLabel(name, { exact })
+    await this.requireOne(locator.count(), 'file input', name)
+    let dispatched = false
+    try {
+      dispatched = true
+      await locator.setInputFiles(files.map(file => ({
+        name: file.name,
+        mimeType: file.mediaType,
+        buffer: file.data,
+      })))
+      await settlePage(page)
+      throwIfAborted(signal)
+    } catch (error) {
+      if (error instanceof ControlledBrowserError) throw error
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      throw new ControlledBrowserError(
+        'DESKTOP_UNAVAILABLE',
+        'The browser file selection did not complete. Observe the page before trying again.',
+        dispatched,
+      )
+    }
   }
 
   async scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void> {

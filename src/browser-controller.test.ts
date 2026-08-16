@@ -12,6 +12,7 @@ import type {
   BrowserEngine,
   BrowserEngineObservation,
   BrowserEngineState,
+  BrowserUploadFile,
   PlaywrightBrowserLaunchOptions,
 } from './playwright-browser'
 
@@ -22,6 +23,8 @@ class FakeBrowserEngine implements BrowserEngine {
   pointerClicks: Array<{ x: number; y: number; button: 'left' | 'right' }> = []
   typed: string[] = []
   selections: Array<{ name: string; option: string; exact: boolean }> = []
+  uploads: Array<{ name: string; files: string[]; exact: boolean }> = []
+  uploadError?: Error
   scrolls = 0
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   keyboardBatches: BrowserUiKeyboardAction[][] = []
@@ -102,6 +105,16 @@ class FakeBrowserEngine implements BrowserEngine {
     return Promise.resolve()
   }
 
+  upload(
+    _tabId: string,
+    name: string,
+    files: readonly BrowserUploadFile[],
+    exact: boolean,
+  ): Promise<void> {
+    this.uploads.push({ name, files: files.map(file => file.name), exact })
+    return this.uploadError === undefined ? Promise.resolve() : Promise.reject(this.uploadError)
+  }
+
   scroll(): Promise<void> {
     this.scrolls += 1
     return Promise.resolve()
@@ -171,6 +184,11 @@ async function fixture(): Promise<{
     engine,
     {
       profilePath: join(root, 'profile'),
+      loadUploadFiles: params => Promise.resolve(params.paths.map(path => ({
+        name: path,
+        mediaType: 'application/octet-stream',
+        data: Buffer.from(path),
+      }))),
       now: () => new Date('2026-08-16T08:00:00.000Z'),
       onFrame: frame => frames.push(frame),
     },
@@ -397,6 +415,49 @@ test('uses one revisioned tab projection and snapshot-bound dropdown selection',
     tabId: 'tab-2',
   }, new AbortController().signal)
   assert.deepEqual(runtime.engine.tabs, ['tab-1'])
+})
+
+test('selects bounded workspace files once and invalidates uncertain upload snapshots', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  const first = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  const input = {
+    actionId: 'upload-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: first.snapshotId,
+    name: 'Resume',
+    paths: ['resume.pdf'],
+  }
+  const uploaded = await runtime.controller.upload(input, new AbortController().signal)
+  assert.deepEqual(runtime.engine.uploads, [{ name: 'Resume', files: ['resume.pdf'], exact: true }])
+  assert.notEqual(uploaded.snapshotId, first.snapshotId)
+  assert.deepEqual(
+    await runtime.controller.upload(input, new AbortController().signal),
+    uploaded,
+  )
+  assert.equal(runtime.engine.uploads.length, 1)
+
+  const current = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  runtime.engine.uploadError = new Error('connection closed')
+  const uncertain = { ...input, actionId: 'upload-2', snapshotId: current.snapshotId }
+  await assert.rejects(runtime.controller.upload(uncertain, new AbortController().signal))
+  await assert.rejects(
+    runtime.controller.upload(uncertain, new AbortController().signal),
+    (error: unknown) => (error as { code?: string }).code === 'TARGET_CHANGED',
+  )
+  assert.equal(runtime.engine.uploads.length, 2)
 })
 
 test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {

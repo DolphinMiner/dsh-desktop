@@ -355,6 +355,10 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
         calls.push(`select:${params.snapshotId}:${params.option}`)
         return observation
       },
+      upload: async params => {
+        calls.push(`upload:${params.snapshotId}:${params.paths.join(',')}`)
+        return observation
+      },
       scroll: async params => {
         calls.push(`scroll:${params.snapshotId}:${String(params.deltaY)}`)
         return observation
@@ -403,6 +407,14 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     name: 'Country',
     option: 'China',
   }, context)
+  await handlers['browser.upload']({
+    actionId: 'upload-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-1',
+    name: 'Resume',
+    paths: ['resume.pdf'],
+  }, context)
   await handlers['browser.scroll']({
     actionId: 'scroll-1',
     sessionId: 'session-1',
@@ -419,6 +431,7 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     'click:snapshot-1:Continue',
     'type:snapshot-1:DeepSeek',
     'select:snapshot-1:China',
+    'upload:snapshot-1:resume.pdf',
     'scroll:snapshot-1:600',
   ])
 })

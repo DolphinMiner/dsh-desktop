@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
+import { loadWorkspaceUploadFiles, resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 
 async function withWorkspace(run: (root: string, outside: string) => Promise<void>): Promise<void> {
   const parent = await mkdtemp(join(tmpdir(), 'dsh-desktop-path-'))
@@ -55,6 +55,29 @@ test('rejects missing, directory, and executable open targets', async () => {
       code: 'BAD_MESSAGE',
     })
     await assert.rejects(resolveWorkspaceTarget(root, 'run', { operation: 'open' }), {
+      code: 'BAD_MESSAGE',
+    })
+  })
+})
+
+test('loads bounded browser upload payloads without exposing paths to the page', async () => {
+  await withWorkspace(async (root, outside) => {
+    await writeFile(join(root, 'image.png'), new Uint8Array([1, 2, 3]))
+    const files = await loadWorkspaceUploadFiles(root, ['README.md', 'image.png'])
+    assert.deepEqual(files.map(file => ({
+      name: file.name,
+      mediaType: file.mediaType,
+      data: [...file.data],
+    })), [
+      { name: 'README.md', mediaType: 'text/markdown', data: [...Buffer.from('# Test\n')] },
+      { name: 'image.png', mediaType: 'image/png', data: [1, 2, 3] },
+    ])
+
+    await symlink(outside, join(root, 'upload-escape.txt'))
+    await assert.rejects(loadWorkspaceUploadFiles(root, ['upload-escape.txt']), {
+      code: 'BAD_MESSAGE',
+    })
+    await assert.rejects(loadWorkspaceUploadFiles(root, Array.from({ length: 9 }, (_, index) => `file-${index}`)), {
       code: 'BAD_MESSAGE',
     })
   })

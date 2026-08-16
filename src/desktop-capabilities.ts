@@ -21,6 +21,7 @@ import {
   BrowserTabsParams,
   BrowserTabsSnapshot,
   BrowserTypeParams,
+  BrowserUploadParams,
   ComputerApplicationList,
   ComputerActParams,
   ComputerActionResult,
@@ -88,6 +89,7 @@ export interface DesktopCapabilityDependencies {
     click(params: BrowserClickParams, signal: AbortSignal): Promise<BrowserObservation>
     type(params: BrowserTypeParams, signal: AbortSignal): Promise<BrowserObservation>
     select(params: BrowserSelectParams, signal: AbortSignal): Promise<BrowserObservation>
+    upload(params: BrowserUploadParams, signal: AbortSignal): Promise<BrowserObservation>
     scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation>
   }
   git: {
@@ -179,6 +181,8 @@ export function createDesktopCapabilityHandlers(
       dependencies.browser?.type(params, context.signal) ?? unsupportedBrowser(),
     'browser.select': (params, context) =>
       dependencies.browser?.select(params, context.signal) ?? unsupportedBrowser(),
+    'browser.upload': (params, context) =>
+      dependencies.browser?.upload(params, context.signal) ?? unsupportedBrowser(),
     'browser.scroll': (params, context) =>
       dependencies.browser?.scroll(params, context.signal) ?? unsupportedBrowser(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),

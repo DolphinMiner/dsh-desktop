@@ -26,6 +26,7 @@ import {
   BrowserTabsParams,
   BrowserTabsSnapshot,
   BrowserTypeParams,
+  BrowserUploadParams,
   parseBrowserClickParams,
   parseBrowserFrame,
   parseBrowserNavigateParams,
@@ -39,6 +40,7 @@ import {
   parseBrowserTabsParams,
   parseBrowserTabsSnapshot,
   parseBrowserTypeParams,
+  parseBrowserUploadParams,
 } from './browser.js'
 import {
   AutomationClaimNextParams,
@@ -106,7 +108,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 24 as const
+export const DESKTOP_PROTOCOL_VERSION = 25 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -330,6 +332,10 @@ export interface DesktopCapabilityMap {
   }
   'browser.select': {
     params: BrowserSelectParams
+    result: BrowserObservation
+  }
+  'browser.upload': {
+    params: BrowserUploadParams
     result: BrowserObservation
   }
   'browser.scroll': {
@@ -834,6 +840,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'browser.select') {
     return parseBrowserSelectParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'browser.upload') {
+    return parseBrowserUploadParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'browser.scroll') {
     return parseBrowserScrollParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -936,7 +945,7 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'browser.navigate' || method === 'browser.observe' || method === 'browser.tab' ||
     method === 'browser.click' || method === 'browser.type' || method === 'browser.select' ||
-    method === 'browser.scroll') {
+    method === 'browser.upload' || method === 'browser.scroll') {
     return parseBrowserObservation(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'browser.screenshot') {
@@ -1061,7 +1070,7 @@ export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): bo
     method === 'computer.act' || method === 'browser.navigate' || method === 'browser.observe' ||
     method === 'browser.screenshot' || method === 'browser.tabs' || method === 'browser.tab' ||
     method === 'browser.click' || method === 'browser.type' || method === 'browser.select' ||
-    method === 'browser.scroll' ||
+    method === 'browser.upload' || method === 'browser.scroll' ||
     method === 'worktrees.provision' ||
     method === 'automations.claimNext' || method === 'automations.inspectOwned' ||
     method === 'automations.markRunning' ||

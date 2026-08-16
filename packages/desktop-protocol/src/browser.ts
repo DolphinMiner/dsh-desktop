@@ -140,6 +140,16 @@ export interface BrowserSelectParams {
   exact?: boolean
 }
 
+export interface BrowserUploadParams {
+  actionId: string
+  sessionId: string
+  workspaceRoot: string
+  snapshotId: string
+  name: string
+  paths: string[]
+  exact?: boolean
+}
+
 export interface BrowserScrollParams {
   actionId: string
   sessionId: string
@@ -200,6 +210,8 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_IMAGE_EDGE = 8_192
 const MAX_SCROLL_DELTA = 20_000
 const MAX_UI_KEYBOARD_ACTIONS = 64
+const MAX_UPLOAD_FILES = 8
+const MAX_PATH_LENGTH = 4_096
 
 const BROWSER_PRESS_KEYS = new Set([
   'Backspace',
@@ -520,6 +532,27 @@ export function parseBrowserSelectParams(value: unknown): BrowserSelectParams | 
     snapshotId: value.snapshotId,
     name: value.name,
     option: value.option,
+    ...(value.exact === undefined ? {} : { exact: value.exact }),
+  }
+}
+
+export function parseBrowserUploadParams(value: unknown): BrowserUploadParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['actionId', 'sessionId', 'workspaceRoot', 'snapshotId', 'name', 'paths', 'exact'],
+  ) || !sessionActionAndSnapshot(value) || !isString(value.workspaceRoot, MAX_PATH_LENGTH) ||
+    !isString(value.name, MAX_NAME_LENGTH) || !Array.isArray(value.paths) || value.paths.length === 0 ||
+    value.paths.length > MAX_UPLOAD_FILES ||
+    value.paths.some(path => !isString(path, MAX_PATH_LENGTH)) ||
+    new Set(value.paths).size !== value.paths.length ||
+    (value.exact !== undefined && typeof value.exact !== 'boolean')) return undefined
+  return {
+    actionId: value.actionId,
+    sessionId: value.sessionId,
+    workspaceRoot: value.workspaceRoot,
+    snapshotId: value.snapshotId,
+    name: value.name,
+    paths: [...value.paths] as string[],
     ...(value.exact === undefined ? {} : { exact: value.exact }),
   }
 }

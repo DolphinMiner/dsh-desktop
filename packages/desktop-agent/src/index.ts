@@ -497,6 +497,46 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'browser_upload',
+    description: 'Choose workspace files in one uniquely named file input from the latest browser observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest browser snapshot ID.' },
+      name: { type: 'string', required: true, description: 'Accessible label of the file input.' },
+      paths: {
+        type: 'array',
+        items: { type: 'string' },
+        required: true,
+        description: 'One to eight workspace-relative file paths.',
+      },
+      exact: { type: 'boolean', description: 'Require an exact file-input label match. Defaults to true.' },
+    },
+    output: {
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Choose ${String(args.paths.length)} ${args.paths.length === 1 ? 'file' : 'files'} in browser`,
+      kind: 'execute',
+      locations: args.paths.map(path => ({ path })),
+    }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const workspace = agentWorkspace(exec)
+      const observation = await ctx.desktopBridge.call('browser.upload', {
+        actionId: randomUUID(),
+        ...workspace,
+        snapshotId: args.snapshot_id,
+        name: args.name,
+        paths: args.paths,
+        ...(args.exact === undefined ? {} : { exact: args.exact }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'desktop_reveal_file',
     description: 'Reveal an existing file or directory inside the current workspace in Finder.',
     parameters: {
@@ -846,6 +886,12 @@ export function apply(ctx: Context): void {
       return {
         kind: 'ask',
         reason: 'This computer action can change another application. Approve this operation once to continue.',
+      }
+    }
+    if (execution.name === 'browser_upload') {
+      return {
+        kind: 'ask',
+        reason: 'Choosing local files can send workspace data to a website. Approve this operation once to continue.',
       }
     }
     if (execution.name === 'desktop_create_worktree') {

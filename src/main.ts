@@ -106,7 +106,7 @@ import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provid
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 import { PersistedWindowState, WindowStateStore } from './window-state'
-import { resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
+import { loadWorkspaceUploadFiles, resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
 import { WorkspaceGitCapabilityService } from './workspace-git'
 import { WorktreeCleanupController } from './worktree-cleanup-controller'
 import { WorktreeHandoffController } from './worktree-handoff-controller'
@@ -1073,6 +1073,12 @@ app.whenReady().then(async () => {
     new PlaywrightBrowserEngine(),
     {
       profilePath: join(desktopDataPath, 'browser-profile'),
+      loadUploadFiles: async (params, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        const files = await loadWorkspaceUploadFiles(params.workspaceRoot, params.paths)
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        return files
+      },
       onChange: snapshot => {
         if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('desktop:browser-changed', snapshot)
@@ -1508,6 +1514,10 @@ app.whenReady().then(async () => {
       select: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.select(params, signal)
+      },
+      upload: async (params, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        return controlledBrowser!.upload(params, signal)
       },
       scroll: (params, signal) => {
         assertActiveSession(params.sessionId, signal)

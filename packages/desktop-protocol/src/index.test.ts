@@ -105,7 +105,7 @@ test('round-trips a sensitive browser screenshot over the desktop protocol', () 
   assert.equal(parseCapabilityParams('browser.screenshot', { ...params, tabId: 'tab-1' }), undefined)
 })
 
-test('round-trips sensitive browser tab and select capabilities', () => {
+test('round-trips sensitive browser tab, select, and upload capabilities', () => {
   const tabs = {
     version: 1 as const,
     revision: 8,
@@ -136,6 +136,25 @@ test('round-trips sensitive browser tab and select capabilities', () => {
   }
   assert.deepEqual(parseCapabilityParams('browser.select', select), select)
   assert.equal(isSensitiveCapabilityMethod('browser.select'), true)
+
+  const upload = {
+    actionId: 'upload-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-1',
+    name: 'Resume',
+    paths: ['resume.pdf', 'cover-letter.txt'],
+  }
+  assert.deepEqual(parseCapabilityParams('browser.upload', upload), upload)
+  assert.equal(isSensitiveCapabilityMethod('browser.upload'), true)
+  assert.equal(parseCapabilityParams('browser.upload', {
+    ...upload,
+    paths: ['resume.pdf', 'resume.pdf'],
+  }), undefined)
+  assert.equal(parseCapabilityParams('browser.upload', {
+    ...upload,
+    paths: Array.from({ length: 9 }, (_, index) => `file-${String(index)}`),
+  }), undefined)
 })
 
 test('validates desktop commands and session activity reports', () => {

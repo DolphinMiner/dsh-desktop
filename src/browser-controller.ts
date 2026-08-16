@@ -17,6 +17,7 @@ import type {
   BrowserTabsParams,
   BrowserTabsSnapshot,
   BrowserTypeParams,
+  BrowserUploadParams,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
   BrowserUiPointerInput,
@@ -32,6 +33,7 @@ import { BrowserStore, DEFAULT_BROWSER_SETTINGS } from './browser-store'
 import {
   BrowserEngine,
   BrowserEngineState,
+  BrowserUploadFile,
   ControlledBrowserError,
   PlaywrightBrowserLaunchOptions,
 } from './playwright-browser'
@@ -42,6 +44,10 @@ const MAX_HISTORY_ENTRIES = 500
 interface BrowserControllerOptions {
   profilePath: string
   executablePath?: string
+  loadUploadFiles: (
+    params: BrowserUploadParams,
+    signal: AbortSignal,
+  ) => Promise<readonly BrowserUploadFile[]>
   now?: () => Date
   onChange?: (state: BrowserState) => void
   onFrame?: (frame: BrowserFrame | undefined) => void
@@ -334,6 +340,25 @@ export class BrowserController {
     }))
   }
 
+  upload(
+    params: BrowserUploadParams,
+    signal: AbortSignal,
+  ): Promise<BrowserObservation> {
+    return this.exclusive(() => this.once(params.actionId, params, async () => {
+      const tabId = this.assertLatest(params.sessionId, params.snapshotId)
+      const files = await this.options.loadUploadFiles(params, signal)
+      this.invalidateLatestObservation()
+      await this.engine.upload(tabId, params.name, files, params.exact ?? true, signal)
+      return this.observeCurrent(
+        params.sessionId,
+        tabId,
+        this.settings.screenshotPolicy === 'always',
+        true,
+        signal,
+      )
+    }))
+  }
+
   scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation> {
     return this.exclusive(() => this.once(params.actionId, params, async () => {
       const tabId = this.assertLatest(params.sessionId, params.snapshotId)
@@ -586,6 +611,13 @@ export class BrowserController {
       )
     }
     return tabId
+  }
+
+  private invalidateLatestObservation(): void {
+    this.latest = undefined
+    this.latestFrame = undefined
+    this.onFrame(undefined)
+    this.publish()
   }
 
   private async once<T extends { actionId: string }>(
