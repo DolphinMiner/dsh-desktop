@@ -287,7 +287,7 @@ test('clear data stops, removes the profile, and restarts only when enabled', as
     await rm(runtime.root, { recursive: true, force: true })
   })
   await runtime.controller.start()
-  await runtime.controller.update({ enabled: true, storageMode: 'persistent' })
+  await runtime.controller.update({ enabled: true })
   const profile = join(runtime.root, 'profile')
   await writeFile(join(runtime.root, 'marker'), 'kept')
   await writeFile(profile, 'profile-data')
@@ -297,6 +297,29 @@ test('clear data stops, removes the profile, and restarts only when enabled', as
   assert.equal(cleared.runtimeStatus, 'ready')
   assert.equal(runtime.engine.stops >= 1, true)
   assert.equal(runtime.engine.starts >= 2, true)
+})
+
+test('opens only fixed management pages in the same managed browser', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+
+  const imported = await runtime.controller.openManagement({ page: 'import' })
+  assert.equal(imported.lastObservation?.url, 'chrome://settings/importData')
+  assert.equal(imported.historyCount, 0)
+  assert.equal(runtime.engine.tabs.length, 2)
+
+  await runtime.controller.openManagement({ page: 'import' })
+  assert.equal(runtime.engine.tabs.length, 2)
+
+  const passwords = await runtime.controller.openManagement({ page: 'passwords' })
+  assert.equal(passwords.lastObservation?.url, 'chrome://password-manager/passwords')
+  const contacts = await runtime.controller.openManagement({ page: 'contacts' })
+  assert.equal(contacts.lastObservation?.url, 'chrome://settings/contactInfo')
 })
 
 test('keeps the renderer preview independent from the Agent screenshot policy', async t => {

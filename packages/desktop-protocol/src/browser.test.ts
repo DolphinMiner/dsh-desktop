@@ -17,6 +17,7 @@ import {
   parseBrowserTabsSnapshot,
   parseBrowserTypeParams,
   parseBrowserUiKeyboardInput,
+  parseBrowserUiOpenManagementInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseControlledBrowserUrl,
@@ -28,7 +29,7 @@ const settings = {
   webUrlTarget: 'system' as const,
   localUrlTarget: 'controlled' as const,
   screenshotPolicy: 'always' as const,
-  storageMode: 'isolated' as const,
+  storageMode: 'persistent' as const,
 }
 
 test('validates browser settings and controlled URLs', () => {
@@ -41,10 +42,19 @@ test('validates browser settings and controlled URLs', () => {
     screenshotPolicy: 'on-demand',
   })
   assert.equal(parseUpdateBrowserSettingsInput({}), undefined)
+  assert.equal(parseUpdateBrowserSettingsInput({ storageMode: 'isolated' }), undefined)
   assert.equal(parseControlledBrowserUrl('file:///etc/passwd'), undefined)
   assert.equal(parseControlledBrowserUrl('https://user:secret@example.com'), undefined)
   assert.equal(parseControlledBrowserUrl('javascript:alert(1)'), undefined)
   assert.equal(parseControlledBrowserUrl('https://example.com/docs'), 'https://example.com/docs')
+})
+
+test('allows only fixed Browser management destinations', () => {
+  assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'import' }), { page: 'import' })
+  assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'passwords' }), { page: 'passwords' })
+  assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'contacts' }), { page: 'contacts' })
+  assert.equal(parseBrowserUiOpenManagementInput({ page: 'chrome://settings' }), undefined)
+  assert.equal(parseBrowserUiOpenManagementInput({ page: 'passwords', url: 'chrome://settings' }), undefined)
 })
 
 test('validates bounded browser state, frame, history, and observations', () => {

@@ -61,6 +61,7 @@ const bridge: DesktopBridge = {
     getState: () => ipcRenderer.invoke('desktop:browser:get-state'),
     update: input => ipcRenderer.invoke('desktop:browser:update', input),
     navigate: input => ipcRenderer.invoke('desktop:browser:navigate', input),
+    openManagement: input => ipcRenderer.invoke('desktop:browser:open-management', input),
     activateTab: input => ipcRenderer.invoke('desktop:browser:activate-tab', input),
     pointer: input => ipcRenderer.invoke('desktop:browser:pointer', input),
     scrollAt: input => ipcRenderer.invoke('desktop:browser:scroll-at', input),

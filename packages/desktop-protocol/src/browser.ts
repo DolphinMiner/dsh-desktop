@@ -20,7 +20,6 @@ export interface UpdateBrowserSettingsInput {
   webUrlTarget?: BrowserUrlTarget
   localUrlTarget?: BrowserUrlTarget
   screenshotPolicy?: BrowserScreenshotPolicy
-  storageMode?: BrowserStorageMode
 }
 
 export interface BrowserTabSummary {
@@ -185,6 +184,12 @@ export interface BrowserUiNavigateInput {
   newTab?: boolean
 }
 
+export type BrowserManagementPage = 'import' | 'passwords' | 'contacts'
+
+export interface BrowserUiOpenManagementInput {
+  page: BrowserManagementPage
+}
+
 export interface BrowserUiTabInput {
   tabId: string
 }
@@ -316,19 +321,17 @@ export function parseBrowserSettings(value: unknown): BrowserSettings | undefine
 export function parseUpdateBrowserSettingsInput(value: unknown): UpdateBrowserSettingsInput | undefined {
   if (!isRecord(value) || !hasOnlyKeys(
     value,
-    ['enabled', 'webUrlTarget', 'localUrlTarget', 'screenshotPolicy', 'storageMode'],
+    ['enabled', 'webUrlTarget', 'localUrlTarget', 'screenshotPolicy'],
   ) || (value.enabled !== undefined && typeof value.enabled !== 'boolean') ||
     (value.webUrlTarget !== undefined && !urlTarget(value.webUrlTarget)) ||
     (value.localUrlTarget !== undefined && !urlTarget(value.localUrlTarget)) ||
     (value.screenshotPolicy !== undefined && !screenshotPolicy(value.screenshotPolicy)) ||
-    (value.storageMode !== undefined && !storageMode(value.storageMode)) ||
     !Object.values(value).some(item => item !== undefined)) return undefined
   return {
     ...(value.enabled === undefined ? {} : { enabled: value.enabled }),
     ...(value.webUrlTarget === undefined ? {} : { webUrlTarget: value.webUrlTarget }),
     ...(value.localUrlTarget === undefined ? {} : { localUrlTarget: value.localUrlTarget }),
     ...(value.screenshotPolicy === undefined ? {} : { screenshotPolicy: value.screenshotPolicy }),
-    ...(value.storageMode === undefined ? {} : { storageMode: value.storageMode }),
   }
 }
 
@@ -647,6 +650,12 @@ export function parseBrowserUiNavigateInput(value: unknown): BrowserUiNavigateIn
     url,
     ...(value.newTab === undefined ? {} : { newTab: value.newTab }),
   }
+}
+
+export function parseBrowserUiOpenManagementInput(value: unknown): BrowserUiOpenManagementInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['page']) ||
+    (value.page !== 'import' && value.page !== 'passwords' && value.page !== 'contacts')) return undefined
+  return { page: value.page }
 }
 
 export function parseBrowserUiTabInput(value: unknown): BrowserUiTabInput | undefined {

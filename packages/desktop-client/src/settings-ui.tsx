@@ -34,7 +34,14 @@ const styles = `
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
-  margin: 0 0 8px;
+  margin: 0;
+}
+.dsh-desktop-settings-section-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 .dsh-desktop-settings-group {
   border: 1px solid var(--dsw-alias-border-l2, #deded9);
@@ -232,10 +239,23 @@ export function SettingsPage({
   )
 }
 
-export function SettingsSection({ title, children }: { title?: string; children: ReactNode }): React.JSX.Element {
+export function SettingsSection({
+  title,
+  action,
+  children,
+}: {
+  title?: string
+  action?: ReactNode
+  children: ReactNode
+}): React.JSX.Element {
   return (
     <section className="dsh-desktop-settings-section">
-      {title !== undefined && <h3 className="dsh-desktop-settings-section-title">{title}</h3>}
+      {(title !== undefined || action !== undefined) && (
+        <div className="dsh-desktop-settings-section-header">
+          {title !== undefined && <h3 className="dsh-desktop-settings-section-title">{title}</h3>}
+          {action}
+        </div>
+      )}
       {children}
     </section>
   )

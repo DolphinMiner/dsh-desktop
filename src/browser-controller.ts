@@ -22,6 +22,7 @@ import type {
   BrowserUploadParams,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
+  BrowserUiOpenManagementInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
   UpdateBrowserSettingsInput,
@@ -45,6 +46,11 @@ import {
 
 const MAX_COMPLETED_ACTIONS = 256
 const MAX_HISTORY_ENTRIES = 500
+const BROWSER_MANAGEMENT_URLS = {
+  import: 'chrome://settings/importData',
+  passwords: 'chrome://password-manager/passwords',
+  contacts: 'chrome://settings/contactInfo',
+} as const
 
 interface BrowserControllerOptions {
   profilePath: string
@@ -192,7 +198,7 @@ export class BrowserController {
     return this.exclusive(async () => {
       this.assertAlive()
       const previous = this.settings
-      const next: BrowserSettings = { ...previous, ...input }
+      const next: BrowserSettings = { ...previous, ...input, storageMode: 'persistent' }
       this.store.save(next, this.history)
       this.settings = next
       this.statusMessage = undefined
@@ -449,6 +455,17 @@ export class BrowserController {
     return this.uiOperation(async signal => {
       await this.engine.navigate(input.url, input.newTab ?? false, signal)
       await this.observeCurrent(undefined, undefined, true, true, signal)
+    })
+  }
+
+  openManagement(input: BrowserUiOpenManagementInput): Promise<BrowserState> {
+    return this.uiOperation(async signal => {
+      const url = BROWSER_MANAGEMENT_URLS[input.page]
+      const current = await this.engine.state()
+      const existing = current.tabs.find(tab => tab.url === url)
+      if (existing === undefined) await this.engine.navigate(url, true, signal)
+      else await this.engine.activate(existing.id)
+      await this.observeCurrent(undefined, existing?.id, true, false, signal)
     })
   }
 

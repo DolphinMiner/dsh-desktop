@@ -6,7 +6,6 @@ import type {
 } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
   IconBrowseOutline16,
@@ -22,10 +21,12 @@ import {
 import type {
   BrowserFrame,
   BrowserHistoryEntry,
+  BrowserManagementPage,
   BrowserState,
   BrowserUiKeyboardAction,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
+  BrowserUiOpenManagementInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
   BrowserUiTabInput,
@@ -52,6 +53,7 @@ export interface DesktopBrowserBridge {
   getState(): Promise<BrowserState>
   update(input: UpdateBrowserSettingsInput): Promise<BrowserState>
   navigate(input: BrowserUiNavigateInput): Promise<BrowserState>
+  openManagement(input: BrowserUiOpenManagementInput): Promise<BrowserState>
   activateTab(input: BrowserUiTabInput): Promise<BrowserState>
   pointer(input: BrowserUiPointerInput): Promise<BrowserState>
   scrollAt(input: BrowserUiScrollInput): Promise<BrowserState>
@@ -109,6 +111,16 @@ const styles = `
   display: grid;
   gap: 12px;
   max-width: 480px;
+}
+.dsh-desktop-browser-management-modal {
+  max-width: 1100px;
+  width: min(1100px, 88vw);
+}
+.dsh-desktop-browser-management {
+  height: min(650px, 72vh);
+  min-height: 420px;
+  min-width: 0;
+  width: 100%;
 }
 .dsh-desktop-browser-view,
 .dsh-desktop-browser-view * {
@@ -246,8 +258,16 @@ const styles = `
   .dsh-desktop-browser-tab { flex-basis: 150px; }
   .dsh-desktop-browser-toolbar { grid-template-columns: 28px 28px 28px minmax(80px, 1fr) 28px; }
   .dsh-desktop-browser-history { min-width: min(620px, 82vw); }
+  .dsh-desktop-browser-management-modal { width: 94vw; }
+  .dsh-desktop-browser-management { height: 68vh; min-height: 360px; }
 }
 `
+
+const BROWSER_MANAGEMENT_TITLES: Record<BrowserManagementPage, string> = {
+  import: 'Import Browser Data',
+  passwords: 'Password Manager',
+  contacts: 'Contact Information',
+}
 
 function browserStatus(state: BrowserState | undefined): string {
   if (state === undefined) return 'Loading'
@@ -269,6 +289,7 @@ export function BrowserSettingsSection({
   const [error, setError] = useState<string>()
   const [historyOpen, setHistoryOpen] = useState(false)
   const [clearOpen, setClearOpen] = useState(false)
+  const [managementPage, setManagementPage] = useState<BrowserManagementPage>()
 
   const run = (operation: () => Promise<BrowserState>): void => {
     setBusy(true)
@@ -335,6 +356,18 @@ export function BrowserSettingsSection({
     }).finally(() => setBusy(false))
   }
 
+  const openManagement = (page: BrowserManagementPage): void => {
+    if (bridge === undefined) return
+    setBusy(true)
+    setError(undefined)
+    void bridge.openManagement({ page }).then(next => {
+      setState(next)
+      setManagementPage(page)
+    }).catch(cause => {
+      setError(cause instanceof Error ? cause.message : 'Browser management could not be opened.')
+    }).finally(() => setBusy(false))
+  }
+
   return (
     <SettingsPage title="Browser" subtitle="Manage the controlled browser used by DSH.">
       <style>{styles}</style>
@@ -354,7 +387,19 @@ export function BrowserSettingsSection({
         />
       </SettingsGroup>
 
-      <SettingsSection title="General">
+      <SettingsSection
+        title="General"
+        action={(
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || bridge === undefined || state?.settings.enabled !== true}
+            onClick={() => openManagement('import')}
+          >
+            Import...
+          </Button>
+        )}
+      >
         <SettingsGroup>
           <SettingsRow
             title="Web URLs and links open in"
@@ -420,19 +465,37 @@ export function BrowserSettingsSection({
               </SettingsSelect>
             )}
           />
+        </SettingsGroup>
+      </SettingsSection>
+
+      <SettingsSection title="Autofill and passwords">
+        <SettingsGroup>
           <SettingsRow
-            title="Browser session"
-            description="Choose whether sign-in and site data survive app restarts"
-            control={state === undefined ? undefined : (
-              <SettingsSelect
-                label="Browser storage mode"
-                value={state.settings.storageMode}
-                disabled={busy}
-                onChange={value => update({ storageMode: value as 'isolated' | 'persistent' })}
+            title="Password Manager"
+            description="Add, delete, and edit saved passwords"
+            control={(
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || bridge === undefined || state?.settings.enabled !== true}
+                onClick={() => openManagement('passwords')}
               >
-                <option value="isolated">Isolated</option>
-                <option value="persistent">Persistent</option>
-              </SettingsSelect>
+                Manage
+              </Button>
+            )}
+          />
+          <SettingsRow
+            title="Contact Information"
+            description="Add, delete, and edit saved addresses, phone numbers, and email addresses"
+            control={(
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || bridge === undefined || state?.settings.enabled !== true}
+                onClick={() => openManagement('contacts')}
+              >
+                Manage
+              </Button>
             )}
           />
         </SettingsGroup>
@@ -495,13 +558,25 @@ export function BrowserSettingsSection({
           )}
         </div>
       </Modal>
+
+      <Modal
+        open={managementPage !== undefined}
+        onClose={() => setManagementPage(undefined)}
+        title={managementPage === undefined ? 'Browser Management' : BROWSER_MANAGEMENT_TITLES[managementPage]}
+        closeLabel="Close browser management"
+        className="dsh-desktop-browser-management-modal"
+      >
+        <div className="dsh-desktop-browser-management">
+          <BrowserView bridge={bridge} />
+        </div>
+      </Modal>
     </SettingsPage>
   )
 }
 
 export function BrowserView({
   bridge,
-}: ConvViewProps & {
+}: {
   bridge?: DesktopBrowserBridge
 }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>()

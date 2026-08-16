@@ -25,6 +25,7 @@ import {
   parseControlledBrowserUrl,
   parseBrowserUiKeyboardInput,
   parseBrowserUiNavigateInput,
+  parseBrowserUiOpenManagementInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseBrowserUiTabInput,
@@ -632,6 +633,10 @@ function installIpcHandlers(
   ipcMain.handle('desktop:browser:navigate', async (event, value: unknown) => {
     assertTrustedSender(event)
     return browser.navigateFromUi(validInput(parseBrowserUiNavigateInput(value)))
+  })
+  ipcMain.handle('desktop:browser:open-management', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.openManagement(validInput(parseBrowserUiOpenManagementInput(value)))
   })
   ipcMain.handle('desktop:browser:activate-tab', async (event, value: unknown) => {
     assertTrustedSender(event)

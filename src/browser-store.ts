@@ -7,8 +7,15 @@ import {
 
 import { readJsonFile, writeJsonAtomically } from './atomic-json'
 
-const BROWSER_STORE_SCHEMA_VERSION = 1
+const PREVIOUS_BROWSER_STORE_SCHEMA_VERSION = 1
+const BROWSER_STORE_SCHEMA_VERSION = 2
 const MAX_HISTORY_ENTRIES = 500
+
+interface BrowserStoreDocumentV1 {
+  schemaVersion: typeof PREVIOUS_BROWSER_STORE_SCHEMA_VERSION
+  settings: BrowserSettings
+  history: BrowserHistoryEntry[]
+}
 
 interface BrowserStoreDocument {
   schemaVersion: typeof BROWSER_STORE_SCHEMA_VERSION
@@ -27,7 +34,7 @@ export const DEFAULT_BROWSER_SETTINGS: BrowserSettings = {
   webUrlTarget: 'system',
   localUrlTarget: 'controlled',
   screenshotPolicy: 'always',
-  storageMode: 'isolated',
+  storageMode: 'persistent',
 }
 
 function cloneSettings(settings: BrowserSettings): BrowserSettings {
@@ -57,11 +64,22 @@ export class BrowserStore {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         throw new Error('The Browser settings file has an invalid shape.')
       }
-      const document = value as Partial<BrowserStoreDocument>
+      const document = value as Partial<BrowserStoreDocument | BrowserStoreDocumentV1>
       const settings = parseBrowserSettings(document.settings)
       const history = parseBrowserHistory(document.history)
-      if (document.schemaVersion !== BROWSER_STORE_SCHEMA_VERSION || settings === undefined ||
-        history === undefined || history.length > MAX_HISTORY_ENTRIES) {
+      if (settings === undefined || history === undefined || history.length > MAX_HISTORY_ENTRIES) {
+        throw new Error('The Browser settings file uses an unsupported schema.')
+      }
+      if (document.schemaVersion === PREVIOUS_BROWSER_STORE_SCHEMA_VERSION) {
+        const migrated = { ...settings, storageMode: 'persistent' as const }
+        this.save(migrated, history)
+        return {
+          settings: migrated,
+          history: cloneHistory(history),
+          recovered: false,
+        }
+      }
+      if (document.schemaVersion !== BROWSER_STORE_SCHEMA_VERSION || settings.storageMode !== 'persistent') {
         throw new Error('The Browser settings file uses an unsupported schema.')
       }
       return {
