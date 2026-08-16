@@ -174,21 +174,6 @@ export function AppSnapshotsSection({
           icon={<IconFullscreenOutline16 />}
           title="Capture the frontmost app"
           description="Add a visual snapshot and extracted on-screen text to a conversation draft."
-          control={(
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={bridge === undefined || state?.capturing === true}
-              onClick={() => {
-                setLocalError(undefined)
-                void bridge?.capture().catch(error => {
-                  setLocalError(error instanceof Error ? error.message : 'The app snapshot could not be captured.')
-                })
-              }}
-            >
-              {state?.capturing === true ? 'Capturing…' : 'Capture now'}
-            </Button>
-          )}
         />
       </SettingsGroup>
 

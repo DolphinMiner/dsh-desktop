@@ -3,9 +3,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Button,
   IconBrowseOutline16,
-  IconPauseOutline16,
-  IconPlayOutline16,
-  IconRefreshOutline16,
   IconRightUpOutline16,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -27,7 +24,7 @@ import {
   SettingsSection,
   SettingsToggle,
 } from './settings-ui.js'
-import { computerActionStatusLabel, computerPermissionLabel } from './view-model.js'
+import { computerPermissionLabel } from './view-model.js'
 
 export interface DesktopComputerBridge {
   getState(): Promise<ComputerControlSnapshot>
@@ -66,45 +63,6 @@ const styles = `
   max-width: 680px;
   width: min(680px, 82vw);
 }
-.dsh-desktop-computer-advanced {
-  display: grid;
-  gap: 14px;
-  min-width: min(520px, 78vw);
-}
-.dsh-desktop-computer-advanced-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.dsh-desktop-computer-history {
-  border-top: 1px solid var(--dsw-alias-border-l1, #ecece8);
-  display: grid;
-  max-height: 280px;
-  overflow: auto;
-}
-.dsh-desktop-computer-history-row {
-  align-items: center;
-  display: flex;
-  font-size: 12px;
-  gap: 14px;
-  justify-content: space-between;
-  min-height: 42px;
-  padding: 7px 2px;
-}
-.dsh-desktop-computer-history-row + .dsh-desktop-computer-history-row {
-  border-top: 1px solid var(--dsw-alias-border-l1, #ecece8);
-}
-.dsh-desktop-computer-history-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-.dsh-desktop-computer-history-meta {
-  color: var(--dsw-alias-label-tertiary, #74777d);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 `
 
 function AppIcon({ application }: { application: ComputerApplicationAccess }): React.JSX.Element {
@@ -141,7 +99,6 @@ export function ComputerControlSection({
   const [browserState, setBrowserState] = useState<BrowserState>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [applicationsOpen, setApplicationsOpen] = useState(false)
 
   const run = (operation: () => Promise<ComputerControlSnapshot>): void => {
@@ -364,51 +321,41 @@ export function ComputerControlSection({
       {showPermissions && bridge !== undefined && (
         <SettingsSection title="Permissions">
           <SettingsGroup>
-            <SettingsRow
-              title="Screen Recording"
-              description={computerPermissionLabel(permissions.screenRecording)}
-              control={permissionNeedsAttention(permissions.screenRecording) ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  icon={<IconRightUpOutline16 />}
-                  onClick={() => openPermission('screen-recording')}
-                >
-                  Open Settings
-                </Button>
-              ) : undefined}
-            />
-            <SettingsRow
-              title="Accessibility"
-              description={computerPermissionLabel(permissions.accessibility)}
-              control={permissionNeedsAttention(permissions.accessibility) ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  icon={<IconRightUpOutline16 />}
-                  onClick={() => openPermission('accessibility')}
-                >
-                  Open Settings
-                </Button>
-              ) : undefined}
-            />
+            {permissionNeedsAttention(permissions.screenRecording) && (
+              <SettingsRow
+                title="Screen Recording"
+                description={computerPermissionLabel(permissions.screenRecording)}
+                control={(
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    icon={<IconRightUpOutline16 />}
+                    onClick={() => openPermission('screen-recording')}
+                  >
+                    Open Settings
+                  </Button>
+                )}
+              />
+            )}
+            {permissionNeedsAttention(permissions.accessibility) && (
+              <SettingsRow
+                title="Accessibility"
+                description={computerPermissionLabel(permissions.accessibility)}
+                control={(
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    icon={<IconRightUpOutline16 />}
+                    onClick={() => openPermission('accessibility')}
+                  >
+                    Open Settings
+                  </Button>
+                )}
+              />
+            )}
           </SettingsGroup>
         </SettingsSection>
       )}
-
-      <SettingsSection title="Advanced">
-        <SettingsGroup>
-          <SettingsRow
-            title="Activity and emergency stop"
-            description={snapshot?.actionsPaused === true ? 'Computer actions are paused' : 'Computer actions are available'}
-            control={(
-              <Button size="sm" variant="outline" onClick={() => setAdvancedOpen(true)}>
-                Manage
-              </Button>
-            )}
-          />
-        </SettingsGroup>
-      </SettingsSection>
 
       {error !== undefined && <SettingsNotice level="error">{error}</SettingsNotice>}
       {error === undefined && snapshot?.statusMessage !== undefined && (
@@ -449,63 +396,6 @@ export function ComputerControlSection({
         </div>
       </Modal>
 
-      <Modal
-        open={advancedOpen}
-        onClose={() => setAdvancedOpen(false)}
-        title="Computer Control"
-        closeLabel="Close advanced Computer Control"
-      >
-        <div className="dsh-desktop-computer-advanced">
-          <div className="dsh-desktop-computer-advanced-actions">
-            {snapshot?.actionsPaused === true ? (
-              <Button
-                size="sm"
-                variant="outline"
-                icon={<IconPlayOutline16 />}
-                disabled={busy || bridge === undefined}
-                onClick={() => { if (bridge !== undefined) run(() => bridge.resumeActions()) }}
-              >
-                Resume
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="outline"
-                icon={<IconPauseOutline16 />}
-                disabled={busy || bridge === undefined}
-                onClick={() => { if (bridge !== undefined) run(() => bridge.pauseActions()) }}
-              >
-                Pause
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              icon={<IconRefreshOutline16 />}
-              disabled={busy || bridge === undefined}
-              onClick={() => { if (bridge !== undefined) run(() => bridge.refresh()) }}
-            >
-              Refresh applications
-            </Button>
-          </div>
-          <div className="dsh-desktop-computer-history" aria-label="Recent computer actions">
-            {snapshot?.recentActions.length === 0 && (
-              <div className="dsh-desktop-computer-history-row">No recent actions</div>
-            )}
-            {snapshot?.recentActions.map(action => (
-              <div className="dsh-desktop-computer-history-row" key={action.actionId}>
-                <span className="dsh-desktop-computer-history-copy">
-                  <span>{action.kind} · {action.targetName}</span>
-                  <span className="dsh-desktop-computer-history-meta">
-                    {new Date(action.updatedAt).toLocaleString()}
-                  </span>
-                </span>
-                <span>{computerActionStatusLabel(action.status)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Modal>
     </SettingsPage>
   )
 }
