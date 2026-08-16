@@ -7,6 +7,8 @@ const styles = `
   letter-spacing: 0;
 }
 .dsh-desktop-settings-page {
+  container-name: dsh-desktop-settings;
+  container-type: inline-size;
   color: var(--dsw-alias-label-primary, #17191c);
   width: 100%;
   min-width: 0;
@@ -62,6 +64,7 @@ const styles = `
 .dsh-desktop-settings-row-leading {
   align-items: center;
   display: flex;
+  flex: 1 1 auto;
   gap: 12px;
   min-width: 0;
 }
@@ -95,7 +98,10 @@ const styles = `
   overflow-wrap: anywhere;
 }
 .dsh-desktop-settings-control {
-  flex: 0 0 auto;
+  display: flex;
+  flex: 0 1 220px;
+  justify-content: flex-end;
+  max-width: min(48%, 220px);
   min-width: 0;
 }
 .dsh-desktop-settings-toggle {
@@ -138,9 +144,10 @@ const styles = `
   font: inherit;
   font-size: 12px;
   height: 30px;
-  max-width: 220px;
-  min-width: 96px;
+  max-width: 100%;
+  min-width: 0;
   padding: 0 26px 0 10px;
+  width: 100%;
 }
 .dsh-desktop-settings-select:focus-visible,
 .dsh-desktop-settings-toggle:focus-visible {
@@ -211,6 +218,10 @@ const styles = `
   .dsh-desktop-settings-row { align-items: flex-start; flex-wrap: wrap; }
   .dsh-desktop-settings-control { margin-left: auto; }
   .dsh-desktop-settings-select { max-width: min(100%, 220px); }
+}
+@container dsh-desktop-settings (max-width: 760px) {
+  .dsh-desktop-settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .dsh-desktop-settings-control { max-width: min(48%, 220px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .dsh-desktop-settings-toggle,

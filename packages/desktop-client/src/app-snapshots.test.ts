@@ -4,7 +4,7 @@ import test from 'node:test'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { AppSnapshotCapture } from '@dolphinminer/dsh-desktop-protocol'
 
-import { attachAppSnapshotCapture } from './app-snapshot-delivery.js'
+import { attachAppSnapshotCapture, mountAppSnapshotDelivery } from './app-snapshot-delivery.js'
 
 const capture: AppSnapshotCapture = {
   id: 'capture-1',
@@ -46,6 +46,7 @@ function fixture(options: { withSession?: boolean; acceptImages?: boolean } = {}
     },
   }
   const ctx = {
+    effect: (register: () => (() => void)) => register(),
     sessions: {
       list: {
         getSnapshot: () => ({
@@ -100,4 +101,32 @@ test('keeps the image out of the draft when admission is busy or no conversation
   const empty = fixture({ withSession: false })
   await assert.rejects(attachAppSnapshotCapture(empty.ctx, capture), /Open a conversation/)
   assert.deepEqual(empty.operations, [])
+})
+
+test('installs App Snapshot delivery in the conversation injector scope', async () => {
+  const runtime = fixture()
+  let injected = false
+  let deliver: ((capture: AppSnapshotCapture) => void) | undefined
+  const root = {
+    inject(dependencies: readonly string[], apply: (scope: ClientContext) => void) {
+      assert.deepEqual(dependencies, ['conversation'])
+      injected = true
+      apply(runtime.ctx)
+    },
+    get conversation(): never {
+      throw new Error('root conversation access is forbidden')
+    },
+  } as unknown as ClientContext
+
+  mountAppSnapshotDelivery(root, scope => {
+    deliver = value => { void attachAppSnapshotCapture(scope, value) }
+    return () => { deliver = undefined }
+  })
+  assert.equal(injected, true)
+  assert.ok(deliver, 'capture listener should be installed')
+  deliver(capture)
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.ok(runtime.operations.includes('images.add:draft-image-1'))
+  assert.ok(runtime.operations.includes('session.open:session-1'))
 })

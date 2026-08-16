@@ -23,7 +23,7 @@ import {
   SettingsSelect,
   SettingsToggle,
 } from './settings-ui.js'
-import { attachAppSnapshotCapture } from './app-snapshot-delivery.js'
+import { attachAppSnapshotCapture, mountAppSnapshotDelivery } from './app-snapshot-delivery.js'
 import { openOfficialSettings } from './settings-navigation.js'
 
 export interface DesktopAppSnapshotsBridge {
@@ -103,7 +103,6 @@ export function installAppSnapshotDelivery(
         level: 'error',
         message: error instanceof Error ? error.message : 'The app snapshot could not be added.',
       })
-      void openOfficialSettings('snapshots').catch(() => undefined)
     })
   })
   const stopError = bridge.onError(notice => {
@@ -114,6 +113,13 @@ export function installAppSnapshotDelivery(
     stopCapture()
     stopError()
   }
+}
+
+export function installAppSnapshotIntegration(
+  ctx: ClientContext,
+  bridge: DesktopAppSnapshotsBridge,
+): void {
+  mountAppSnapshotDelivery(ctx, scope => installAppSnapshotDelivery(scope, bridge))
 }
 
 const shortcutLabels: Readonly<Record<AppSnapshotSettings['shortcut'], string>> = {

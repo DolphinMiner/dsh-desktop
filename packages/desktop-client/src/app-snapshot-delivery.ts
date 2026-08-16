@@ -8,6 +8,18 @@ interface DraftConversation {
   releaseDraftImages(attachments: readonly ComposerAttachment[]): void
 }
 
+export function mountAppSnapshotDelivery(
+  ctx: ClientContext,
+  install: (scope: ClientContext) => () => void,
+): void {
+  ctx.inject(['conversation'], scope => {
+    scope.effect(
+      () => install(scope),
+      'dsh-desktop: App Snapshot delivery',
+    )
+  })
+}
+
 function imageLimits(value: unknown): {
   mediaTypes: readonly string[]
   maxImageBytes: number

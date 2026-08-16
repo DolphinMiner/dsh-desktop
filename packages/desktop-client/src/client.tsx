@@ -68,7 +68,7 @@ import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automatio
 import {
   AppSnapshotsSection,
   type DesktopAppSnapshotsBridge,
-  installAppSnapshotDelivery,
+  installAppSnapshotIntegration,
 } from './app-snapshots.js'
 import { runDesktopCommand } from './desktop-command.js'
 import { ComputerControlSection, type DesktopComputerBridge } from './computer-control.js'
@@ -2298,7 +2298,7 @@ export function apply(ctx: ClientContext): void {
         console.warn('Desktop command failed:', error instanceof Error ? error.message : String(error))
       })
     }), 'dsh-desktop: native command bridge')
-    ctx.effect(() => installAppSnapshotDelivery(ctx, bridge.appSnapshots), 'dsh-desktop: App Snapshot delivery')
+    installAppSnapshotIntegration(ctx, bridge.appSnapshots)
   }
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
