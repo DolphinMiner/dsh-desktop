@@ -1,17 +1,24 @@
 import type { CSSProperties, FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { PluginInventorySnapshot } from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
+  IconApiOutline14,
   IconBranchOutline16,
+  IconBrowseOutline16,
   IconCheckOutline16,
   IconCloseOutline16,
+  IconCordisPluginOutline14,
   IconDownloadOutline16,
   IconLinkOutline16,
+  IconPlusOutline16,
   IconRefreshOutline16,
   IconRightUpOutline16,
+  IconSearchOutline16,
   IconTrashOutline16,
   Input,
   Modal,
@@ -287,8 +294,7 @@ function connectionMeta(connection: ConnectionSummary): string {
   return [connection.workspace, connection.account].filter(Boolean).join(' / ') || 'Linear'
 }
 
-function ConnectionsSection(): React.JSX.Element {
-  const bridge = window.dshDesktop?.connections
+function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -450,15 +456,6 @@ function ConnectionsSection(): React.JSX.Element {
           Connect services that add tools to the Agent.
         </span>
         <div style={styles.toolbar}>
-          <Button
-            size="sm"
-            variant="toolbar"
-            icon={<IconRefreshOutline16 />}
-            aria-label="Refresh connections"
-            title="Refresh connections"
-            disabled={loading}
-            onClick={() => void refresh()}
-          />
           <Button
             size="sm"
             variant="primary"
@@ -647,6 +644,505 @@ function ConnectionsSection(): React.JSX.Element {
             </div>
           </article>
         ))}
+      </div>
+    </section>
+  )
+}
+
+type PluginCenterTabId = 'plugins' | 'apps' | 'mcp' | 'marketplace'
+type PluginInventoryEntry = PluginInventorySnapshot['entries'][number]
+
+const PLUGIN_DIRECTORY_URL = 'https://github.com/topics/dsh-plugin'
+
+const pluginCenterStyles = `
+.dsh-plugin-center,
+.dsh-plugin-center * {
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+.dsh-plugin-center {
+  color: var(--dsw-alias-label-primary, #17191c);
+  margin: 0 auto;
+  max-width: 760px;
+  min-width: 0;
+  padding: 8px 4px 40px;
+  width: 100%;
+}
+.dsh-plugin-center__header,
+.dsh-plugin-center__toolbar,
+.dsh-plugin-center__tabs-row,
+.dsh-plugin-center__tabs,
+.dsh-plugin-center__row,
+.dsh-plugin-center__identity,
+.dsh-plugin-center__status {
+  align-items: center;
+  display: flex;
+}
+.dsh-plugin-center__header {
+  align-items: flex-start;
+  gap: 16px;
+  justify-content: space-between;
+}
+.dsh-plugin-center__title {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 30px;
+  margin: 0;
+}
+.dsh-plugin-center__subtitle,
+.dsh-plugin-center__description,
+.dsh-plugin-center__empty,
+.dsh-plugin-center__status {
+  color: var(--dsw-alias-label-tertiary, #74777d);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dsh-plugin-center__subtitle {
+  font-size: 13px;
+  line-height: 20px;
+  margin: 3px 0 0;
+}
+.dsh-plugin-center__toolbar {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.dsh-plugin-center__tabs-row {
+  gap: 18px;
+  justify-content: space-between;
+  margin-top: 28px;
+}
+.dsh-plugin-center__tabs {
+  background: var(--dsw-alias-bg-overlay, #f3f3f0);
+  border-radius: 7px;
+  gap: 2px;
+  padding: 2px;
+}
+.dsh-plugin-center__tab {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary, #74777d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  height: 28px;
+  padding: 0 10px;
+}
+.dsh-plugin-center__tab[data-active="true"] {
+  background: var(--dsw-alias-bg-module-platform, #fff);
+  box-shadow: 0 1px 2px #00000012;
+  color: var(--dsw-alias-label-primary, #17191c);
+}
+.dsh-plugin-center__tab:focus-visible,
+.dsh-plugin-center__search input:focus-visible,
+.dsh-plugin-center__link:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary, #2f9cf4);
+  outline-offset: 2px;
+}
+.dsh-plugin-center__count {
+  color: var(--dsw-alias-label-quaternary, #9a9da2);
+  margin-left: 4px;
+}
+.dsh-plugin-center__search {
+  align-items: center;
+  border: 1px solid var(--dsw-alias-border-l2, #deded9);
+  border-radius: 16px;
+  color: var(--dsw-alias-label-tertiary, #74777d);
+  display: flex;
+  height: 32px;
+  padding: 0 10px;
+  width: 224px;
+}
+.dsh-plugin-center__search input {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  height: 100%;
+  min-width: 0;
+  outline: 0;
+  padding: 0 0 0 7px;
+  width: 100%;
+}
+.dsh-plugin-center__panel {
+  margin-top: 28px;
+  min-width: 0;
+}
+.dsh-plugin-center__panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+.dsh-plugin-center__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dsh-plugin-center__row {
+  gap: 12px;
+  min-height: 66px;
+  padding: 10px 10px;
+}
+.dsh-plugin-center__row + .dsh-plugin-center__row {
+  border-top: 1px solid var(--dsw-alias-border-l1, #ecece8);
+}
+.dsh-plugin-center__icon {
+  align-items: center;
+  background: var(--dsw-alias-bg-overlay, #f3f3f0);
+  border: 1px solid var(--dsw-alias-border-l1, #ecece8);
+  border-radius: 7px;
+  color: var(--dsw-alias-label-secondary, #45484d);
+  display: flex;
+  flex: 0 0 38px;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+.dsh-plugin-center__identity {
+  align-items: flex-start;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.dsh-plugin-center__name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
+.dsh-plugin-center__description {
+  overflow-wrap: anywhere;
+}
+.dsh-plugin-center__status {
+  flex: 0 0 auto;
+  gap: 7px;
+}
+.dsh-plugin-center__empty {
+  border-top: 1px solid var(--dsw-alias-border-l1, #ecece8);
+  padding: 26px 10px;
+}
+.dsh-plugin-center__notice {
+  background: var(--dsw-alias-state-error-secondary, #fef0ef);
+  border-radius: 7px;
+  color: var(--dsw-alias-label-error, #b42318);
+  font-size: 12px;
+  line-height: 18px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+}
+.dsh-plugin-center__marketplace {
+  border: 1px solid var(--dsw-alias-border-l2, #deded9);
+  border-radius: 8px;
+  overflow: hidden;
+}
+@media (max-width: 720px) {
+  .dsh-plugin-center { padding-inline: 0; }
+  .dsh-plugin-center__header,
+  .dsh-plugin-center__tabs-row { align-items: stretch; flex-direction: column; }
+  .dsh-plugin-center__toolbar { justify-content: flex-end; }
+  .dsh-plugin-center__tabs { align-self: flex-start; max-width: 100%; overflow-x: auto; }
+  .dsh-plugin-center__search { width: 100%; }
+}
+`
+
+function openPluginDirectory(): void {
+  window.open(PLUGIN_DIRECTORY_URL, '_blank', 'noopener,noreferrer')
+}
+
+function pluginDisplayName(moduleName: string): string {
+  const packageName = moduleName.split('/').at(-1) ?? moduleName
+  return packageName
+    .replace(/^dsh-(?:skill|plugin)-/, '')
+    .split('-')
+    .filter(Boolean)
+    .map(part => part[0]?.toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function isUserFacingPlugin(entry: PluginInventoryEntry): boolean {
+  if (entry.moduleName.includes('/dsh-skill-')) return true
+  if (/^(?:cordis|node|file):/.test(entry.moduleName) || entry.moduleName.startsWith('.')) return false
+  return !entry.moduleName.startsWith('@deepseek-ai/') &&
+    !entry.moduleName.startsWith('@dolphinminer/')
+}
+
+function pluginRuntimeLabel(entry: PluginInventoryEntry): string {
+  if (!entry.enabled) return 'Disabled'
+  if (entry.fiberPhase === 'active') return 'Installed'
+  if (entry.fiberPhase === 'failed') return 'Unavailable'
+  return 'Starting'
+}
+
+function pluginRuntimeState(entry: PluginInventoryEntry): 'done' | 'warning' | 'ongoing' | 'error' {
+  if (!entry.enabled) return 'warning'
+  if (entry.fiberPhase === 'active') return 'done'
+  if (entry.fiberPhase === 'failed') return 'error'
+  return 'ongoing'
+}
+
+function PluginCatalogTab({
+  entries,
+  loading,
+  failure,
+  query,
+}: {
+  entries: readonly PluginInventoryEntry[]
+  loading: boolean
+  failure?: string
+  query: string
+}): React.JSX.Element {
+  const normalized = query.trim().toLocaleLowerCase()
+  const filtered = normalized.length === 0
+    ? entries
+    : entries.filter(entry =>
+      pluginDisplayName(entry.moduleName).toLocaleLowerCase().includes(normalized) ||
+      entry.moduleName.toLocaleLowerCase().includes(normalized),
+    )
+  return (
+    <div>
+      {failure !== undefined && <div className="dsh-plugin-center__notice" role="alert">{failure}</div>}
+      {loading && <div className="dsh-plugin-center__empty">Loading plugins...</div>}
+      {!loading && filtered.length === 0 && (
+        <div className="dsh-plugin-center__empty">
+          {entries.length === 0 ? 'No user plugins are installed.' : 'No plugins match this search.'}
+        </div>
+      )}
+      <ul className="dsh-plugin-center__list">
+        {filtered.map(entry => (
+          <li className="dsh-plugin-center__row" key={String(entry.entryId)}>
+            <span className="dsh-plugin-center__icon" aria-hidden="true">
+              <IconCordisPluginOutline14 size={18} />
+            </span>
+            <span className="dsh-plugin-center__identity">
+              <span className="dsh-plugin-center__name">{pluginDisplayName(entry.moduleName)}</span>
+              <span className="dsh-plugin-center__description">{entry.moduleName}</span>
+            </span>
+            <span className="dsh-plugin-center__status">
+              <StateDot state={pluginRuntimeState(entry)} />
+              {pluginRuntimeLabel(entry)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function McpTab({
+  snapshot,
+  loading,
+  failure,
+  onManageApps,
+}: {
+  snapshot?: ConnectionSnapshot
+  loading: boolean
+  failure?: string
+  onManageApps: () => void
+}): React.JSX.Element {
+  const servers = snapshot?.connections ?? []
+  return (
+    <div>
+      <div className="dsh-plugin-center__panel-toolbar" style={{ gap: 8 }}>
+        <Button size="sm" variant="outline" onClick={onManageApps}>Manage Apps</Button>
+      </div>
+      {failure !== undefined && <div className="dsh-plugin-center__notice" role="alert">{failure}</div>}
+      {loading && <div className="dsh-plugin-center__empty">Loading MCP servers...</div>}
+      {!loading && servers.length === 0 && <div className="dsh-plugin-center__empty">No MCP servers</div>}
+      <ul className="dsh-plugin-center__list">
+        {servers.map(connection => (
+          <li className="dsh-plugin-center__row" key={connection.id}>
+            <span className="dsh-plugin-center__icon" aria-hidden="true">
+              <IconApiOutline14 size={18} />
+            </span>
+            <span className="dsh-plugin-center__identity">
+              <span className="dsh-plugin-center__name">{connection.label}</span>
+              <span className="dsh-plugin-center__description">
+                {connection.enabledTools.length} tools · {connection.access === 'read-only' ? 'Read only' : 'Read and write'}
+              </span>
+            </span>
+            <span className="dsh-plugin-center__status">
+              <StateDot state={connectionStateDot(connection.status)} />
+              {connectionStatusLabel(connection.status)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function MarketplaceTab(): React.JSX.Element {
+  return (
+    <div className="dsh-plugin-center__marketplace">
+      <div className="dsh-plugin-center__row">
+        <span className="dsh-plugin-center__icon" aria-hidden="true">
+          <IconBrowseOutline16 size={18} />
+        </span>
+        <span className="dsh-plugin-center__identity">
+          <span className="dsh-plugin-center__name">DeepSeek Harness plugin directory</span>
+          <span className="dsh-plugin-center__description">Community plugins tagged dsh-plugin on GitHub</span>
+        </span>
+        <Button size="sm" variant="outline" icon={<IconRightUpOutline16 />} onClick={openPluginDirectory}>
+          Browse
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function PluginsSettingsSection({
+  bridge,
+  listPlugins,
+}: {
+  bridge?: DesktopConnectionsBridge
+  listPlugins: () => Promise<PluginInventorySnapshot>
+}): React.JSX.Element {
+  const [active, setActive] = useState<PluginCenterTabId>('plugins')
+  const [query, setQuery] = useState('')
+  const [plugins, setPlugins] = useState<PluginInventorySnapshot>()
+  const [connections, setConnections] = useState<ConnectionSnapshot>()
+  const [pluginsLoading, setPluginsLoading] = useState(true)
+  const [connectionsLoading, setConnectionsLoading] = useState(true)
+  const [pluginsFailure, setPluginsFailure] = useState<string>()
+  const [connectionsFailure, setConnectionsFailure] = useState<string>()
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+
+  const refreshPlugins = async (): Promise<void> => {
+    setPluginsLoading(true)
+    try {
+      setPlugins(await listPlugins())
+      setPluginsFailure(undefined)
+    } catch (cause) {
+      setPluginsFailure(errorMessage(cause))
+    } finally {
+      setPluginsLoading(false)
+    }
+  }
+
+  const refreshConnections = async (): Promise<void> => {
+    if (bridge === undefined) {
+      setConnectionsFailure('The desktop connection bridge is unavailable.')
+      setConnectionsLoading(false)
+      return
+    }
+    setConnectionsLoading(true)
+    try {
+      setConnections(await bridge.list())
+      setConnectionsFailure(undefined)
+    } catch (cause) {
+      setConnectionsFailure(errorMessage(cause))
+    } finally {
+      setConnectionsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void refreshPlugins()
+  }, [listPlugins])
+
+  useEffect(() => {
+    void refreshConnections()
+    if (bridge === undefined) return
+    return bridge.onChanged(snapshot => {
+      setConnections(snapshot)
+      setConnectionsFailure(undefined)
+      setConnectionsLoading(false)
+    })
+  }, [bridge])
+
+  const pluginEntries = useMemo(
+    () => (plugins?.entries ?? []).filter(isUserFacingPlugin),
+    [plugins],
+  )
+  const connectedApps = connections?.connections.filter(connection => connection.status !== 'disconnected').length ?? 0
+  const mcpServers = connections?.connections.length ?? 0
+  const tabs: ReadonlyArray<{ id: PluginCenterTabId; label: string; count?: number }> = [
+    { id: 'plugins', label: 'Plugins', count: pluginEntries.length },
+    { id: 'apps', label: 'Apps', count: connectedApps },
+    { id: 'mcp', label: 'MCP', count: mcpServers },
+    { id: 'marketplace', label: 'Marketplace', count: 1 },
+  ]
+
+  return (
+    <section className="dsh-plugin-center" aria-label="Plugins">
+      <style>{pluginCenterStyles}</style>
+      <header className="dsh-plugin-center__header">
+        <div>
+          <h2 className="dsh-plugin-center__title">Plugins</h2>
+          <p className="dsh-plugin-center__subtitle">Manage plugins, apps, and MCP servers</p>
+        </div>
+        <div className="dsh-plugin-center__toolbar">
+          <Button size="sm" variant="outline" icon={<IconBrowseOutline16 />} onClick={openPluginDirectory}>
+            Browse directory
+          </Button>
+          <Button size="sm" variant="primary" icon={<IconPlusOutline16 />} onClick={() => setActive('marketplace')}>
+            Add
+          </Button>
+        </div>
+      </header>
+      <div className="dsh-plugin-center__tabs-row">
+        <div className="dsh-plugin-center__tabs" role="tablist" aria-label="Plugin categories">
+          {tabs.map((tab, index) => (
+            <button
+              ref={element => { tabRefs.current[index] = element }}
+              key={tab.id}
+              type="button"
+              className="dsh-plugin-center__tab"
+              role="tab"
+              aria-selected={active === tab.id}
+              data-active={active === tab.id ? 'true' : undefined}
+              tabIndex={active === tab.id ? 0 : -1}
+              onClick={() => setActive(tab.id)}
+              onKeyDown={event => {
+                let nextIndex: number | undefined
+                if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length
+                if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length
+                if (event.key === 'Home') nextIndex = 0
+                if (event.key === 'End') nextIndex = tabs.length - 1
+                if (nextIndex === undefined) return
+                event.preventDefault()
+                setActive(tabs[nextIndex]!.id)
+                tabRefs.current[nextIndex]?.focus()
+              }}
+            >
+              {tab.label}
+              {tab.count !== undefined && <span className="dsh-plugin-center__count">{tab.count}</span>}
+            </button>
+          ))}
+        </div>
+        {active === 'plugins' && (
+          <label className="dsh-plugin-center__search">
+            <IconSearchOutline16 size={16} />
+            <input
+              type="search"
+              value={query}
+              aria-label="Search plugins"
+              placeholder="Search plugins"
+              onChange={event => setQuery(event.currentTarget.value)}
+            />
+          </label>
+        )}
+      </div>
+      <div className="dsh-plugin-center__panel" role="tabpanel">
+        {active === 'plugins' && (
+          <PluginCatalogTab
+            entries={pluginEntries}
+            loading={pluginsLoading}
+            failure={pluginsFailure}
+            query={query}
+          />
+        )}
+        {active === 'apps' && <ConnectionsSection bridge={bridge} />}
+        {active === 'mcp' && (
+          <McpTab
+            snapshot={connections}
+            loading={connectionsLoading}
+            failure={connectionsFailure}
+            onManageApps={() => setActive('apps')}
+          />
+        )}
+        {active === 'marketplace' && <MarketplaceTab />}
       </div>
     </section>
   )
@@ -1552,10 +2048,17 @@ function AutomationsSection(): React.JSX.Element {
   )
 }
 
-export const inject = ['slots', 'sessions', 'workspaces', 'layout']
+export const inject = ['slots', 'sessions', 'workspaces', 'layout', 'remote', 'remote.pluginInventory']
 
 export function apply(ctx: ClientContext): void {
   const bridge = window.dshDesktop
+  const listPlugins = async (): Promise<PluginInventorySnapshot> => {
+    const result = await ctx.remote.pluginInventory.list()
+    if (!result.ok) {
+      throw new Error(`Could not load plugins: ${result.error.message}`)
+    }
+    return result.value
+  }
   if (bridge !== undefined) {
     ctx.effect(() => bridge.onCommand(command => {
       void runDesktopCommand({
@@ -1586,12 +2089,12 @@ export function apply(ctx: ClientContext): void {
     order: 12,
     label: 'Browser',
   }, () => <BrowserSettingsSection bridge={bridge?.browser} />))
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'apps',
-    order: 20,
-    label: 'Apps',
-  }, ConnectionsSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'plugins',
+    order: 15,
+    label: 'Plugins',
+  }, () => <PluginsSettingsSection bridge={bridge?.connections} listPlugins={listPlugins} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'computer',

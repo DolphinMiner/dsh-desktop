@@ -1,6 +1,12 @@
 # Product-owned additions layered over the official dsh-base and dsh-web-app
 # bundles. User overrides remain the final profile patch layer.
 
+- id: ui-settings-plugin-inventory
+  disabled: true
+
+- id: ui-settings-plugins
+  disabled: true
+
 - insert:
     - id: desktop-host
       name: '@dolphinminer/dsh-desktop-host'

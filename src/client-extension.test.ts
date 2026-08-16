@@ -19,16 +19,23 @@ test('packages desktop settings and navigation through the official Harness load
   assert.ok(manifest.exports?.['./client'])
   assert.equal(manifest.dsh?.client?.platform, 'web')
   assert.deepEqual(manifest.dsh?.client?.inject, [
+    '@deepseek-ai/dsh-api-remotes',
     '@deepseek-ai/dsh-client-runtime',
     '@deepseek-ai/dsh-client-ui-conversation',
     '@deepseek-ai/dsh-client-ui-layout',
     '@deepseek-ai/dsh-client-ui-settings',
   ])
   assert.match(patch, /name: '@dolphinminer\/dsh-desktop-client'/)
+  assert.match(patch, /id: ui-settings-plugin-inventory\s+disabled: true/)
+  assert.match(patch, /id: ui-settings-plugins\s+disabled: true/)
   assert.match(bundle, /^window\.__ModuleLoader__\.load\(\{/)
   assert.match(bundle, /id: "@dolphinminer\/dsh-desktop-client"/)
-  assert.match(bundle, /name: "settings.plugins.tab"/)
-  assert.match(bundle, /id: "apps"/)
+  assert.match(bundle, /id: "plugins"/)
+  assert.match(bundle, /Plugin categories/)
+  assert.match(bundle, /Browse directory/)
+  assert.match(bundle, /Marketplace/)
+  assert.match(bundle, /Manage Apps/)
+  assert.doesNotMatch(bundle, /name: "settings.plugins.tab"/)
   assert.doesNotMatch(bundle, /id: "connections"/)
   assert.match(bundle, /id: "snapshots"/)
   assert.match(bundle, /id: "computer"/)
