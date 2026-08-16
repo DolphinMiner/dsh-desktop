@@ -79,9 +79,7 @@ import {
 } from './browser.js'
 import {
   BrowserPanel,
-  BrowserPanelToggle,
   type BrowserPanelDetailsSlotProps,
-  type BrowserPanelToggleSlotProps,
 } from './browser-panel.js'
 import { BrowserPanelController } from './browser-panel-controller.js'
 import { DesktopTitlebar } from './desktop-shell.js'
@@ -2395,7 +2393,14 @@ export function apply(ctx: ClientContext): void {
     id: 'desktop-titlebar',
     order: -100,
     locale: DESKTOP_LOCALE_NAMESPACE,
-  }, props => <DesktopTitlebar {...props} layout={ctx.layout} />))
+  }, props => (
+    <DesktopTitlebar
+      {...props}
+      browserPanel={browserPanel}
+      layout={ctx.layout}
+      onBrowserPanelOpenChange={setBrowserPanelOpen}
+    />
+  )))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'snapshots',
@@ -2452,18 +2457,6 @@ export function apply(ctx: ClientContext): void {
     label: () => desktopT('Worktrees'),
     locale: DESKTOP_LOCALE_NAMESPACE,
   }, WorktreesSection))
-  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'desktop-browser',
-    order: 20,
-    locale: DESKTOP_LOCALE_NAMESPACE,
-  }, (props: BrowserPanelToggleSlotProps) => (
-    <BrowserPanelToggle
-      {...props}
-      controller={browserPanel}
-      onOpenChange={setBrowserPanelOpen}
-    />
-  )))
   ctx.slots.inject('details', () => {
     let disposePanel: (() => void) | undefined
     const reconcile = (): void => {

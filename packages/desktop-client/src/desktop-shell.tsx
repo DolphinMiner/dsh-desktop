@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -11,6 +11,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 
 import { openOfficialSettings } from './settings-navigation.js'
+import { BrowserPanelController } from './browser-panel-controller.js'
 import {
   DESKTOP_LOCALE_NAMESPACE,
   type DesktopTranslate,
@@ -96,6 +97,9 @@ const styles = `
   outline: 2px solid var(--dsw-alias-state-business-primary, #2f9cf4);
   outline-offset: 1px;
 }
+.dsh-desktop-titlebar-panel-icon {
+  transform: scaleX(-1);
+}
 @media (max-width: 760px) {
   .dsh-desktop-titlebar {
     grid-template-columns: 184px minmax(0, 1fr) auto;
@@ -116,17 +120,26 @@ function basename(path: string | undefined): string | undefined {
 }
 
 export function DesktopTitlebar({
+  browserPanel,
   layout,
+  onBrowserPanelOpenChange,
   t,
   useSessions,
 }: DesktopTitlebarSlotProps & {
+  browserPanel: BrowserPanelController
   layout: { toggleSidebar(): void }
+  onBrowserPanelOpenChange(open: boolean): void
   t: DesktopTranslate
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null)
   const current = useSessions(state => state.current === undefined ? undefined : state.byId[state.current])
   const title = current?.displayTitle ?? t('New Session')
   const workspace = basename(current?.cwd)
+  const browserOpen = useSyncExternalStore(
+    browserPanel.subscribe,
+    browserPanel.getSnapshot,
+    browserPanel.getSnapshot,
+  )
 
   useEffect(() => {
     const overlay = rootRef.current?.closest<HTMLElement>('[data-shell-overlay]')
@@ -196,6 +209,17 @@ export function DesktopTitlebar({
             onClick={() => { void openOfficialSettings() }}
           >
             <IconEllipsisOutline16 />
+          </button>
+        </Tooltip>
+        <Tooltip label={browserOpen ? t('Close Browser') : t('Open Browser')} side="bottom">
+          <button
+            type="button"
+            className="dsh-desktop-titlebar-button"
+            aria-label={browserOpen ? t('Close Browser') : t('Open Browser')}
+            aria-pressed={browserOpen}
+            onClick={() => onBrowserPanelOpenChange(!browserOpen)}
+          >
+            <IconPanelLeftOutline16 className="dsh-desktop-titlebar-panel-icon" />
           </button>
         </Tooltip>
       </div>
