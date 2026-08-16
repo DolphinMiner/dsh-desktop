@@ -2100,7 +2100,13 @@ export function apply(ctx: ClientContext): void {
     id: 'computer',
     order: 13,
     label: 'Computer Control',
-  }, () => <ComputerControlSection bridge={bridge?.computer} />))
+  }, () => (
+    <ComputerControlSection
+      bridge={bridge?.computer}
+      browser={bridge?.browser}
+      openBrowserSettings={() => openOfficialSettings('browser')}
+    />
+  )))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'worktrees',

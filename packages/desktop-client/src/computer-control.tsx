@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
   Button,
+  IconBrowseOutline16,
   IconPauseOutline16,
   IconPlayOutline16,
   IconRefreshOutline16,
@@ -9,11 +10,14 @@ import {
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
+  BrowserState,
   ComputerApplicationAccess,
   ComputerControlSnapshot,
   ComputerPermissionStatus,
   UpdateComputerControlPolicyInput,
 } from '@dolphinminer/dsh-desktop-protocol'
+
+import type { DesktopBrowserBridge } from './browser.js'
 
 import {
   SettingsGroup,
@@ -46,6 +50,21 @@ const styles = `
   height: 100%;
   justify-content: center;
   width: 100%;
+}
+.dsh-desktop-computer-row-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.dsh-desktop-computer-applications {
+  max-height: min(560px, 65vh);
+  min-width: 0;
+  overflow: auto;
+  width: 100%;
+}
+.dsh-desktop-computer-applications-modal {
+  max-width: 680px;
+  width: min(680px, 82vw);
 }
 .dsh-desktop-computer-advanced {
   display: grid;
@@ -100,15 +119,30 @@ function permissionNeedsAttention(status: ComputerPermissionStatus): boolean {
   return status !== 'granted' && status !== 'unavailable'
 }
 
+function managedBrowserDescription(state: BrowserState | undefined): string {
+  if (state === undefined) return 'Managed browser loading'
+  if (!state.settings.enabled) return 'Managed browser off'
+  if (state.runtimeStatus === 'ready') return 'Managed browser ready'
+  if (state.runtimeStatus === 'starting') return 'Managed browser starting'
+  if (state.runtimeStatus === 'error') return 'Managed browser needs attention'
+  return 'Managed browser stopped'
+}
+
 export function ComputerControlSection({
   bridge,
+  browser,
+  openBrowserSettings,
 }: {
   bridge?: DesktopComputerBridge
+  browser?: DesktopBrowserBridge
+  openBrowserSettings?: () => Promise<void>
 }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ComputerControlSnapshot>()
+  const [browserState, setBrowserState] = useState<BrowserState>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [applicationsOpen, setApplicationsOpen] = useState(false)
 
   const run = (operation: () => Promise<ComputerControlSnapshot>): void => {
     setBusy(true)
@@ -138,8 +172,29 @@ export function ComputerControlSection({
     }
   }, [bridge])
 
-  const runningApplications = useMemo(
-    () => snapshot?.applications.filter(application => application.running) ?? [],
+  useEffect(() => {
+    if (browser === undefined) return
+    let active = true
+    const stop = browser.onChanged(next => {
+      if (active) setBrowserState(next)
+    })
+    void browser.getState().then(next => {
+      if (active) setBrowserState(next)
+    }).catch(cause => {
+      if (active) setError(cause instanceof Error ? cause.message : 'Browser status is unavailable.')
+    })
+    return () => {
+      active = false
+      stop()
+    }
+  }, [browser])
+
+  const configuredRunning = useMemo(
+    () => snapshot?.applications.filter(application => application.running && application.policy !== 'default') ?? [],
+    [snapshot],
+  )
+  const manageableApplications = useMemo(
+    () => snapshot?.applications.filter(application => application.running || application.policy !== 'default') ?? [],
     [snapshot],
   )
   const offlineAllowed = useMemo(
@@ -157,10 +212,34 @@ export function ComputerControlSection({
     run(() => bridge.updatePolicy(input))
   }
 
+  const updateApplication = (application: ComputerApplicationAccess, allowed: boolean): void => {
+    if (application.bundleId === undefined) return
+    updatePolicy({
+      application: { bundleId: application.bundleId, name: application.name, allowed },
+    })
+  }
+
   const openPermission = (kind: 'screen-recording' | 'accessibility'): void => {
     if (bridge === undefined) return
     void bridge.openPermissionSettings(kind).then(() => bridge.refresh()).then(setSnapshot).catch(cause => {
       setError(cause instanceof Error ? cause.message : 'System Settings could not be opened.')
+    })
+  }
+
+  const updateBrowser = (enabled: boolean): void => {
+    if (browser === undefined) return
+    setBusy(true)
+    setError(undefined)
+    void browser.update({ enabled }).then(setBrowserState).catch(cause => {
+      setError(cause instanceof Error ? cause.message : 'Browser could not be updated.')
+    }).finally(() => setBusy(false))
+  }
+
+  const manageBrowser = (): void => {
+    if (openBrowserSettings === undefined) return
+    setError(undefined)
+    void openBrowserSettings().catch(cause => {
+      setError(cause instanceof Error ? cause.message : 'Browser settings could not be opened.')
     })
   }
 
@@ -170,7 +249,19 @@ export function ComputerControlSection({
       subtitle="Manage how DSH can use other applications on your Mac."
     >
       <style>{styles}</style>
-      <SettingsSection title="Control">
+      <SettingsSection
+        title="Control"
+        action={(
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || snapshot === undefined}
+            onClick={() => setApplicationsOpen(true)}
+          >
+            Manage Apps
+          </Button>
+        )}
+      >
         <SettingsGroup>
           <SettingsRow
             title="Any application"
@@ -184,7 +275,32 @@ export function ComputerControlSection({
               />
             )}
           />
-          {runningApplications.map(application => (
+          <SettingsRow
+            icon={<span className="dsh-desktop-computer-app-icon"><IconBrowseOutline16 /></span>}
+            title="DSH Browser"
+            description={managedBrowserDescription(browserState)}
+            control={(
+              <span className="dsh-desktop-computer-row-actions">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || openBrowserSettings === undefined}
+                  onClick={manageBrowser}
+                >
+                  Manage
+                </Button>
+                {browserState !== undefined && (
+                  <SettingsToggle
+                    label="Enable managed browser"
+                    checked={browserState.settings.enabled}
+                    disabled={busy}
+                    onChange={updateBrowser}
+                  />
+                )}
+              </span>
+            )}
+          />
+          {configuredRunning.map(application => (
             <SettingsRow
               key={application.id}
               icon={<AppIcon application={application} />}
@@ -197,12 +313,7 @@ export function ComputerControlSection({
                   label={`Allow ${application.name}`}
                   checked={application.allowed}
                   disabled={busy || !application.canSetPolicy}
-                  onChange={allowed => {
-                    if (application.bundleId === undefined) return
-                    updatePolicy({
-                      application: { bundleId: application.bundleId, name: application.name, allowed },
-                    })
-                  }}
+                  onChange={allowed => updateApplication(application, allowed)}
                 />
               )}
             />
@@ -242,12 +353,7 @@ export function ComputerControlSection({
                   label={`Allow ${application.name}`}
                   checked
                   disabled={busy}
-                  onChange={allowed => {
-                    if (application.bundleId === undefined) return
-                    updatePolicy({
-                      application: { bundleId: application.bundleId, name: application.name, allowed },
-                    })
-                  }}
+                  onChange={allowed => updateApplication(application, allowed)}
                 />
               )}
             />
@@ -308,6 +414,40 @@ export function ComputerControlSection({
       {error === undefined && snapshot?.statusMessage !== undefined && (
         <SettingsNotice level="info">{snapshot.statusMessage}</SettingsNotice>
       )}
+
+      <Modal
+        open={applicationsOpen}
+        onClose={() => setApplicationsOpen(false)}
+        title="Applications"
+        description="Choose which running applications DSH can control."
+        closeLabel="Close application management"
+        className="dsh-desktop-computer-applications-modal"
+      >
+        <div className="dsh-desktop-computer-applications">
+          <SettingsGroup>
+            {manageableApplications.length === 0 ? (
+              <SettingsRow title="No applications available" />
+            ) : manageableApplications.map(application => (
+              <SettingsRow
+                key={application.id}
+                icon={<AppIcon application={application} />}
+                title={application.name}
+                description={application.frontmost
+                  ? 'Frontmost application'
+                  : application.running ? 'Running' : 'Not currently running'}
+                control={(
+                  <SettingsToggle
+                    label={`Allow ${application.name}`}
+                    checked={application.allowed}
+                    disabled={busy || !application.canSetPolicy}
+                    onChange={allowed => updateApplication(application, allowed)}
+                  />
+                )}
+              />
+            ))}
+          </SettingsGroup>
+        </div>
+      </Modal>
 
       <Modal
         open={advancedOpen}
