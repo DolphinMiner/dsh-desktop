@@ -13,6 +13,8 @@ import type {
   BrowserState,
   BrowserTypeParams,
   BrowserUiNavigateInput,
+  BrowserUiPointerInput,
+  BrowserUiScrollInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 import { BROWSER_OBSERVATION_VERSION } from '@dolphinminer/dsh-desktop-protocol'
@@ -311,6 +313,31 @@ export class BrowserController {
     })
   }
 
+  pointerFromUi(input: BrowserUiPointerInput): Promise<BrowserState> {
+    return this.uiSnapshotOperation(input, async (tabId, signal) => {
+      await this.engine.clickAt(
+        tabId,
+        input.normalizedX,
+        input.normalizedY,
+        input.button ?? 'left',
+        signal,
+      )
+    }, true)
+  }
+
+  scrollFromUi(input: BrowserUiScrollInput): Promise<BrowserState> {
+    return this.uiSnapshotOperation(input, async (tabId, signal) => {
+      await this.engine.scrollAt(
+        tabId,
+        input.normalizedX,
+        input.normalizedY,
+        input.deltaX,
+        input.deltaY,
+        signal,
+      )
+    }, false)
+  }
+
   shouldOpenControlled(url: string): boolean {
     return this.settings.enabled &&
       (isLocalBrowserUrl(url) ? this.settings.localUrlTarget : this.settings.webUrlTarget) === 'controlled'
@@ -336,6 +363,22 @@ export class BrowserController {
       const signal = new AbortController().signal
       await this.ensureRunning(signal)
       await operation(signal)
+      return this.snapshot()
+    })
+  }
+
+  private uiSnapshotOperation(
+    input: { snapshotId: string; tabId: string },
+    operation: (tabId: string, signal: AbortSignal) => Promise<void>,
+    recordHistory: boolean,
+  ): Promise<BrowserState> {
+    return this.exclusive(async () => {
+      this.assertEnabled()
+      const signal = new AbortController().signal
+      await this.ensureRunning(signal)
+      const tabId = this.assertUiSnapshot(input.snapshotId, input.tabId)
+      await operation(tabId, signal)
+      await this.observeCurrent(undefined, tabId, true, recordHistory, signal)
       return this.snapshot()
     })
   }
@@ -440,6 +483,18 @@ export class BrowserController {
       )
     }
     return latest.observation.tabId
+  }
+
+  private assertUiSnapshot(snapshotId: string, tabId: string): string {
+    const latest = this.latest?.observation
+    if (latest === undefined || latest.snapshotId !== snapshotId || latest.tabId !== tabId ||
+      this.engineState.activeTabId !== tabId) {
+      throw new ControlledBrowserError(
+        'TARGET_CHANGED',
+        'The Browser preview changed. Wait for the current page and try again.',
+      )
+    }
+    return tabId
   }
 
   private async once<T extends { actionId: string }>(

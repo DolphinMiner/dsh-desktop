@@ -11,6 +11,8 @@ import {
   parseBrowserSettings,
   parseBrowserState,
   parseBrowserTypeParams,
+  parseBrowserUiPointerInput,
+  parseBrowserUiScrollInput,
   parseControlledBrowserUrl,
   parseUpdateBrowserSettingsInput,
 } from './browser.js'
@@ -127,4 +129,28 @@ test('requires idempotency and latest-snapshot identities for browser actions', 
   }
   assert.deepEqual(parseBrowserTypeParams(type), type)
   assert.equal(parseBrowserTypeParams({ ...type, role: '' }), undefined)
+})
+
+test('validates snapshot-bound renderer pointer and scroll intents', () => {
+  const pointer = {
+    snapshotId: 'snapshot-1',
+    tabId: 'tab-1',
+    normalizedX: 0.25,
+    normalizedY: 0.75,
+    button: 'right' as const,
+  }
+  assert.deepEqual(parseBrowserUiPointerInput(pointer), pointer)
+  assert.equal(parseBrowserUiPointerInput({ ...pointer, normalizedX: 1.01 }), undefined)
+  assert.equal(parseBrowserUiPointerInput({ ...pointer, button: 'middle' }), undefined)
+
+  const scroll = {
+    snapshotId: 'snapshot-1',
+    tabId: 'tab-1',
+    normalizedX: 0.5,
+    normalizedY: 0.5,
+    deltaX: 0,
+    deltaY: 640,
+  }
+  assert.deepEqual(parseBrowserUiScrollInput(scroll), scroll)
+  assert.equal(parseBrowserUiScrollInput({ ...scroll, deltaY: 0 }), undefined)
 })

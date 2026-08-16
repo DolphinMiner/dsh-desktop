@@ -58,8 +58,23 @@ export interface BrowserEngine {
   navigate(url: string, newTab: boolean, signal: AbortSignal): Promise<void>
   observe(tabId: string | undefined, captureScreenshot: boolean, signal: AbortSignal): Promise<BrowserEngineObservation>
   click(tabId: string, role: string, name: string, exact: boolean, signal: AbortSignal): Promise<void>
+  clickAt(
+    tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    button: 'left' | 'right',
+    signal: AbortSignal,
+  ): Promise<void>
   type(tabId: string, role: string, name: string, text: string, submit: boolean, signal: AbortSignal): Promise<void>
   scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void>
+  scrollAt(
+    tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    deltaX: number,
+    deltaY: number,
+    signal: AbortSignal,
+  ): Promise<void>
   activate(tabId: string): Promise<void>
   newTab(): Promise<void>
   closeTab(tabId: string): Promise<void>
@@ -246,6 +261,25 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     throwIfAborted(signal)
   }
 
+  async clickAt(
+    tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    button: 'left' | 'right',
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    const viewport = page.viewportSize() ?? DEFAULT_VIEWPORT
+    await page.mouse.click(
+      normalizedX * viewport.width,
+      normalizedY * viewport.height,
+      { button },
+    )
+    await settlePage(page)
+    throwIfAborted(signal)
+  }
+
   async type(
     tabId: string,
     role: string,
@@ -267,6 +301,23 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
   async scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void> {
     throwIfAborted(signal)
     const page = this.page(tabId)
+    await page.mouse.wheel(deltaX, deltaY)
+    await page.waitForTimeout(120)
+    throwIfAborted(signal)
+  }
+
+  async scrollAt(
+    tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    deltaX: number,
+    deltaY: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    const viewport = page.viewportSize() ?? DEFAULT_VIEWPORT
+    await page.mouse.move(normalizedX * viewport.width, normalizedY * viewport.height)
     await page.mouse.wheel(deltaX, deltaY)
     await page.waitForTimeout(120)
     throwIfAborted(signal)

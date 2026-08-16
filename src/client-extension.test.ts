@@ -57,6 +57,8 @@ test('packages desktop settings and navigation through the official Harness load
   assert.match(bundle, /clearData/)
   assert.match(bundle, /listHistory/)
   assert.match(bundle, /Stop controlled browser/)
+  assert.match(bundle, /bridge\.pointer/)
+  assert.match(bundle, /bridge\.scrollAt/)
   assert.match(bundle, /previewCleanup/)
   assert.match(bundle, /confirmCleanup/)
   assert.match(bundle, /previewRecovery/)

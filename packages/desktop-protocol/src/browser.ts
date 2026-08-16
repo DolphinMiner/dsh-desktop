@@ -121,6 +121,23 @@ export interface BrowserUiTabInput {
   tabId: string
 }
 
+export interface BrowserUiPointerInput {
+  snapshotId: string
+  tabId: string
+  normalizedX: number
+  normalizedY: number
+  button?: 'left' | 'right'
+}
+
+export interface BrowserUiScrollInput {
+  snapshotId: string
+  tabId: string
+  normalizedX: number
+  normalizedY: number
+  deltaX: number
+  deltaY: number
+}
+
 const MAX_ID_LENGTH = 256
 const MAX_URL_LENGTH = 4_096
 const MAX_TITLE_LENGTH = 512
@@ -396,6 +413,46 @@ export function parseBrowserUiTabInput(value: unknown): BrowserUiTabInput | unde
     return undefined
   }
   return { tabId: value.tabId }
+}
+
+function normalizedCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+export function parseBrowserUiPointerInput(value: unknown): BrowserUiPointerInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['snapshotId', 'tabId', 'normalizedX', 'normalizedY', 'button'],
+  ) || !isString(value.snapshotId, MAX_ID_LENGTH) || !isString(value.tabId, MAX_ID_LENGTH) ||
+    !normalizedCoordinate(value.normalizedX) || !normalizedCoordinate(value.normalizedY) ||
+    (value.button !== undefined && value.button !== 'left' && value.button !== 'right')) return undefined
+  return {
+    snapshotId: value.snapshotId,
+    tabId: value.tabId,
+    normalizedX: value.normalizedX,
+    normalizedY: value.normalizedY,
+    ...(value.button === undefined ? {} : { button: value.button }),
+  }
+}
+
+export function parseBrowserUiScrollInput(value: unknown): BrowserUiScrollInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['snapshotId', 'tabId', 'normalizedX', 'normalizedY', 'deltaX', 'deltaY'],
+  ) || !isString(value.snapshotId, MAX_ID_LENGTH) || !isString(value.tabId, MAX_ID_LENGTH) ||
+    !normalizedCoordinate(value.normalizedX) || !normalizedCoordinate(value.normalizedY) ||
+    typeof value.deltaX !== 'number' || !Number.isFinite(value.deltaX) ||
+    typeof value.deltaY !== 'number' || !Number.isFinite(value.deltaY) ||
+    Math.abs(value.deltaX) > MAX_SCROLL_DELTA || Math.abs(value.deltaY) > MAX_SCROLL_DELTA ||
+    (value.deltaX === 0 && value.deltaY === 0)) return undefined
+  return {
+    snapshotId: value.snapshotId,
+    tabId: value.tabId,
+    normalizedX: value.normalizedX,
+    normalizedY: value.normalizedY,
+    deltaX: value.deltaX,
+    deltaY: value.deltaY,
+  }
 }
 
 export function parseBrowserHistory(value: unknown): BrowserHistoryEntry[] | undefined {

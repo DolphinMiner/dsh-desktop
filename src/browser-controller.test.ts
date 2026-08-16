@@ -19,8 +19,10 @@ class FakeBrowserEngine implements BrowserEngine {
   starts = 0
   stops = 0
   clicks = 0
+  pointerClicks: Array<{ x: number; y: number; button: 'left' | 'right' }> = []
   typed: string[] = []
   scrolls = 0
+  pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   captures: boolean[] = []
   url = 'about:blank'
   title = ''
@@ -77,6 +79,17 @@ class FakeBrowserEngine implements BrowserEngine {
     return Promise.resolve()
   }
 
+  clickAt(
+    _tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    button: 'left' | 'right',
+  ): Promise<void> {
+    this.pointerClicks.push({ x: normalizedX, y: normalizedY, button })
+    this.title = 'Pointer clicked'
+    return Promise.resolve()
+  }
+
   type(_tabId: string, _role: string, _name: string, text: string): Promise<void> {
     this.typed.push(text)
     return Promise.resolve()
@@ -84,6 +97,17 @@ class FakeBrowserEngine implements BrowserEngine {
 
   scroll(): Promise<void> {
     this.scrolls += 1
+    return Promise.resolve()
+  }
+
+  scrollAt(
+    _tabId: string,
+    normalizedX: number,
+    normalizedY: number,
+    deltaX: number,
+    deltaY: number,
+  ): Promise<void> {
+    this.pointerScrolls.push({ x: normalizedX, y: normalizedY, deltaX, deltaY })
     return Promise.resolve()
   }
 
@@ -243,6 +267,50 @@ test('keeps the renderer preview independent from the Agent screenshot policy', 
 
   assert.equal(runtime.engine.captures.at(-1), true)
   assert.equal(runtime.frames.at(-1)?.pixelWidth, 1280)
+})
+
+test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  await runtime.controller.navigateFromUi({ url: 'https://example.com/' })
+  const first = runtime.controller.snapshot().lastObservation!
+
+  const clicked = await runtime.controller.pointerFromUi({
+    snapshotId: first.snapshotId,
+    tabId: first.tabId,
+    normalizedX: 0.25,
+    normalizedY: 0.75,
+    button: 'right',
+  })
+  assert.deepEqual(runtime.engine.pointerClicks, [{ x: 0.25, y: 0.75, button: 'right' }])
+  assert.notEqual(clicked.lastObservation?.snapshotId, first.snapshotId)
+
+  await assert.rejects(runtime.controller.scrollFromUi({
+    snapshotId: first.snapshotId,
+    tabId: first.tabId,
+    normalizedX: 0.5,
+    normalizedY: 0.5,
+    deltaX: 0,
+    deltaY: 320,
+  }), error => {
+    assert.equal((error as { code?: string }).code, 'TARGET_CHANGED')
+    return true
+  })
+
+  await runtime.controller.scrollFromUi({
+    snapshotId: clicked.lastObservation!.snapshotId,
+    tabId: clicked.lastObservation!.tabId,
+    normalizedX: 0.5,
+    normalizedY: 0.5,
+    deltaX: 0,
+    deltaY: 320,
+  })
+  assert.deepEqual(runtime.engine.pointerScrolls, [{ x: 0.5, y: 0.5, deltaX: 0, deltaY: 320 }])
 })
 
 test('classifies only local development hosts as local browser URLs', () => {

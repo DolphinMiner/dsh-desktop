@@ -24,6 +24,8 @@ import {
   parseBeginOAuthInput,
   parseControlledBrowserUrl,
   parseBrowserUiNavigateInput,
+  parseBrowserUiPointerInput,
+  parseBrowserUiScrollInput,
   parseBrowserUiTabInput,
   parseDesktopCancelAutomationRunInput,
   parseDesktopCreateAutomationInput,
@@ -628,6 +630,14 @@ function installIpcHandlers(
   ipcMain.handle('desktop:browser:activate-tab', async (event, value: unknown) => {
     assertTrustedSender(event)
     return browser.activateTab(validInput(parseBrowserUiTabInput(value)).tabId)
+  })
+  ipcMain.handle('desktop:browser:pointer', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.pointerFromUi(validInput(parseBrowserUiPointerInput(value)))
+  })
+  ipcMain.handle('desktop:browser:scroll-at', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.scrollFromUi(validInput(parseBrowserUiScrollInput(value)))
   })
   ipcMain.handle('desktop:browser:new-tab', async event => {
     assertTrustedSender(event)

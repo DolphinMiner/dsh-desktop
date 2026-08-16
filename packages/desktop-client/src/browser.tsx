@@ -1,5 +1,5 @@
-import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
@@ -19,6 +19,8 @@ import type {
   BrowserHistoryEntry,
   BrowserState,
   BrowserUiNavigateInput,
+  BrowserUiPointerInput,
+  BrowserUiScrollInput,
   BrowserUiTabInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -32,13 +34,19 @@ import {
   SettingsSelect,
   SettingsToggle,
 } from './settings-ui.js'
-import { activeBrowserAddress, normalizeBrowserAddress } from './browser-view-model.js'
+import {
+  activeBrowserAddress,
+  normalizeBrowserAddress,
+  normalizedBrowserPoint,
+} from './browser-view-model.js'
 
 export interface DesktopBrowserBridge {
   getState(): Promise<BrowserState>
   update(input: UpdateBrowserSettingsInput): Promise<BrowserState>
   navigate(input: BrowserUiNavigateInput): Promise<BrowserState>
   activateTab(input: BrowserUiTabInput): Promise<BrowserState>
+  pointer(input: BrowserUiPointerInput): Promise<BrowserState>
+  scrollAt(input: BrowserUiScrollInput): Promise<BrowserState>
   newTab(): Promise<BrowserState>
   closeTab(input: BrowserUiTabInput): Promise<BrowserState>
   back(): Promise<BrowserState>
@@ -192,6 +200,13 @@ const styles = `
   overflow: hidden;
   place-items: center;
   position: relative;
+}
+.dsh-desktop-browser-stage[data-busy="true"] {
+  cursor: progress;
+}
+.dsh-desktop-browser-stage[data-interactive="true"]:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--dsw-alias-state-business-primary, #2f9cf4);
+  outline: none;
 }
 .dsh-desktop-browser-stage img {
   height: 100%;
@@ -485,6 +500,7 @@ export function BrowserView({
   const [address, setAddress] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const busyRef = useRef(false)
 
   useEffect(() => {
     if (bridge === undefined) {
@@ -526,11 +542,16 @@ export function BrowserView({
   }, [frameUrl])
 
   const run = (operation: () => Promise<BrowserState>): void => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setError(undefined)
     void operation().then(setState).catch(cause => {
       setError(cause instanceof Error ? cause.message : 'The browser operation failed.')
-    }).finally(() => setBusy(false))
+    }).finally(() => {
+      busyRef.current = false
+      setBusy(false)
+    })
   }
 
   const navigate = (event: FormEvent): void => {
@@ -543,6 +564,47 @@ export function BrowserView({
 
   const tabs = state?.tabs ?? []
   const disabled = bridge === undefined || busy || state?.settings.enabled !== true
+
+  const pointerInput = (
+    event: ReactMouseEvent<HTMLDivElement>,
+    button: 'left' | 'right',
+  ): void => {
+    if (bridge === undefined || frame === undefined || disabled) return
+    const point = normalizedBrowserPoint(
+      event.clientX,
+      event.clientY,
+      event.currentTarget.getBoundingClientRect(),
+      frame,
+    )
+    if (point === undefined) return
+    event.preventDefault()
+    event.currentTarget.focus()
+    run(() => bridge.pointer({
+      snapshotId: frame.snapshotId,
+      tabId: frame.tabId,
+      ...point,
+      button,
+    }))
+  }
+
+  const scrollInput = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    if (bridge === undefined || frame === undefined || disabled) return
+    const point = normalizedBrowserPoint(
+      event.clientX,
+      event.clientY,
+      event.currentTarget.getBoundingClientRect(),
+      frame,
+    )
+    if (point === undefined || (event.deltaX === 0 && event.deltaY === 0)) return
+    event.preventDefault()
+    run(() => bridge.scrollAt({
+      snapshotId: frame.snapshotId,
+      tabId: frame.tabId,
+      ...point,
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
+    }))
+  }
 
   return (
     <section className="dsh-desktop-browser-view" aria-label="Browser">
@@ -634,7 +696,17 @@ export function BrowserView({
           <IconPauseOutline16 />
         </button>
       </form>
-      <div className="dsh-desktop-browser-stage">
+      <div
+        className="dsh-desktop-browser-stage"
+        data-busy={busy}
+        data-interactive={frameUrl !== undefined && !disabled}
+        tabIndex={frameUrl === undefined || disabled ? -1 : 0}
+        role="application"
+        aria-label="Controlled browser page"
+        onClick={event => pointerInput(event, 'left')}
+        onContextMenu={event => pointerInput(event, 'right')}
+        onWheel={scrollInput}
+      >
         {frameUrl !== undefined ? (
           <img src={frameUrl} alt={state?.lastObservation?.title || 'Controlled browser page'} draggable={false} />
         ) : (
