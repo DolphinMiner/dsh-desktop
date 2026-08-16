@@ -3,6 +3,7 @@ import type {
   AutomationState,
   ComputerActionHistorySummary,
   ComputerPermissionStatus,
+  ConnectionAuthKind,
   ConnectionStatus,
 } from '@dolphinminer/dsh-desktop-protocol'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -24,6 +25,16 @@ export function connectionStatusLabel(status: ConnectionStatus): string {
 
 export function canReconnect(status: ConnectionStatus): boolean {
   return status === 'disconnected' || status === 'expired' || status === 'error'
+}
+
+export type LinearConnectionAction = 'oauth' | 'oauth-unavailable' | 'api-key'
+
+export function linearConnectionAction(
+  authKind: ConnectionAuthKind | undefined,
+  oauthAvailable: boolean,
+): LinearConnectionAction {
+  if (authKind === 'api-key') return 'api-key'
+  return oauthAvailable ? 'oauth' : 'oauth-unavailable'
 }
 
 export function computerPermissionLabel(status: ComputerPermissionStatus): string {

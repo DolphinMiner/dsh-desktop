@@ -258,7 +258,7 @@ export class ConnectionManager {
     if (!this.oauth.available) {
       return Promise.reject(new ConnectionManagerError(
         'OAUTH_UNAVAILABLE',
-        'Linear OAuth is not configured in this build. Connect with an API key instead.',
+        'Linear browser authorization is not configured in this build.',
       ))
     }
     return this.oauth.begin(input, signal)

@@ -662,7 +662,7 @@ export class LinearOAuthCoordinator implements OAuthConnectionProvider {
     if (!this.available) {
       throw new ConnectionManagerError(
         'OAUTH_UNAVAILABLE',
-        'Linear OAuth is not configured in this build. Connect with an API key instead.',
+        'Linear browser authorization is not configured in this build.',
       )
     }
   }

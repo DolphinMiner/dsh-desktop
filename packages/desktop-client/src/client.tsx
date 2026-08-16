@@ -63,6 +63,7 @@ import type {
 import {
   canReconnect,
   connectionStateDot,
+  linearConnectionAction,
 } from './view-model.js'
 import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automations.js'
 import {
@@ -428,10 +429,8 @@ function ConnectionsSection({
       const result = await bridge.beginOAuth({
         requestId,
         provider: 'linear',
-        access: target?.access ?? access,
-        ...(target?.label === undefined && label.trim().length === 0
-          ? {}
-          : { label: target?.label ?? label.trim() }),
+        access: target?.access ?? 'read-only',
+        ...(target?.label === undefined ? {} : { label: target.label }),
         ...(target === undefined ? {} : { connectionId: target.id }),
       })
       setPendingOAuth({ requestId, flowId: result.flowId, expiresAt: result.expiresAt })
@@ -460,11 +459,21 @@ function ConnectionsSection({
     }
   }
 
-  const reconnect = (connection: ConnectionSummary): void => {
-    if (connection.authKind === 'oauth' && oauthAvailable) {
+  const connectLinear = (connection?: ConnectionSummary): void => {
+    const action = linearConnectionAction(connection?.authKind, oauthAvailable)
+    setNotice(undefined)
+    setError(undefined)
+    if (action === 'oauth-unavailable') {
+      resetForm()
+      setError(t('Linear browser sign-in is unavailable in this build. Configure OAuth or use Advanced for a self-hosted API key.'))
+      return
+    }
+    if (action === 'oauth') {
+      resetForm()
       void beginOAuth(connection)
       return
     }
+    if (connection === undefined) return
     setConnectionId(connection.id)
     setLabel(connection.label)
     setAccess(connection.access)
@@ -501,11 +510,8 @@ function ConnectionsSection({
             size="sm"
             variant="primary"
             icon={<IconLinkOutline16 />}
-            disabled={!vaultAvailable}
-            onClick={() => {
-              if (oauthAvailable) void beginOAuth()
-              else setShowForm(true)
-            }}
+            disabled={!vaultAvailable || busy !== undefined}
+            onClick={() => connectLinear()}
           >
             {t('Connect Linear')}
           </Button>
@@ -515,7 +521,10 @@ function ConnectionsSection({
             disabled={!vaultAvailable}
             onClick={() => {
               if (showForm) resetForm()
-              else setShowForm(true)
+              else {
+                setError(undefined)
+                setShowForm(true)
+              }
             }}
           >
             {t('Advanced')}
@@ -666,7 +675,7 @@ function ConnectionsSection({
                       variant="outline"
                       icon={<IconRefreshOutline16 />}
                       disabled={busy !== undefined}
-                      onClick={() => reconnect(connection)}
+                      onClick={() => connectLinear(connection)}
                     >
                       {t('Reconnect')}
                     </Button>

@@ -11,6 +11,7 @@ import {
   computerPermissionLabel,
   connectionStateDot,
   connectionStatusLabel,
+  linearConnectionAction,
 } from './view-model.js'
 
 test('maps connection state to truthful status presentation', () => {
@@ -21,6 +22,15 @@ test('maps connection state to truthful status presentation', () => {
   assert.equal(connectionStatusLabel('disconnected'), 'Disconnected')
   assert.equal(canReconnect('connected'), false)
   assert.equal(canReconnect('expired'), true)
+})
+
+test('keeps the primary Linear path OAuth-only and API keys explicit', () => {
+  assert.equal(linearConnectionAction(undefined, true), 'oauth')
+  assert.equal(linearConnectionAction(undefined, false), 'oauth-unavailable')
+  assert.equal(linearConnectionAction('oauth', true), 'oauth')
+  assert.equal(linearConnectionAction('oauth', false), 'oauth-unavailable')
+  assert.equal(linearConnectionAction('api-key', true), 'api-key')
+  assert.equal(linearConnectionAction('api-key', false), 'api-key')
 })
 
 test('maps computer permissions and action outcomes to truthful labels', () => {
