@@ -1,5 +1,6 @@
-import { readFile, realpath, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { link, lstat, open, readFile, realpath, rm, stat } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import type { DesktopProtocolError } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -9,6 +10,7 @@ const BLOCKED_OPEN_EXTENSIONS = new Set([
 
 const MAX_UPLOAD_FILES = 8
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 const UPLOAD_MEDIA_TYPES: Readonly<Record<string, string>> = {
   '.csv': 'text/csv',
@@ -39,6 +41,11 @@ export interface WorkspaceUploadFile {
   name: string
   mediaType: string
   data: Buffer
+}
+
+export interface SaveWorkspaceDownloadOptions {
+  signal: AbortSignal
+  beforeCommit: () => void
 }
 
 export async function resolveWorkspaceTarget(
@@ -115,4 +122,61 @@ export async function loadWorkspaceUploadFiles(
     })
   }
   return files
+}
+
+export async function saveWorkspaceDownload(
+  workspaceRoot: string,
+  inputPath: string,
+  data: Uint8Array,
+  options: SaveWorkspaceDownloadOptions,
+): Promise<{ path: string }> {
+  if (data.byteLength > MAX_DOWNLOAD_BYTES) {
+    throw new WorkspacePathError('BAD_MESSAGE', 'Browser downloads are limited to 50 MB per action.')
+  }
+  if (options.signal.aborted) throw new DOMException('The browser download was cancelled.', 'AbortError')
+
+  let canonicalRoot: string
+  let canonicalParent: string
+  try {
+    canonicalRoot = await realpath(workspaceRoot)
+    const unresolved = isAbsolute(inputPath) ? resolve(inputPath) : resolve(canonicalRoot, inputPath)
+    canonicalParent = await realpath(dirname(unresolved))
+  } catch {
+    throw new WorkspacePathError('NOT_FOUND', 'The browser download destination directory does not exist.')
+  }
+
+  const target = resolve(canonicalParent, basename(inputPath))
+  const relation = relative(canonicalRoot, target)
+  if (relation === '' || relation === '..' || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
+    throw new WorkspacePathError('BAD_MESSAGE', 'The browser download destination is outside the active workspace.')
+  }
+  try {
+    await lstat(target)
+    throw new WorkspacePathError('CONFLICT', 'The browser download destination already exists.')
+  } catch (error) {
+    if (error instanceof WorkspacePathError) throw error
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+
+  const temporary = resolve(canonicalParent, `.dsh-download-${randomUUID()}.tmp`)
+  const handle = await open(temporary, 'wx', 0o600)
+  try {
+    try {
+      await handle.writeFile(data)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    if (options.signal.aborted) throw new DOMException('The browser download was cancelled.', 'AbortError')
+    options.beforeCommit()
+    await link(temporary, target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new WorkspacePathError('CONFLICT', 'The browser download destination already exists.')
+    }
+    throw error
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined)
+  }
+  return { path: relation }
 }

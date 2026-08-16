@@ -106,7 +106,12 @@ import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provid
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
 import { PersistedWindowState, WindowStateStore } from './window-state'
-import { loadWorkspaceUploadFiles, resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
+import {
+  loadWorkspaceUploadFiles,
+  resolveWorkspaceTarget,
+  saveWorkspaceDownload,
+  WorkspacePathError,
+} from './workspace-path'
 import { WorkspaceGitCapabilityService } from './workspace-git'
 import { WorktreeCleanupController } from './worktree-cleanup-controller'
 import { WorktreeHandoffController } from './worktree-handoff-controller'
@@ -1079,6 +1084,13 @@ app.whenReady().then(async () => {
         assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
         return files
       },
+      saveDownload: async (params, file, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        return saveWorkspaceDownload(params.workspaceRoot, params.path, file.data, {
+          signal,
+          beforeCommit: () => assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal),
+        })
+      },
       onChange: snapshot => {
         if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('desktop:browser-changed', snapshot)
@@ -1518,6 +1530,10 @@ app.whenReady().then(async () => {
       upload: async (params, signal) => {
         assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
         return controlledBrowser!.upload(params, signal)
+      },
+      download: async (params, signal) => {
+        assertActiveWorkspace(params.sessionId, params.workspaceRoot, signal)
+        return controlledBrowser!.download(params, signal)
       },
       scroll: (params, signal) => {
         assertActiveSession(params.sessionId, signal)

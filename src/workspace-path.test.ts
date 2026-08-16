@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { loadWorkspaceUploadFiles, resolveWorkspaceTarget, WorkspacePathError } from './workspace-path'
+import {
+  loadWorkspaceUploadFiles,
+  resolveWorkspaceTarget,
+  saveWorkspaceDownload,
+  WorkspacePathError,
+} from './workspace-path'
 
 async function withWorkspace(run: (root: string, outside: string) => Promise<void>): Promise<void> {
   const parent = await mkdtemp(join(tmpdir(), 'dsh-desktop-path-'))
@@ -80,5 +85,71 @@ test('loads bounded browser upload payloads without exposing paths to the page',
     await assert.rejects(loadWorkspaceUploadFiles(root, Array.from({ length: 9 }, (_, index) => `file-${index}`)), {
       code: 'BAD_MESSAGE',
     })
+  })
+})
+
+test('atomically saves a new browser download inside the active workspace', async () => {
+  await withWorkspace(async root => {
+    await mkdir(join(root, 'downloads'))
+    let finalChecks = 0
+    const saved = await saveWorkspaceDownload(
+      root,
+      'downloads/report.csv',
+      Buffer.from('a,b\n1,2\n'),
+      {
+        signal: new AbortController().signal,
+        beforeCommit: () => { finalChecks += 1 },
+      },
+    )
+    assert.deepEqual(saved, { path: 'downloads/report.csv' })
+    assert.equal(await readFile(join(root, saved.path), 'utf8'), 'a,b\n1,2\n')
+    assert.equal(finalChecks, 1)
+    assert.deepEqual(await readdir(join(root, 'downloads')), ['report.csv'])
+
+    await assert.rejects(saveWorkspaceDownload(
+      root,
+      saved.path,
+      Buffer.from('replacement'),
+      { signal: new AbortController().signal, beforeCommit: () => undefined },
+    ), { code: 'CONFLICT' })
+    assert.equal(await readFile(join(root, saved.path), 'utf8'), 'a,b\n1,2\n')
+  })
+})
+
+test('rejects download traversal and a failed final authorization without artifacts', async () => {
+  await withWorkspace(async root => {
+    await assert.rejects(saveWorkspaceDownload(
+      root,
+      '../outside-download.txt',
+      Buffer.from('private'),
+      { signal: new AbortController().signal, beforeCommit: () => undefined },
+    ), { code: 'BAD_MESSAGE' })
+
+    await assert.rejects(saveWorkspaceDownload(
+      root,
+      'cancelled.txt',
+      Buffer.from('private'),
+      {
+        signal: new AbortController().signal,
+        beforeCommit: () => { throw new WorkspacePathError('CONFLICT', 'Session stopped.') },
+      },
+    ), { code: 'CONFLICT' })
+    assert.deepEqual((await readdir(root)).sort(), ['README.md'])
+  })
+})
+
+test('allows only one concurrent download writer to claim a destination', async () => {
+  await withWorkspace(async root => {
+    const options = () => ({ signal: new AbortController().signal, beforeCommit: () => undefined })
+    const results = await Promise.allSettled([
+      saveWorkspaceDownload(root, 'report.csv', Buffer.from('first'), options()),
+      saveWorkspaceDownload(root, 'report.csv', Buffer.from('second'), options()),
+    ])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    const rejected = results.find(result => result.status === 'rejected')
+    assert.equal(rejected?.status, 'rejected')
+    if (rejected?.status === 'rejected') assert.equal(rejected.reason.code, 'CONFLICT')
+    assert.ok(['first', 'second'].includes(await readFile(join(root, 'report.csv'), 'utf8')))
+    assert.deepEqual((await readdir(root)).sort(), ['README.md', 'report.csv'])
   })
 })

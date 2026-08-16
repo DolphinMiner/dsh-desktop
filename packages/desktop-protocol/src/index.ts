@@ -14,6 +14,8 @@ import {
 } from './computer.js'
 import {
   BrowserClickParams,
+  BrowserDownloadParams,
+  BrowserDownloadResult,
   BrowserFrame,
   BrowserNavigateParams,
   BrowserObservation,
@@ -28,6 +30,8 @@ import {
   BrowserTypeParams,
   BrowserUploadParams,
   parseBrowserClickParams,
+  parseBrowserDownloadParams,
+  parseBrowserDownloadResult,
   parseBrowserFrame,
   parseBrowserNavigateParams,
   parseBrowserObservation,
@@ -108,7 +112,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 25 as const
+export const DESKTOP_PROTOCOL_VERSION = 26 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -337,6 +341,10 @@ export interface DesktopCapabilityMap {
   'browser.upload': {
     params: BrowserUploadParams
     result: BrowserObservation
+  }
+  'browser.download': {
+    params: BrowserDownloadParams
+    result: BrowserDownloadResult
   }
   'browser.scroll': {
     params: BrowserScrollParams
@@ -843,6 +851,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'browser.upload') {
     return parseBrowserUploadParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'browser.download') {
+    return parseBrowserDownloadParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'browser.scroll') {
     return parseBrowserScrollParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -950,6 +961,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'browser.screenshot') {
     return parseBrowserFrame(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'browser.download') {
+    return parseBrowserDownloadResult(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'browser.tabs') {
     return parseBrowserTabsSnapshot(value) as DesktopCapabilityResult<M> | undefined
@@ -1070,7 +1084,7 @@ export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): bo
     method === 'computer.act' || method === 'browser.navigate' || method === 'browser.observe' ||
     method === 'browser.screenshot' || method === 'browser.tabs' || method === 'browser.tab' ||
     method === 'browser.click' || method === 'browser.type' || method === 'browser.select' ||
-    method === 'browser.upload' || method === 'browser.scroll' ||
+    method === 'browser.upload' || method === 'browser.download' || method === 'browser.scroll' ||
     method === 'worktrees.provision' ||
     method === 'automations.claimNext' || method === 'automations.inspectOwned' ||
     method === 'automations.markRunning' ||

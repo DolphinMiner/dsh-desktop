@@ -105,7 +105,7 @@ test('round-trips a sensitive browser screenshot over the desktop protocol', () 
   assert.equal(parseCapabilityParams('browser.screenshot', { ...params, tabId: 'tab-1' }), undefined)
 })
 
-test('round-trips sensitive browser tab, select, and upload capabilities', () => {
+test('round-trips sensitive browser tab, select, upload, and download capabilities', () => {
   const tabs = {
     version: 1 as const,
     revision: 8,
@@ -154,6 +154,43 @@ test('round-trips sensitive browser tab, select, and upload capabilities', () =>
   assert.equal(parseCapabilityParams('browser.upload', {
     ...upload,
     paths: Array.from({ length: 9 }, (_, index) => `file-${String(index)}`),
+  }), undefined)
+
+  const download = {
+    actionId: 'download-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-1',
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  }
+  const observation = {
+    version: 1 as const,
+    snapshotId: 'snapshot-2',
+    tabId: 'tab-1',
+    observedAt: '2026-08-16T12:00:00.000Z',
+    url: 'https://example.com/report',
+    title: 'Report',
+    ariaSnapshot: '- text: Download complete',
+    truncated: false,
+    screenshotCaptured: false,
+  }
+  const downloadResult = {
+    version: 1 as const,
+    actionId: download.actionId,
+    previousSnapshotId: download.snapshotId,
+    path: download.path,
+    suggestedFilename: 'report.csv',
+    bytes: 8,
+    observation,
+  }
+  assert.deepEqual(parseCapabilityParams('browser.download', download), download)
+  assert.deepEqual(parseCapabilityResult('browser.download', downloadResult), downloadResult)
+  assert.equal(isSensitiveCapabilityMethod('browser.download'), true)
+  assert.equal(parseCapabilityResult('browser.download', {
+    ...downloadResult,
+    observation: { ...observation, snapshotId: download.snapshotId },
   }), undefined)
 })
 

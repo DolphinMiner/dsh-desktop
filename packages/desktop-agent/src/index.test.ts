@@ -37,6 +37,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'browser_select',
     'browser_scroll',
     'browser_upload',
+    'browser_download',
     'desktop_reveal_file',
     'desktop_open_file',
     'desktop_git_status',
@@ -78,6 +79,10 @@ test('registers workspace-bound file tools and asks before opening', async () =>
   assert.deepEqual(await gate?.({ name: 'browser_upload' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',
     reason: 'Choosing local files can send workspace data to a website. Approve this operation once to continue.',
+  })
+  assert.deepEqual(await gate?.({ name: 'browser_download' }, async () => ({ kind: 'allow' })), {
+    kind: 'ask',
+    reason: 'Downloading writes a new file into the current workspace. Approve this operation once to continue.',
   })
   assert.deepEqual(await gate?.({ name: 'desktop_create_worktree' }, async () => ({ kind: 'allow' })), {
     kind: 'ask',
@@ -421,6 +426,13 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Resume',
     paths: ['resume.pdf'],
   }, execution)
+  const downloadTool = definitions.find(definition => definition.name === 'browser_download')!
+  await downloadTool.execute({
+    snapshot_id: 'snapshot-4',
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  }, execution)
 
   assert.equal(calls[0]!.method, 'browser.navigate')
   assert.match(String(calls[0]!.params.actionId), /^[a-f0-9-]{36}$/i)
@@ -468,6 +480,17 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Resume',
     paths: ['resume.pdf'],
   })
+  assert.equal(calls[7]!.method, 'browser.download')
+  assert.match(String(calls[7]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[7]!.params, actionId: '<id>' }, {
+    actionId: '<id>',
+    sessionId: 'session-browser',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-4',
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  })
   assert.deepEqual(typeTool.presentCall?.({
     snapshot_id: 'snapshot-1',
     role: 'textbox',
@@ -500,6 +523,17 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     title: 'Choose 1 file in browser',
     kind: 'execute',
     locations: [{ path: 'resume.pdf' }],
+  })
+  assert.deepEqual(downloadTool.presentCall?.({
+    snapshot_id: 'snapshot-4',
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  }), {
+    card: 'generic',
+    title: 'Save Download report',
+    kind: 'execute',
+    locations: [{ path: 'downloads/report.csv' }],
   })
 })
 

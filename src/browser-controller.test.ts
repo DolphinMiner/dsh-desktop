@@ -10,6 +10,7 @@ import { BrowserController, isLocalBrowserUrl } from './browser-controller'
 import { BrowserStore } from './browser-store'
 import type {
   BrowserEngine,
+  BrowserDownloadFile,
   BrowserEngineObservation,
   BrowserEngineState,
   BrowserUploadFile,
@@ -25,6 +26,7 @@ class FakeBrowserEngine implements BrowserEngine {
   selections: Array<{ name: string; option: string; exact: boolean }> = []
   uploads: Array<{ name: string; files: string[]; exact: boolean }> = []
   uploadError?: Error
+  downloads: Array<{ role: string; name: string; exact: boolean }> = []
   scrolls = 0
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   keyboardBatches: BrowserUiKeyboardAction[][] = []
@@ -115,6 +117,16 @@ class FakeBrowserEngine implements BrowserEngine {
     return this.uploadError === undefined ? Promise.resolve() : Promise.reject(this.uploadError)
   }
 
+  download(
+    _tabId: string,
+    role: string,
+    name: string,
+    exact: boolean,
+  ): Promise<BrowserDownloadFile> {
+    this.downloads.push({ role, name, exact })
+    return Promise.resolve({ suggestedFilename: 'report.csv', data: Buffer.from('a,b\n1,2\n') })
+  }
+
   scroll(): Promise<void> {
     this.scrolls += 1
     return Promise.resolve()
@@ -174,11 +186,15 @@ async function fixture(): Promise<{
   root: string
   engine: FakeBrowserEngine
   frames: Array<BrowserFrame | undefined>
+  savedDownloads: string[]
+  downloadSave: { error?: Error & { code?: string } }
   controller: BrowserController
 }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-browser-controller-'))
   const engine = new FakeBrowserEngine()
   const frames: Array<BrowserFrame | undefined> = []
+  const savedDownloads: string[] = []
+  const downloadSave: { error?: Error & { code?: string } } = {}
   const controller = new BrowserController(
     new BrowserStore(join(root, 'browser.v1.json')),
     engine,
@@ -189,11 +205,16 @@ async function fixture(): Promise<{
         mediaType: 'application/octet-stream',
         data: Buffer.from(path),
       }))),
+      saveDownload: (params, file) => {
+        if (downloadSave.error !== undefined) throw downloadSave.error
+        savedDownloads.push(`${params.path}:${file.suggestedFilename}:${String(file.data.byteLength)}`)
+        return Promise.resolve({ path: params.path })
+      },
       now: () => new Date('2026-08-16T08:00:00.000Z'),
       onFrame: frame => frames.push(frame),
     },
   )
-  return { root, engine, frames, controller }
+  return { root, engine, frames, savedDownloads, downloadSave, controller }
 }
 
 test('runs one Main-owned browser lifecycle and persists its policy', async t => {
@@ -458,6 +479,57 @@ test('selects bounded workspace files once and invalidates uncertain upload snap
     (error: unknown) => (error as { code?: string }).code === 'TARGET_CHANGED',
   )
   assert.equal(runtime.engine.uploads.length, 2)
+})
+
+test('downloads once to a new workspace path and does not replay uncertain clicks', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  const first = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  const input = {
+    actionId: 'download-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: first.snapshotId,
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  }
+  const downloaded = await runtime.controller.download(input, new AbortController().signal)
+  assert.deepEqual(runtime.engine.downloads, [{ role: 'link', name: 'Download report', exact: true }])
+  assert.deepEqual(runtime.savedDownloads, ['downloads/report.csv:report.csv:8'])
+  assert.equal(downloaded.path, 'downloads/report.csv')
+  assert.equal(downloaded.bytes, 8)
+  assert.notEqual(downloaded.observation.snapshotId, first.snapshotId)
+  assert.deepEqual(
+    await runtime.controller.download(input, new AbortController().signal),
+    downloaded,
+  )
+  assert.equal(runtime.engine.downloads.length, 1)
+
+  const current = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  runtime.downloadSave.error = Object.assign(new Error('destination changed'), { code: 'CONFLICT' })
+  const uncertain = { ...input, actionId: 'download-2', snapshotId: current.snapshotId }
+  await assert.rejects(
+    runtime.controller.download(uncertain, new AbortController().signal),
+    (error: unknown) => (error as { code?: string; ambiguous?: boolean }).code === 'CONFLICT' &&
+      (error as { ambiguous?: boolean }).ambiguous === true,
+  )
+  await assert.rejects(
+    runtime.controller.download(uncertain, new AbortController().signal),
+    (error: unknown) => (error as { code?: string }).code === 'TARGET_CHANGED',
+  )
+  assert.equal(runtime.engine.downloads.length, 2)
 })
 
 test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {

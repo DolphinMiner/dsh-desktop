@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
 
 import { chromium } from 'playwright-core'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
@@ -12,6 +13,7 @@ import type {
 const MAX_TABS = 32
 const MAX_ARIA_LENGTH = 60_000
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 }
+const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 type BrowserRole = Parameters<Page['getByRole']>[0]
 
@@ -58,6 +60,11 @@ export interface BrowserUploadFile {
   data: Buffer
 }
 
+export interface BrowserDownloadFile {
+  suggestedFilename: string
+  data: Buffer
+}
+
 export interface BrowserEngine {
   start(options: PlaywrightBrowserLaunchOptions, signal: AbortSignal): Promise<void>
   stop(): Promise<void>
@@ -81,6 +88,13 @@ export interface BrowserEngine {
     exact: boolean,
     signal: AbortSignal,
   ): Promise<void>
+  download(
+    tabId: string,
+    role: string,
+    name: string,
+    exact: boolean,
+    signal: AbortSignal,
+  ): Promise<BrowserDownloadFile>
   scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void>
   scrollAt(
     tabId: string,
@@ -135,14 +149,14 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       if (options.storageMode === 'persistent') {
         this.context = await chromium.launchPersistentContext(options.profilePath, {
           ...launch,
-          acceptDownloads: false,
+          acceptDownloads: true,
           viewport: DEFAULT_VIEWPORT,
         })
         this.browser = this.context.browser() ?? undefined
       } else {
         this.browser = await chromium.launch(launch)
         this.context = await this.browser.newContext({
-          acceptDownloads: false,
+          acceptDownloads: true,
           viewport: DEFAULT_VIEWPORT,
         })
       }
@@ -358,6 +372,64 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       throw new ControlledBrowserError(
         'DESKTOP_UNAVAILABLE',
         'The browser file selection did not complete. Observe the page before trying again.',
+        dispatched,
+      )
+    }
+  }
+
+  async download(
+    tabId: string,
+    role: string,
+    name: string,
+    exact: boolean,
+    signal: AbortSignal,
+  ): Promise<BrowserDownloadFile> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    const locator = page.getByRole(role as BrowserRole, { name, exact })
+    await this.requireOne(locator.count(), role, name)
+    let dispatched = false
+    try {
+      dispatched = true
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 30_000 }),
+        locator.click(),
+      ])
+      const failure = await download.failure()
+      if (failure !== null) {
+        throw new ControlledBrowserError('DESKTOP_UNAVAILABLE', 'The browser download failed.', true)
+      }
+      const stream = await download.createReadStream()
+      if (stream === null) {
+        throw new ControlledBrowserError('DESKTOP_UNAVAILABLE', 'The browser download is unavailable.', true)
+      }
+      const chunks: Buffer[] = []
+      let bytes = 0
+      for await (const chunk of stream) {
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        bytes += data.byteLength
+        if (bytes > MAX_DOWNLOAD_BYTES) {
+          await download.cancel().catch(() => undefined)
+          throw new ControlledBrowserError(
+            'BAD_MESSAGE',
+            'Browser downloads are limited to 50 MB per action.',
+            true,
+          )
+        }
+        chunks.push(data)
+      }
+      await settlePage(page)
+      throwIfAborted(signal)
+      return {
+        suggestedFilename: basename(download.suggestedFilename()) || 'download.bin',
+        data: Buffer.concat(chunks, bytes),
+      }
+    } catch (error) {
+      if (error instanceof ControlledBrowserError) throw error
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      throw new ControlledBrowserError(
+        'DESKTOP_UNAVAILABLE',
+        'The browser download did not complete. Observe the page before trying again.',
         dispatched,
       )
     }

@@ -3,6 +3,8 @@ import { rm } from 'node:fs/promises'
 
 import type {
   BrowserClickParams,
+  BrowserDownloadParams,
+  BrowserDownloadResult,
   BrowserFrame,
   BrowserHistoryEntry,
   BrowserNavigateParams,
@@ -25,13 +27,16 @@ import type {
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 import {
+  BROWSER_DOWNLOAD_VERSION,
   BROWSER_OBSERVATION_VERSION,
   BROWSER_TABS_VERSION,
+  isDesktopProtocolErrorCode,
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { BrowserStore, DEFAULT_BROWSER_SETTINGS } from './browser-store'
 import {
   BrowserEngine,
+  BrowserDownloadFile,
   BrowserEngineState,
   BrowserUploadFile,
   ControlledBrowserError,
@@ -48,6 +53,11 @@ interface BrowserControllerOptions {
     params: BrowserUploadParams,
     signal: AbortSignal,
   ) => Promise<readonly BrowserUploadFile[]>
+  saveDownload: (
+    params: BrowserDownloadParams,
+    file: BrowserDownloadFile,
+    signal: AbortSignal,
+  ) => Promise<{ path: string }>
   now?: () => Date
   onChange?: (state: BrowserState) => void
   onFrame?: (frame: BrowserFrame | undefined) => void
@@ -63,12 +73,21 @@ interface CompletedAction {
   observation: BrowserObservation
 }
 
+interface CompletedDownload {
+  fingerprint: string
+  result: BrowserDownloadResult
+}
+
 function cloneSettings(settings: BrowserSettings): BrowserSettings {
   return { ...settings }
 }
 
 function cloneObservation(observation: BrowserObservation): BrowserObservation {
   return { ...observation }
+}
+
+function cloneDownloadResult(result: BrowserDownloadResult): BrowserDownloadResult {
+  return { ...result, observation: cloneObservation(result.observation) }
 }
 
 function cloneFrame(frame: BrowserFrame): BrowserFrame {
@@ -114,6 +133,7 @@ export class BrowserController {
   private queue: Promise<void> = Promise.resolve()
   private disposed = false
   private readonly completedActions = new Map<string, CompletedAction>()
+  private readonly completedDownloads = new Map<string, CompletedDownload>()
   private readonly now: () => Date
   private readonly onChange: (state: BrowserState) => void
   private readonly onFrame: (frame: BrowserFrame | undefined) => void
@@ -359,6 +379,58 @@ export class BrowserController {
     }))
   }
 
+  download(params: BrowserDownloadParams, signal: AbortSignal): Promise<BrowserDownloadResult> {
+    return this.exclusive(async () => {
+      const fingerprint = JSON.stringify(params)
+      const previous = this.completedDownloads.get(params.actionId)
+      if (previous !== undefined) {
+        if (previous.fingerprint !== fingerprint) {
+          throw new ControlledBrowserError('DUPLICATE_REQUEST', 'The browser action ID was reused with different input.')
+        }
+        return cloneDownloadResult(previous.result)
+      }
+
+      const tabId = this.assertLatest(params.sessionId, params.snapshotId)
+      this.invalidateLatestObservation()
+      const file = await this.engine.download(tabId, params.role, params.name, params.exact ?? true, signal)
+      try {
+        const saved = await this.options.saveDownload(params, file, signal)
+        const observation = await this.observeCurrent(
+          params.sessionId,
+          tabId,
+          this.settings.screenshotPolicy === 'always',
+          true,
+          signal,
+        )
+        const result: BrowserDownloadResult = {
+          version: BROWSER_DOWNLOAD_VERSION,
+          actionId: params.actionId,
+          previousSnapshotId: params.snapshotId,
+          path: saved.path,
+          suggestedFilename: file.suggestedFilename,
+          bytes: file.data.byteLength,
+          observation,
+        }
+        this.completedDownloads.set(params.actionId, {
+          fingerprint,
+          result: cloneDownloadResult(result),
+        })
+        while (this.completedDownloads.size > MAX_COMPLETED_ACTIONS) {
+          const oldest = this.completedDownloads.keys().next().value as string | undefined
+          if (oldest === undefined) break
+          this.completedDownloads.delete(oldest)
+        }
+        return result
+      } catch (error) {
+        const code = typeof error === 'object' && error !== null && 'code' in error &&
+          isDesktopProtocolErrorCode(error.code)
+          ? error.code
+          : 'DESKTOP_UNAVAILABLE'
+        throw new ControlledBrowserError(code, failureMessage(error), true)
+      }
+    })
+  }
+
   scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation> {
     return this.exclusive(() => this.once(params.actionId, params, async () => {
       const tabId = this.assertLatest(params.sessionId, params.snapshotId)
@@ -527,6 +599,7 @@ export class BrowserController {
     this.latest = undefined
     this.latestFrame = undefined
     this.completedActions.clear()
+    this.completedDownloads.clear()
     this.onFrame(undefined)
   }
 

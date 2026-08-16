@@ -359,6 +359,18 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
         calls.push(`upload:${params.snapshotId}:${params.paths.join(',')}`)
         return observation
       },
+      download: async params => {
+        calls.push(`download:${params.snapshotId}:${params.path}`)
+        return {
+          version: 1,
+          actionId: params.actionId,
+          previousSnapshotId: params.snapshotId,
+          path: params.path,
+          suggestedFilename: 'report.csv',
+          bytes: 8,
+          observation,
+        }
+      },
       scroll: async params => {
         calls.push(`scroll:${params.snapshotId}:${String(params.deltaY)}`)
         return observation
@@ -415,6 +427,15 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     name: 'Resume',
     paths: ['resume.pdf'],
   }, context)
+  await handlers['browser.download']({
+    actionId: 'download-1',
+    sessionId: 'session-1',
+    workspaceRoot: '/repo',
+    snapshotId: 'snapshot-1',
+    role: 'link',
+    name: 'Download report',
+    path: 'downloads/report.csv',
+  }, context)
   await handlers['browser.scroll']({
     actionId: 'scroll-1',
     sessionId: 'session-1',
@@ -432,6 +453,7 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     'type:snapshot-1:DeepSeek',
     'select:snapshot-1:China',
     'upload:snapshot-1:resume.pdf',
+    'download:snapshot-1:downloads/report.csv',
     'scroll:snapshot-1:600',
   ])
 })

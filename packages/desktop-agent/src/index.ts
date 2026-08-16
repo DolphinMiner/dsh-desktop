@@ -74,6 +74,19 @@ const BROWSER_TABS_OUTPUT_SCHEMA = {
     },
   },
 } as const
+const BROWSER_DOWNLOAD_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    version: { type: 'integer', enum: [1], required: true },
+    actionId: { type: 'string', required: true },
+    previousSnapshotId: { type: 'string', required: true },
+    path: { type: 'string', required: true },
+    suggestedFilename: { type: 'string', required: true },
+    bytes: { type: 'integer', required: true },
+    observation: { ...BROWSER_OUTPUT_SCHEMA, required: true },
+  },
+} as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
 const BROWSER_ACTION_TIMEOUT_MS = 45_000
 const GIT_READ_TIMEOUT_MS = 35_000
@@ -537,6 +550,45 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'browser_download',
+    description: 'Click one accessible download control and save the resulting file to a new workspace path.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest browser snapshot ID.' },
+      role: { type: 'string', required: true, description: 'Accessible role of the download control.' },
+      name: { type: 'string', required: true, description: 'Accessible name of the download control.' },
+      path: { type: 'string', required: true, description: 'New workspace-relative destination path.' },
+      exact: { type: 'boolean', description: 'Require an exact accessible-name match. Defaults to true.' },
+    },
+    output: {
+      schema: BROWSER_DOWNLOAD_OUTPUT_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Saved ${value.path} (${String(value.bytes)} bytes).\n${JSON.stringify(value.observation)}`,
+      }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Save ${args.name}`,
+      kind: 'execute',
+      locations: [{ path: args.path }],
+    }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const workspace = agentWorkspace(exec)
+      return ctx.desktopBridge.call('browser.download', {
+        actionId: randomUUID(),
+        ...workspace,
+        snapshotId: args.snapshot_id,
+        role: args.role,
+        name: args.name,
+        path: args.path,
+        ...(args.exact === undefined ? {} : { exact: args.exact }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'desktop_reveal_file',
     description: 'Reveal an existing file or directory inside the current workspace in Finder.',
     parameters: {
@@ -892,6 +944,12 @@ export function apply(ctx: Context): void {
       return {
         kind: 'ask',
         reason: 'Choosing local files can send workspace data to a website. Approve this operation once to continue.',
+      }
+    }
+    if (execution.name === 'browser_download') {
+      return {
+        kind: 'ask',
+        reason: 'Downloading writes a new file into the current workspace. Approve this operation once to continue.',
       }
     }
     if (execution.name === 'desktop_create_worktree') {

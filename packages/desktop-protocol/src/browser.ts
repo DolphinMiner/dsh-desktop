@@ -1,5 +1,6 @@
 export const BROWSER_OBSERVATION_VERSION = 1 as const
 export const BROWSER_TABS_VERSION = 1 as const
+export const BROWSER_DOWNLOAD_VERSION = 1 as const
 
 export type BrowserUrlTarget = 'system' | 'controlled'
 export type BrowserScreenshotPolicy = 'always' | 'on-demand' | 'never'
@@ -150,6 +151,27 @@ export interface BrowserUploadParams {
   exact?: boolean
 }
 
+export interface BrowserDownloadParams {
+  actionId: string
+  sessionId: string
+  workspaceRoot: string
+  snapshotId: string
+  role: string
+  name: string
+  path: string
+  exact?: boolean
+}
+
+export interface BrowserDownloadResult {
+  version: typeof BROWSER_DOWNLOAD_VERSION
+  actionId: string
+  previousSnapshotId: string
+  path: string
+  suggestedFilename: string
+  bytes: number
+  observation: BrowserObservation
+}
+
 export interface BrowserScrollParams {
   actionId: string
   sessionId: string
@@ -212,6 +234,7 @@ const MAX_SCROLL_DELTA = 20_000
 const MAX_UI_KEYBOARD_ACTIONS = 64
 const MAX_UPLOAD_FILES = 8
 const MAX_PATH_LENGTH = 4_096
+const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 const BROWSER_PRESS_KEYS = new Set([
   'Backspace',
@@ -554,6 +577,47 @@ export function parseBrowserUploadParams(value: unknown): BrowserUploadParams | 
     name: value.name,
     paths: [...value.paths] as string[],
     ...(value.exact === undefined ? {} : { exact: value.exact }),
+  }
+}
+
+export function parseBrowserDownloadParams(value: unknown): BrowserDownloadParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['actionId', 'sessionId', 'workspaceRoot', 'snapshotId', 'role', 'name', 'path', 'exact'],
+  ) || !sessionActionAndSnapshot(value) || !isString(value.workspaceRoot, MAX_PATH_LENGTH) ||
+    !isString(value.role, MAX_ROLE_LENGTH) || !isString(value.name, MAX_NAME_LENGTH) ||
+    !isString(value.path, MAX_PATH_LENGTH) ||
+    (value.exact !== undefined && typeof value.exact !== 'boolean')) return undefined
+  return {
+    actionId: value.actionId,
+    sessionId: value.sessionId,
+    workspaceRoot: value.workspaceRoot,
+    snapshotId: value.snapshotId,
+    role: value.role,
+    name: value.name,
+    path: value.path,
+    ...(value.exact === undefined ? {} : { exact: value.exact }),
+  }
+}
+
+export function parseBrowserDownloadResult(value: unknown): BrowserDownloadResult | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['version', 'actionId', 'previousSnapshotId', 'path', 'suggestedFilename', 'bytes', 'observation'],
+  ) || value.version !== BROWSER_DOWNLOAD_VERSION || !isString(value.actionId, MAX_ID_LENGTH) ||
+    !isString(value.previousSnapshotId, MAX_ID_LENGTH) || !isString(value.path, MAX_PATH_LENGTH) ||
+    !isString(value.suggestedFilename, MAX_NAME_LENGTH) || !Number.isSafeInteger(value.bytes) ||
+    Number(value.bytes) < 0 || Number(value.bytes) > MAX_DOWNLOAD_BYTES) return undefined
+  const observation = parseBrowserObservation(value.observation)
+  if (observation === undefined || observation.snapshotId === value.previousSnapshotId) return undefined
+  return {
+    version: BROWSER_DOWNLOAD_VERSION,
+    actionId: value.actionId,
+    previousSnapshotId: value.previousSnapshotId,
+    path: value.path,
+    suggestedFilename: value.suggestedFilename,
+    bytes: Number(value.bytes),
+    observation,
   }
 }
 
