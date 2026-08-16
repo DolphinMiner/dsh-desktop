@@ -86,6 +86,23 @@ const bridge: DesktopBridge = {
       return () => ipcRenderer.removeListener('desktop:computer-changed', handler)
     },
   },
+  automations: {
+    list: () => ipcRenderer.invoke('desktop:automations:list'),
+    listRuns: input => ipcRenderer.invoke('desktop:automations:list-runs', input),
+    create: input => ipcRenderer.invoke('desktop:automations:create', input),
+    setState: input => ipcRenderer.invoke('desktop:automations:set-state', input),
+    delete: input => ipcRenderer.invoke('desktop:automations:delete', input),
+    queueRun: input => ipcRenderer.invoke('desktop:automations:queue-run', input),
+    cancelRun: input => ipcRenderer.invoke('desktop:automations:cancel-run', input),
+    openSession: input => ipcRenderer.invoke('desktop:automations:open-session', input),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, notice: Parameters<typeof listener>[0]): void => {
+        listener(notice)
+      }
+      ipcRenderer.on('desktop:automations-changed', handler)
+      return () => ipcRenderer.removeListener('desktop:automations-changed', handler)
+    },
+  },
   connections: {
     list: () => ipcRenderer.invoke('desktop:connections:list'),
     connectApiKey: input => ipcRenderer.invoke('desktop:connections:connect-api-key', input),

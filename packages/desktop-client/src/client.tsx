@@ -7,6 +7,7 @@ import {
   Button,
   IconBranchOutline16,
   IconCheckOutline16,
+  IconChecklistOutline14,
   IconCloseOutline16,
   IconDownloadOutline16,
   IconLinkOutline16,
@@ -67,6 +68,7 @@ import {
   connectionStateDot,
   connectionStatusLabel,
 } from './view-model.js'
+import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automations.js'
 import { runDesktopCommand } from './desktop-command.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 
@@ -116,6 +118,7 @@ declare global {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
       git: DesktopGitBridge
+      automations: DesktopAutomationsBridge
       worktrees: DesktopWorktreesBridge
       computer: DesktopComputerBridge
       connections: DesktopConnectionsBridge
@@ -1974,16 +1977,43 @@ function openDesktopSettings(sectionId?: string): void {
   for (const listener of settingsListeners) listener(sectionId)
 }
 
+function AutomationsSection(): React.JSX.Element {
+  const desktop = window.dshDesktop
+  return (
+    <AutomationTaskCenter
+      bridge={desktop?.automations}
+      pickProjectDirectory={() => desktop?.pickProjectDirectory() ?? Promise.resolve(null)}
+      listConnections={desktop?.connections.list}
+    />
+  )
+}
+
+function DesktopTaskCenterLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      style={styles.footerButton}
+      aria-label="Task Center"
+      title="Task Center"
+      onClick={() => openDesktopSettings('automations')}
+    >
+      <IconChecklistOutline14 size={wide ? 14 : 18} />
+      {wide && <span>Tasks</span>}
+    </button>
+  )
+}
+
 function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const [section, setSection] = useState<'connections' | 'computer' | 'worktrees'>('connections')
+  const [section, setSection] = useState<'automations' | 'connections' | 'computer' | 'worktrees'>('connections')
 
   useEffect(() => {
     const listener = (sectionId?: string): void => {
-      if (sectionId === 'computer') setSection('computer')
+      if (sectionId === 'automations') setSection('automations')
+      else if (sectionId === 'computer') setSection('computer')
       else if (sectionId === 'worktrees') setSection('worktrees')
       else if (sectionId === undefined || sectionId === 'connections') setSection('connections')
-      if (sectionId === undefined || sectionId === 'connections' || sectionId === 'computer' ||
+      if (sectionId === undefined || sectionId === 'automations' || sectionId === 'connections' || sectionId === 'computer' ||
         sectionId === 'worktrees') setOpen(true)
     }
     settingsListeners.add(listener)
@@ -2012,6 +2042,15 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
           <Pill
             type="button"
             role="tab"
+            aria-selected={section === 'automations'}
+            active={section === 'automations'}
+            onClick={() => setSection('automations')}
+          >
+            Tasks
+          </Pill>
+          <Pill
+            type="button"
+            role="tab"
             aria-selected={section === 'connections'}
             active={section === 'connections'}
             onClick={() => setSection('connections')}
@@ -2037,6 +2076,7 @@ function DesktopSettingsLauncher({ wide }: SidebarFooterActionOwnerProps): React
             Worktrees
           </Pill>
         </div>
+        {section === 'automations' && <AutomationsSection />}
         {section === 'connections' && <ConnectionsSection />}
         {section === 'computer' && <ComputerSection />}
         {section === 'worktrees' && <WorktreesSection />}
@@ -2062,6 +2102,12 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
+    id: 'automations',
+    order: 11,
+    label: 'Tasks',
+  }, AutomationsSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
     id: 'connections',
     order: 12,
     label: 'Connections',
@@ -2084,6 +2130,11 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     label: 'Review',
   }, (props: ConvViewProps) => <GitReviewView {...props} bridge={bridge?.git} />))
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
+    id: 'task-center',
+    order: 9,
+  }, DesktopTaskCenterLauncher))
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'desktop-settings',

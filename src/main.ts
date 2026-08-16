@@ -15,10 +15,14 @@ import {
   shell,
 } from 'electron'
 import {
+  AutomationRunSummary,
   createEvent,
   DesktopRendererCommand,
   parseAddGitReviewCommentInput,
   parseBeginOAuthInput,
+  parseDesktopCancelAutomationRunInput,
+  parseDesktopCreateAutomationInput,
+  parseDesktopDeleteAutomationInput,
   parseCancelOAuthInput,
   parseConnectApiKeyInput,
   parseDeleteGitReviewCommentInput,
@@ -32,6 +36,10 @@ import {
   parseDesktopGitRevertPreviewInput,
   parseDesktopGitReviewInput,
   parseDesktopGitReviewCommentsInput,
+  parseDesktopListAutomationRunsInput,
+  parseDesktopOpenAutomationSessionInput,
+  parseDesktopQueueAutomationRunInput,
+  parseDesktopSetAutomationStateInput,
   parseDesktopWorktreeCleanupConfirmInput,
   parseDesktopWorktreeCleanupPreviewInput,
   parseDesktopWorktreeRecoveryConfirmInput,
@@ -44,7 +52,13 @@ import {
 
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
-import { AutomationDispatcher, AutomationWorkspaceManager } from './automation-dispatcher'
+import { AutomationController } from './automation-controller'
+import {
+  AutomationDispatcher,
+  AutomationDispatcherError,
+  AutomationWorkspaceManager,
+} from './automation-dispatcher'
+import { automationNotificationContent, automationRunHasSession } from './automation-notification'
 import { AutomationRegistry } from './automation-registry'
 import { AutomationScheduler } from './automation-scheduler'
 import { ConnectionManager } from './connection-manager'
@@ -223,6 +237,22 @@ function dispatchRendererCommand(command: DesktopRendererCommand): void {
   commandQueue.enqueue(command)
   focusMainWindow()
   flushRendererCommands()
+}
+
+function showAutomationRunNotification(run: AutomationRunSummary): void {
+  const content = automationNotificationContent(run)
+  if (content === undefined || !Notification.isSupported() || mainWindow?.isFocused() === true) return
+  try {
+    const notification = new Notification(content)
+    notification.on('click', () => {
+      dispatchRendererCommand(automationRunHasSession(run)
+        ? { type: 'session.open', sessionId: run.payload.sessionId }
+        : { type: 'settings.open', sectionId: 'automations' })
+    })
+    notification.show()
+  } catch (error) {
+    console.error('Could not show the automation notification.', error)
+  }
 }
 
 function receiveDesktopLink(url: string): void {
@@ -439,6 +469,7 @@ function publishRecoveryExhausted(maxAttempts: number): void {
 function installIpcHandlers(
   connections: ConnectionManager,
   computer: ComputerObserver,
+  automations: AutomationController,
   git: WorkspaceGitCapabilityService,
   gitIndex: GitIndexController,
   gitCommit: GitCommitController,
@@ -640,6 +671,42 @@ function installIpcHandlers(
     }
     const pane = value === 'screen-recording' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'
     await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
+  })
+  ipcMain.handle('desktop:automations:list', event => {
+    assertTrustedSender(event)
+    return automations.snapshot()
+  })
+  ipcMain.handle('desktop:automations:list-runs', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.listRuns(validInput(parseDesktopListAutomationRunsInput(value)))
+  })
+  ipcMain.handle('desktop:automations:create', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.create(
+      validInput(parseDesktopCreateAutomationInput(value)),
+      new AbortController().signal,
+    )
+  })
+  ipcMain.handle('desktop:automations:set-state', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.setState(validInput(parseDesktopSetAutomationStateInput(value)))
+  })
+  ipcMain.handle('desktop:automations:delete', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.delete(validInput(parseDesktopDeleteAutomationInput(value)))
+  })
+  ipcMain.handle('desktop:automations:queue-run', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.queueRun(validInput(parseDesktopQueueAutomationRunInput(value)))
+  })
+  ipcMain.handle('desktop:automations:cancel-run', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return automations.cancelRun(validInput(parseDesktopCancelAutomationRunInput(value)))
+  })
+  ipcMain.handle('desktop:automations:open-session', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopOpenAutomationSessionInput(value))
+    dispatchRendererCommand({ type: 'session.open', sessionId: input.sessionId })
   })
   ipcMain.handle('desktop:connections:list', event => {
     assertTrustedSender(event)
@@ -853,13 +920,17 @@ app.whenReady().then(async () => {
     }
     harness?.send(createEvent('automations.changed', { revision }))
   }
-  automationScheduler = new AutomationScheduler(automationRegistry, {
+  const scheduler = new AutomationScheduler(automationRegistry, {
     onAdmissions: admissions => {
       if (admissions.some(admission => admission.decision === 'queued')) publishAutomationChange()
     },
     onError: error => console.error('Automation scheduling stopped safely.', error),
   })
-  automationScheduler.start()
+  automationScheduler = scheduler
+  scheduler.start()
+  const automationController = new AutomationController(automationRegistry, scheduler, gitService, {
+    onChange: publishAutomationChange,
+  })
   const publishWorktreeReconciliation = (
     snapshot: ReturnType<WorktreeManager['snapshot']>,
   ): void => {
@@ -1010,6 +1081,7 @@ app.whenReady().then(async () => {
   installIpcHandlers(
     connections,
     computerObserver,
+    automationController,
     reviewWorkspaceGit,
     new GitIndexController(mutationWorkspaceGit, gitMutations, gitMutationQueue),
     new GitCommitController(mutationWorkspaceGit, gitMutations, gitMutationQueue),
@@ -1151,11 +1223,18 @@ app.whenReady().then(async () => {
     automations: {
       claimNext: async (params, signal) => {
         const revision = automationRegistry.status().revision
+        let terminalRun: AutomationRunSummary | undefined
         try {
           const dispatch = await automationDispatcher.claimNext(params, signal)
           return dispatch === undefined ? {} : { dispatch }
+        } catch (error) {
+          if (error instanceof AutomationDispatcherError) terminalRun = error.terminalRun
+          throw error
         } finally {
-          if (automationRegistry.status().revision !== revision) publishAutomationChange()
+          if (automationRegistry.status().revision !== revision) {
+            publishAutomationChange()
+            if (terminalRun !== undefined) showAutomationRunNotification(terminalRun)
+          }
         }
       },
       inspectOwned: params => automationDispatcher.inspectOwned(params),
@@ -1165,8 +1244,12 @@ app.whenReady().then(async () => {
         return run
       },
       finish: params => {
+        const revision = automationRegistry.status().revision
         const run = automationDispatcher.finish(params)
-        publishAutomationChange()
+        if (automationRegistry.status().revision !== revision) {
+          publishAutomationChange()
+          showAutomationRunNotification(run)
+        }
         return run
       },
     },
@@ -1213,7 +1296,11 @@ app.whenReady().then(async () => {
       connections.hostDisconnected()
       void computerObserver?.stop().catch(() => undefined)
       try {
-        if (automationDispatcher.recoverAbandonedRuns().length > 0) publishAutomationChange()
+        const recovered = automationDispatcher.recoverAbandonedRuns()
+        if (recovered.length > 0) {
+          publishAutomationChange()
+          for (const run of recovered) showAutomationRunNotification(run)
+        }
       } catch (error) {
         console.error('Could not recover disconnected automation runs safely.', error)
       }

@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  automationRunPhaseLabel,
+  automationRunStateDot,
+  automationStateDot,
+  automationStateLabel,
   canReconnect,
   computerActionStateDot,
   computerActionStatusLabel,
@@ -32,4 +36,15 @@ test('maps computer permissions and target kinds to truthful labels', () => {
   assert.equal(computerActionStateDot('succeeded'), 'done')
   assert.equal(computerActionStateDot('cancelled'), 'warning')
   assert.equal(computerActionStateDot('ambiguous'), 'error')
+})
+
+test('maps durable automation and run state without overstating ambiguous outcomes', () => {
+  assert.equal(automationStateLabel('enabled'), 'Scheduled')
+  assert.equal(automationStateLabel('paused'), 'Paused')
+  assert.equal(automationStateDot('completed'), 'done')
+  assert.equal(automationRunPhaseLabel('dispatching'), 'Preparing workspace')
+  assert.equal(automationRunPhaseLabel('ambiguous'), 'Outcome uncertain')
+  assert.equal(automationRunStateDot('running'), 'ongoing')
+  assert.equal(automationRunStateDot('failed'), 'error')
+  assert.equal(automationRunStateDot('interrupted'), 'warning')
 })

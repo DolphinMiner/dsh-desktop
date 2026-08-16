@@ -63,6 +63,17 @@ export interface DesktopBridge {
     openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
     onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
   }
+  automations: {
+    list(): Promise<AutomationTaskCenterSnapshot>
+    listRuns(input: DesktopListAutomationRunsInput): Promise<AutomationRunPage>
+    create(input: DesktopCreateAutomationInput): Promise<AutomationTaskCenterSnapshot>
+    setState(input: DesktopSetAutomationStateInput): Promise<AutomationTaskCenterSnapshot>
+    delete(input: DesktopDeleteAutomationInput): Promise<AutomationTaskCenterSnapshot>
+    queueRun(input: DesktopQueueAutomationRunInput): Promise<AutomationTaskCenterSnapshot>
+    cancelRun(input: DesktopCancelAutomationRunInput): Promise<AutomationTaskCenterSnapshot>
+    openSession(input: DesktopOpenAutomationSessionInput): Promise<void>
+    onChanged(listener: (notice: AutomationChangedNotice) => void): () => void
+  }
   connections: {
     list(): Promise<ConnectionSnapshot>
     connectApiKey(input: ConnectApiKeyInput): Promise<ConnectionSnapshot>
@@ -74,6 +85,9 @@ export interface DesktopBridge {
   }
 }
 import type {
+  AutomationChangedNotice,
+  AutomationRunPage,
+  AutomationTaskCenterSnapshot,
   BeginOAuthInput,
   BeginOAuthResult,
   CancelOAuthInput,
@@ -82,6 +96,10 @@ import type {
   ConnectionSnapshot,
   ComputerControlSnapshot,
   DisconnectConnectionInput,
+  DesktopCancelAutomationRunInput,
+  DesktopCreateAutomationInput,
+  DesktopDeleteAutomationInput,
+  DesktopListAutomationRunsInput,
   DesktopRendererCommand,
   DesktopGitCommitConfirmInput,
   DesktopGitCommitPreviewInput,
@@ -92,6 +110,9 @@ import type {
   DesktopGitRevertPreviewInput,
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
+  DesktopOpenAutomationSessionInput,
+  DesktopQueueAutomationRunInput,
+  DesktopSetAutomationStateInput,
   DesktopWorktreeCleanupConfirmInput,
   DesktopWorktreeCleanupPreviewInput,
   DesktopWorktreeRecoveryConfirmInput,

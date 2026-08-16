@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  parseAutomationChangedNotice,
   parseAutomationClaimNextParams,
   parseAutomationClaimNextResult,
   parseAutomationDefinition,
@@ -9,8 +10,17 @@ import {
   parseAutomationInspectOwnedResult,
   parseAutomationMarkRunningParams,
   parseAutomationRunSummary,
+  parseAutomationRunPage,
   parseAutomationSnapshot,
+  parseAutomationTaskCenterSnapshot,
   parseAutomationTrigger,
+  parseDesktopCancelAutomationRunInput,
+  parseDesktopCreateAutomationInput,
+  parseDesktopDeleteAutomationInput,
+  parseDesktopListAutomationRunsInput,
+  parseDesktopOpenAutomationSessionInput,
+  parseDesktopQueueAutomationRunInput,
+  parseDesktopSetAutomationStateInput,
 } from './automation.js'
 
 const automationId = '11111111-1111-4111-8111-111111111111'
@@ -113,6 +123,108 @@ test('binds an enabled definition to one computed next trigger', () => {
     ...definition,
     skillIds: ['review', 'review'],
   }), undefined)
+})
+
+test('validates strict Task Center intents and requires local-checkout acknowledgement', () => {
+  const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const create = {
+    operationId,
+    requestedAt: '2026-08-16T08:00:00.000Z',
+    name: 'Daily review',
+    prompt: 'Review the repository.',
+    projectPath: '/repo',
+    trigger: definition.trigger,
+    execution: { mode: 'worktree' as const, baseRef: 'refs/heads/main' },
+    concurrencyPolicy: 'skip' as const,
+    skillIds: [],
+    connectionIds: ['linear-primary'],
+  }
+  assert.deepEqual(parseDesktopCreateAutomationInput(create), create)
+  const { requestedAt: _requestedAt, ...withoutRequestedAt } = create
+  assert.equal(parseDesktopCreateAutomationInput(withoutRequestedAt), undefined)
+  assert.equal(parseDesktopCreateAutomationInput({
+    ...create,
+    execution: { mode: 'local' },
+  }), undefined)
+  assert.deepEqual(parseDesktopCreateAutomationInput({
+    ...create,
+    execution: { mode: 'local', localCheckoutAcknowledged: true },
+  }), {
+    ...create,
+    execution: { mode: 'local', localCheckoutAcknowledged: true },
+  })
+  assert.deepEqual(parseDesktopSetAutomationStateInput({
+    operationId,
+    requestedAt: '2026-08-16T08:00:00.000Z',
+    automationId,
+    expectedRevision: 3,
+    state: 'paused',
+  }), {
+    operationId,
+    requestedAt: '2026-08-16T08:00:00.000Z',
+    automationId,
+    expectedRevision: 3,
+    state: 'paused',
+  })
+  assert.deepEqual(parseDesktopDeleteAutomationInput({
+    operationId,
+    automationId,
+    expectedRevision: 3,
+  }), { operationId, automationId, expectedRevision: 3 })
+  assert.deepEqual(parseDesktopQueueAutomationRunInput({ operationId, automationId, retryOfRunId: runId }), {
+    operationId,
+    automationId,
+    retryOfRunId: runId,
+  })
+  assert.deepEqual(parseDesktopCancelAutomationRunInput({ operationId, runId }), { operationId, runId })
+  assert.deepEqual(parseDesktopOpenAutomationSessionInput({ sessionId }), { sessionId })
+  assert.equal(parseDesktopOpenAutomationSessionInput({ sessionId, extra: true }), undefined)
+  assert.deepEqual(parseDesktopListAutomationRunsInput({
+    expectedRevision: 4,
+    beforeRunId: runId,
+    limit: 100,
+  }), { expectedRevision: 4, beforeRunId: runId, limit: 100 })
+  assert.equal(parseDesktopListAutomationRunsInput({
+    expectedRevision: 4,
+    beforeRunId: runId,
+    limit: 101,
+  }), undefined)
+})
+
+test('validates the bounded Task Center projection and revision notices', () => {
+  const snapshot = {
+    revision: 2,
+    automations: [definition],
+    recentRuns: [queuedRun()],
+    totalRunCount: 1,
+    executionAvailability: 'requires-app-running' as const,
+  }
+  assert.deepEqual(parseAutomationTaskCenterSnapshot(snapshot), snapshot)
+  assert.equal(parseAutomationTaskCenterSnapshot({ ...snapshot, totalRunCount: 0 }), undefined)
+  assert.equal(parseAutomationTaskCenterSnapshot({
+    ...snapshot,
+    recentRuns: [queuedRun(), queuedRun()],
+    totalRunCount: 2,
+  }), undefined)
+  assert.deepEqual(parseAutomationRunPage({
+    revision: 2,
+    runs: [queuedRun()],
+    totalRunCount: 2,
+    nextBeforeRunId: runId,
+  }), {
+    revision: 2,
+    runs: [queuedRun()],
+    totalRunCount: 2,
+    nextBeforeRunId: runId,
+  })
+  assert.equal(parseAutomationRunPage({
+    revision: 2,
+    runs: [queuedRun()],
+    totalRunCount: 2,
+    nextBeforeRunId: sessionId,
+  }), undefined)
+  assert.deepEqual(parseAutomationChangedNotice({ revision: 2 }), { revision: 2 })
+  assert.equal(parseAutomationChangedNotice({ revision: -1 }), undefined)
 })
 
 test('derives run phase only from a contiguous append-only event chain', () => {

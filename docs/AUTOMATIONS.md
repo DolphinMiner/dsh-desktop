@@ -183,6 +183,34 @@ nor the run queue. The scheduler stops on an authority error and is recreated
 on the next application launch; a renderer event or Host wakeup is never used
 as proof that a trigger was admitted.
 
+## Task Center
+
+The desktop client contributes Task Center through official Harness settings
+and sidebar slots. Electron preload exposes only typed automation methods; the
+renderer cannot read the registry file, invoke Git directly, or choose a
+repository identity.
+
+- Creation supports one-shot or zoned five-field recurring schedules,
+  worktree or explicitly acknowledged local execution, overlap policy, and
+  connected-provider selection.
+- Main canonicalizes the selected project, rediscovers its exact Git identity,
+  computes the next occurrence from a request-stable schedule anchor, and only
+  then persists the definition.
+- Pause, resume, delete, manual run, retry, cancel, and open-session controls
+  use operation ids and optimistic definition revisions.
+- Task Center renders a bounded recent-run page and can load older pages against
+  an exact registry revision, while Main retains the complete durable run
+  ledger. Each row exposes the immutable invocation, prepared workspace,
+  lifecycle log, bounded result, cancellation state, and its official Harness
+  Session when one was started.
+- Native notifications are emitted only for a newly persisted terminal run.
+  Duplicate terminal acknowledgements do not notify twice. Notification text
+  describes the Agent lifecycle and tells the user to review uncertain or
+  external effects instead of claiming those effects succeeded.
+
+The first release requires DSH Desktop to remain open. Closing the app stops
+the local scheduler; the next launch applies the documented missed-run policy.
+
 ## Security And Presentation
 
 - Renderer input is parsed by the versioned desktop protocol and never gains a

@@ -13,6 +13,7 @@ const MAX_REFERENCES = 128
 const MAX_AUTOMATIONS = 10_000
 const MAX_RUNS = 50_000
 const MAX_RUN_EVENTS = 16
+export const MAX_TASK_CENTER_RECENT_RUNS = 100 as const
 
 export type AutomationState = 'enabled' | 'paused' | 'completed'
 export type AutomationConcurrencyPolicy = 'skip' | 'queue-one'
@@ -148,6 +149,81 @@ export interface AutomationSnapshot {
   revision: number
   automations: AutomationDefinition[]
   runs: AutomationRunSummary[]
+}
+
+export type DesktopAutomationExecutionInput = {
+  mode: 'worktree'
+  baseRef: string
+} | {
+  mode: 'local'
+  localCheckoutAcknowledged: true
+}
+
+export interface DesktopCreateAutomationInput {
+  operationId: string
+  requestedAt: string
+  name: string
+  prompt: string
+  projectPath: string
+  trigger: AutomationTrigger
+  execution: DesktopAutomationExecutionInput
+  concurrencyPolicy: AutomationConcurrencyPolicy
+  skillIds: string[]
+  connectionIds: string[]
+}
+
+export interface DesktopSetAutomationStateInput {
+  operationId: string
+  requestedAt: string
+  automationId: string
+  expectedRevision: number
+  state: 'enabled' | 'paused'
+}
+
+export interface DesktopDeleteAutomationInput {
+  operationId: string
+  automationId: string
+  expectedRevision: number
+}
+
+export interface DesktopQueueAutomationRunInput {
+  operationId: string
+  automationId: string
+  retryOfRunId?: string
+}
+
+export interface DesktopCancelAutomationRunInput {
+  operationId: string
+  runId: string
+}
+
+export interface DesktopOpenAutomationSessionInput {
+  sessionId: string
+}
+
+export interface DesktopListAutomationRunsInput {
+  expectedRevision: number
+  beforeRunId: string
+  limit: number
+}
+
+export interface AutomationTaskCenterSnapshot {
+  revision: number
+  automations: AutomationDefinition[]
+  recentRuns: AutomationRunSummary[]
+  totalRunCount: number
+  executionAvailability: 'requires-app-running'
+}
+
+export interface AutomationChangedNotice {
+  revision: number
+}
+
+export interface AutomationRunPage {
+  revision: number
+  runs: AutomationRunSummary[]
+  totalRunCount: number
+  nextBeforeRunId?: string
 }
 
 export interface AutomationClaimNextParams {
@@ -567,4 +643,171 @@ export function parseAutomationFinishParams(value: unknown): AutomationFinishPar
     ...(value.sessionEventSeq === undefined ? {} : { sessionEventSeq: Number(value.sessionEventSeq) }),
     ...(value.detail === undefined ? {} : { detail: value.detail }),
   }
+}
+
+function parseDesktopAutomationExecution(value: unknown): DesktopAutomationExecutionInput | undefined {
+  if (!isRecord(value) || (value.mode !== 'worktree' && value.mode !== 'local')) return undefined
+  if (value.mode === 'local') {
+    return hasOnlyKeys(value, ['mode', 'localCheckoutAcknowledged']) &&
+      value.localCheckoutAcknowledged === true
+      ? { mode: value.mode, localCheckoutAcknowledged: true }
+      : undefined
+  }
+  if (!hasOnlyKeys(value, ['mode', 'baseRef']) || !isBoundedString(value.baseRef, MAX_REF_LENGTH) ||
+    /[\r\n]/.test(value.baseRef)) return undefined
+  return { mode: value.mode, baseRef: value.baseRef }
+}
+
+export function parseDesktopCreateAutomationInput(value: unknown): DesktopCreateAutomationInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'operationId', 'requestedAt', 'name', 'prompt', 'projectPath', 'trigger', 'execution', 'concurrencyPolicy',
+    'skillIds', 'connectionIds',
+  ]) || !isUuid(value.operationId) || !isCanonicalIsoDate(value.requestedAt) ||
+    !isBoundedString(value.name, MAX_NAME_LENGTH) || value.name.trim() !== value.name ||
+    !isBoundedString(value.prompt, MAX_PROMPT_LENGTH) || value.prompt.trim() !== value.prompt ||
+    !isBoundedString(value.projectPath, MAX_PATH_LENGTH)) return undefined
+  const trigger = parseAutomationTrigger(value.trigger)
+  const execution = parseDesktopAutomationExecution(value.execution)
+  const concurrencyPolicy = parseConcurrencyPolicy(value.concurrencyPolicy)
+  const skillIds = parseReferenceList(value.skillIds)
+  const connectionIds = parseReferenceList(value.connectionIds)
+  if (trigger === undefined || execution === undefined || concurrencyPolicy === undefined ||
+    skillIds === undefined || connectionIds === undefined) return undefined
+  return {
+    operationId: value.operationId,
+    requestedAt: value.requestedAt,
+    name: value.name,
+    prompt: value.prompt,
+    projectPath: value.projectPath,
+    trigger,
+    execution,
+    concurrencyPolicy,
+    skillIds,
+    connectionIds,
+  }
+}
+
+export function parseDesktopSetAutomationStateInput(value: unknown): DesktopSetAutomationStateInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'operationId', 'requestedAt', 'automationId', 'expectedRevision', 'state',
+  ]) || !isUuid(value.operationId) || !isCanonicalIsoDate(value.requestedAt) || !isUuid(value.automationId) ||
+    !isPositiveSafeInteger(value.expectedRevision) ||
+    (value.state !== 'enabled' && value.state !== 'paused')) return undefined
+  return {
+    operationId: value.operationId,
+    requestedAt: value.requestedAt,
+    automationId: value.automationId,
+    expectedRevision: Number(value.expectedRevision),
+    state: value.state,
+  }
+}
+
+export function parseDesktopDeleteAutomationInput(value: unknown): DesktopDeleteAutomationInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['operationId', 'automationId', 'expectedRevision']) ||
+    !isUuid(value.operationId) || !isUuid(value.automationId) ||
+    !isPositiveSafeInteger(value.expectedRevision)) return undefined
+  return {
+    operationId: value.operationId,
+    automationId: value.automationId,
+    expectedRevision: Number(value.expectedRevision),
+  }
+}
+
+export function parseDesktopQueueAutomationRunInput(value: unknown): DesktopQueueAutomationRunInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['operationId', 'automationId', 'retryOfRunId']) ||
+    !isUuid(value.operationId) || !isUuid(value.automationId) ||
+    (value.retryOfRunId !== undefined && !isUuid(value.retryOfRunId))) return undefined
+  return {
+    operationId: value.operationId,
+    automationId: value.automationId,
+    ...(value.retryOfRunId === undefined ? {} : { retryOfRunId: value.retryOfRunId }),
+  }
+}
+
+export function parseDesktopCancelAutomationRunInput(value: unknown): DesktopCancelAutomationRunInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['operationId', 'runId']) ||
+    !isUuid(value.operationId) || !isUuid(value.runId)) return undefined
+  return { operationId: value.operationId, runId: value.runId }
+}
+
+export function parseDesktopOpenAutomationSessionInput(value: unknown): DesktopOpenAutomationSessionInput | undefined {
+  return isRecord(value) && hasOnlyKeys(value, ['sessionId']) && isUuid(value.sessionId)
+    ? { sessionId: value.sessionId }
+    : undefined
+}
+
+export function parseDesktopListAutomationRunsInput(value: unknown): DesktopListAutomationRunsInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['expectedRevision', 'beforeRunId', 'limit']) ||
+    !isNonNegativeSafeInteger(value.expectedRevision) || !isUuid(value.beforeRunId) ||
+    !isPositiveSafeInteger(value.limit) || value.limit > MAX_TASK_CENTER_RECENT_RUNS) return undefined
+  return {
+    expectedRevision: Number(value.expectedRevision),
+    beforeRunId: value.beforeRunId,
+    limit: Number(value.limit),
+  }
+}
+
+function hasValidTaskCenterRunList(runs: readonly AutomationRunSummary[]): boolean {
+  const operationIds = runs.flatMap(run => run.events.map(event => event.operationId))
+  if (new Set(runs.map(item => item.id)).size !== runs.length ||
+    new Set(runs.map(item => item.payload.sessionId)).size !== runs.length ||
+    new Set(operationIds).size !== operationIds.length) return false
+  for (let index = 1; index < runs.length; index += 1) {
+    const previous = runs[index - 1]!
+    const current = runs[index]!
+    if (Date.parse(previous.updatedAt) < Date.parse(current.updatedAt) ||
+      (previous.updatedAt === current.updatedAt && previous.id.localeCompare(current.id) < 0)) return false
+  }
+  return true
+}
+
+export function parseAutomationTaskCenterSnapshot(value: unknown): AutomationTaskCenterSnapshot | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'revision', 'automations', 'recentRuns', 'totalRunCount', 'executionAvailability',
+  ]) || !isNonNegativeSafeInteger(value.revision) || !Array.isArray(value.automations) ||
+    value.automations.length > MAX_AUTOMATIONS || !Array.isArray(value.recentRuns) ||
+    value.recentRuns.length > MAX_TASK_CENTER_RECENT_RUNS ||
+    !isNonNegativeSafeInteger(value.totalRunCount) || value.totalRunCount > MAX_RUNS ||
+    value.totalRunCount < value.recentRuns.length ||
+    value.executionAvailability !== 'requires-app-running') return undefined
+  const automations = value.automations.map(parseAutomationDefinition)
+  const recentRuns = value.recentRuns.map(parseAutomationRunSummary)
+  if (automations.some(item => item === undefined) || recentRuns.some(item => item === undefined)) return undefined
+  const exactAutomations = automations as AutomationDefinition[]
+  const exactRuns = recentRuns as AutomationRunSummary[]
+  if (new Set(exactAutomations.map(item => item.id)).size !== exactAutomations.length ||
+    !hasValidTaskCenterRunList(exactRuns)) return undefined
+  return {
+    revision: Number(value.revision),
+    automations: exactAutomations,
+    recentRuns: exactRuns,
+    totalRunCount: Number(value.totalRunCount),
+    executionAvailability: value.executionAvailability,
+  }
+}
+
+export function parseAutomationRunPage(value: unknown): AutomationRunPage | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'revision', 'runs', 'totalRunCount', 'nextBeforeRunId',
+  ]) || !isNonNegativeSafeInteger(value.revision) || !Array.isArray(value.runs) ||
+    value.runs.length > MAX_TASK_CENTER_RECENT_RUNS || !isNonNegativeSafeInteger(value.totalRunCount) ||
+    value.totalRunCount > MAX_RUNS || value.totalRunCount < value.runs.length ||
+    (value.nextBeforeRunId !== undefined && !isUuid(value.nextBeforeRunId))) return undefined
+  const runs = value.runs.map(parseAutomationRunSummary)
+  if (runs.some(item => item === undefined)) return undefined
+  const exactRuns = runs as AutomationRunSummary[]
+  if (!hasValidTaskCenterRunList(exactRuns) ||
+    (value.nextBeforeRunId !== undefined && exactRuns.at(-1)?.id !== value.nextBeforeRunId)) return undefined
+  return {
+    revision: Number(value.revision),
+    runs: exactRuns,
+    totalRunCount: Number(value.totalRunCount),
+    ...(value.nextBeforeRunId === undefined ? {} : { nextBeforeRunId: value.nextBeforeRunId }),
+  }
+}
+
+export function parseAutomationChangedNotice(value: unknown): AutomationChangedNotice | undefined {
+  return isRecord(value) && hasOnlyKeys(value, ['revision']) && isNonNegativeSafeInteger(value.revision)
+    ? { revision: Number(value.revision) }
+    : undefined
 }

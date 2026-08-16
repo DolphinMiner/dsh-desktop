@@ -49,6 +49,7 @@ export class AutomationDispatcherError extends Error {
     readonly code: DesktopProtocolError['code'],
     message: string,
     readonly ambiguous = false,
+    readonly terminalRun?: AutomationRunSummary,
   ) {
     super(message)
     this.name = 'AutomationDispatcherError'
@@ -195,13 +196,13 @@ export class AutomationDispatcher {
       workspace = await this.workspaces.prepare(run, signal)
     } catch (error) {
       const detail = safeFailureDetail(error)
-      this.registry.finishRun({
+      const failed = this.registry.finishRun({
         operationId: `workspace-failed:${run.id}`,
         runId: run.id,
         outcome: 'failed',
         detail,
       })
-      throw new AutomationDispatcherError('CONFLICT', detail)
+      throw new AutomationDispatcherError('CONFLICT', detail, false, failed)
     }
     const claimed = this.registry.claimRun({
       operationId: `dispatch:${run.id}:${input.hostInstanceId}`,

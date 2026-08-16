@@ -98,7 +98,8 @@ test('records workspace preparation failure before selecting more work', async t
 
   await assert.rejects(
     dispatcher.claimNext({ hostInstanceId: HOST_ONE }, new AbortController().signal),
-    (error: AutomationDispatcherError) => error.code === 'CONFLICT' && error.ambiguous === false,
+    (error: AutomationDispatcherError) => error.code === 'CONFLICT' && error.ambiguous === false &&
+      error.terminalRun?.id === queued.id && error.terminalRun.phase === 'failed',
   )
   const failed = registry.getRun(queued.id)!
   assert.equal(failed.phase, 'failed')

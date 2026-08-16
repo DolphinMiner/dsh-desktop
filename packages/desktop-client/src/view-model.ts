@@ -1,4 +1,6 @@
 import type {
+  AutomationRunPhase,
+  AutomationState,
   ComputerActionHistorySummary,
   ComputerPermissionStatus,
   ComputerTargetKind,
@@ -52,5 +54,35 @@ export function computerActionStateDot(status: ComputerActionHistorySummary['sta
   if (status === 'succeeded') return 'done'
   if (status === 'intent' || status === 'approved' || status === 'dispatch') return 'ongoing'
   if (status === 'cancelled') return 'warning'
+  return 'error'
+}
+
+export function automationStateLabel(state: AutomationState): string {
+  if (state === 'enabled') return 'Scheduled'
+  if (state === 'paused') return 'Paused'
+  return 'Completed'
+}
+
+export function automationStateDot(state: AutomationState): StateDotState {
+  if (state === 'enabled') return 'ongoing'
+  if (state === 'paused') return 'warning'
+  return 'done'
+}
+
+export function automationRunPhaseLabel(phase: AutomationRunPhase): string {
+  if (phase === 'queued') return 'Queued'
+  if (phase === 'dispatching') return 'Preparing workspace'
+  if (phase === 'running') return 'Running'
+  if (phase === 'succeeded') return 'Finished'
+  if (phase === 'failed') return 'Failed'
+  if (phase === 'cancelled') return 'Cancelled'
+  if (phase === 'interrupted') return 'Interrupted'
+  return 'Outcome uncertain'
+}
+
+export function automationRunStateDot(phase: AutomationRunPhase): StateDotState {
+  if (phase === 'queued' || phase === 'dispatching' || phase === 'running') return 'ongoing'
+  if (phase === 'succeeded') return 'done'
+  if (phase === 'cancelled' || phase === 'interrupted') return 'warning'
   return 'error'
 }
