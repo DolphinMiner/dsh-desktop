@@ -25,6 +25,7 @@ import type {
   BrowserUiOpenManagementInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
+  BrowserUiViewportInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 import {
@@ -504,6 +505,13 @@ export class BrowserController {
 
   refreshFrame(): Promise<BrowserState> {
     return this.uiOperation(async signal => {
+      await this.observeCurrent(undefined, undefined, true, false, signal)
+    })
+  }
+
+  resizeViewport(input: BrowserUiViewportInput): Promise<BrowserState> {
+    return this.uiOperation(async signal => {
+      await this.engine.resizeViewport(input.pixelWidth, input.pixelHeight)
       await this.observeCurrent(undefined, undefined, true, false, signal)
     })
   }

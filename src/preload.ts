@@ -29,6 +29,28 @@ const bridge: DesktopBridge = {
     for (const command of pendingCommands.splice(0)) listener(command)
     return () => { commandListeners.delete(listener) }
   },
+  files: {
+    list: input => ipcRenderer.invoke('desktop:files:list', input),
+    open: input => ipcRenderer.invoke('desktop:files:open', input),
+  },
+  terminal: {
+    getState: () => ipcRenderer.invoke('desktop:terminal:get-state'),
+    start: input => ipcRenderer.invoke('desktop:terminal:start', input),
+    write: input => ipcRenderer.invoke('desktop:terminal:write', input),
+    stop: () => ipcRenderer.invoke('desktop:terminal:stop'),
+    onData(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, data: string): void => listener(data)
+      ipcRenderer.on('desktop:terminal-data', handler)
+      return () => ipcRenderer.removeListener('desktop:terminal-data', handler)
+    },
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => {
+        listener(state)
+      }
+      ipcRenderer.on('desktop:terminal-changed', handler)
+      return () => ipcRenderer.removeListener('desktop:terminal-changed', handler)
+    },
+  },
   plugins: {
     getState: () => ipcRenderer.invoke('desktop:plugins:get-state'),
     update: input => ipcRenderer.invoke('desktop:plugins:update', input),
@@ -85,6 +107,7 @@ const bridge: DesktopBridge = {
     forward: () => ipcRenderer.invoke('desktop:browser:forward'),
     reload: () => ipcRenderer.invoke('desktop:browser:reload'),
     refreshFrame: () => ipcRenderer.invoke('desktop:browser:refresh-frame'),
+    resizeViewport: input => ipcRenderer.invoke('desktop:browser:resize-viewport', input),
     stop: () => ipcRenderer.invoke('desktop:browser:stop'),
     listHistory: () => ipcRenderer.invoke('desktop:browser:list-history'),
     clearHistory: () => ipcRenderer.invoke('desktop:browser:clear-history'),

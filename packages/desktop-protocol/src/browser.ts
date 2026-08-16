@@ -194,6 +194,11 @@ export interface BrowserUiTabInput {
   tabId: string
 }
 
+export interface BrowserUiViewportInput {
+  pixelWidth: number
+  pixelHeight: number
+}
+
 export interface BrowserUiPointerInput {
   snapshotId: string
   tabId: string
@@ -663,6 +668,17 @@ export function parseBrowserUiTabInput(value: unknown): BrowserUiTabInput | unde
     return undefined
   }
   return { tabId: value.tabId }
+}
+
+export function parseBrowserUiViewportInput(value: unknown): BrowserUiViewportInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['pixelWidth', 'pixelHeight']) ||
+    !Number.isSafeInteger(value.pixelWidth) || !Number.isSafeInteger(value.pixelHeight) ||
+    (value.pixelWidth as number) < 240 || (value.pixelWidth as number) > 2_560 ||
+    (value.pixelHeight as number) < 240 || (value.pixelHeight as number) > 2_560) return undefined
+  return {
+    pixelWidth: value.pixelWidth as number,
+    pixelHeight: value.pixelHeight as number,
+  }
 }
 
 function normalizedCoordinate(value: unknown): value is number {

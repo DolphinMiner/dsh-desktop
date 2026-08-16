@@ -24,6 +24,18 @@ export interface DesktopBridge {
   pickProjectDirectory(): Promise<string | null>
   onHarnessState(listener: (state: HarnessState) => void): () => void
   onCommand(listener: (command: DesktopRendererCommand) => void): () => void
+  files: {
+    list(input: DesktopFilesListInput): Promise<DesktopFileListing>
+    open(input: DesktopFileOpenInput): Promise<{ opened: true }>
+  }
+  terminal: {
+    getState(): Promise<DesktopTerminalState>
+    start(input: DesktopTerminalStartInput): Promise<DesktopTerminalState>
+    write(input: DesktopTerminalWriteInput): Promise<DesktopTerminalState>
+    stop(): Promise<DesktopTerminalState>
+    onData(listener: (data: string) => void): () => void
+    onChanged(listener: (state: DesktopTerminalState) => void): () => void
+  }
   plugins: {
     getState(): Promise<DesktopPluginPolicySnapshot>
     update(input: UpdateDesktopPluginPolicyInput): Promise<DesktopPluginPolicySnapshot>
@@ -56,6 +68,7 @@ export interface DesktopBridge {
     forward(): Promise<BrowserState>
     reload(): Promise<BrowserState>
     refreshFrame(): Promise<BrowserState>
+    resizeViewport(input: BrowserUiViewportInput): Promise<BrowserState>
     stop(): Promise<BrowserState>
     listHistory(): Promise<BrowserHistoryEntry[]>
     clearHistory(): Promise<BrowserState>
@@ -139,6 +152,13 @@ import type {
   BrowserUiPointerInput,
   BrowserUiScrollInput,
   BrowserUiTabInput,
+  BrowserUiViewportInput,
+  DesktopFileListing,
+  DesktopFileOpenInput,
+  DesktopFilesListInput,
+  DesktopTerminalStartInput,
+  DesktopTerminalState,
+  DesktopTerminalWriteInput,
   CancelOAuthInput,
   AddGitReviewCommentInput,
   ConnectApiKeyInput,

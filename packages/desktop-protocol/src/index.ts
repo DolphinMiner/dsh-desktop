@@ -1,4 +1,5 @@
 export const DESKTOP_PROTOCOL_CHANNEL = 'dsh-desktop' as const
+export * from './accessory.js'
 import {
   ComputerActParams,
   ComputerActionResult,

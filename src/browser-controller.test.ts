@@ -30,6 +30,8 @@ class FakeBrowserEngine implements BrowserEngine {
   scrolls = 0
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   keyboardBatches: BrowserUiKeyboardAction[][] = []
+  viewports: Array<{ pixelWidth: number; pixelHeight: number }> = []
+  viewport = { pixelWidth: 1280, pixelHeight: 800 }
   captures: boolean[] = []
   url = 'about:blank'
   title = ''
@@ -75,7 +77,11 @@ class FakeBrowserEngine implements BrowserEngine {
       ariaSnapshot: '- heading "Example" [level=1]\n- button "Continue"',
       truncated: false,
       ...(captureScreenshot ? {
-        screenshot: { data: new Uint8Array([1, 2, 3]), pixelWidth: 1280, pixelHeight: 800 },
+        screenshot: {
+          data: new Uint8Array([1, 2, 3]),
+          pixelWidth: this.viewport.pixelWidth,
+          pixelHeight: this.viewport.pixelHeight,
+        },
       } : {}),
     })
   }
@@ -146,6 +152,12 @@ class FakeBrowserEngine implements BrowserEngine {
   keyboard(_tabId: string, actions: BrowserUiKeyboardAction[]): Promise<void> {
     this.keyboardBatches.push(actions)
     this.title = 'Keyboard input'
+    return Promise.resolve()
+  }
+
+  resizeViewport(pixelWidth: number, pixelHeight: number): Promise<void> {
+    this.viewports.push({ pixelWidth, pixelHeight })
+    this.viewport = { pixelWidth, pixelHeight }
     return Promise.resolve()
   }
 
@@ -553,6 +565,23 @@ test('downloads once to a new workspace path and does not replay uncertain click
     (error: unknown) => (error as { code?: string }).code === 'TARGET_CHANGED',
   )
   assert.equal(runtime.engine.downloads.length, 2)
+})
+
+test('resizes the one managed viewport and immediately publishes a matching frame', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+
+  const state = await runtime.controller.resizeViewport({ pixelWidth: 512, pixelHeight: 820 })
+
+  assert.deepEqual(runtime.engine.viewports, [{ pixelWidth: 512, pixelHeight: 820 }])
+  assert.equal(state.lastObservation?.snapshotId, runtime.frames.at(-1)?.snapshotId)
+  assert.equal(runtime.frames.at(-1)?.pixelWidth, 512)
+  assert.equal(runtime.frames.at(-1)?.pixelHeight, 820)
 })
 
 test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {

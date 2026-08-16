@@ -29,6 +29,11 @@ import {
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseBrowserUiTabInput,
+  parseBrowserUiViewportInput,
+  parseDesktopFileOpenInput,
+  parseDesktopFilesListInput,
+  parseDesktopTerminalStartInput,
+  parseDesktopTerminalWriteInput,
   parseDesktopCancelAutomationRunInput,
   parseDesktopCreateAutomationInput,
   parseDesktopDeleteAutomationInput,
@@ -88,6 +93,7 @@ import { CredentialVault, safeStorageBackend } from './credential-vault'
 import { DesktopCapabilityBroker } from './desktop-capability-broker'
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 import { DesktopActivitySnapshot, DesktopActivityTracker } from './desktop-activity'
+import { DesktopFilesController, DesktopTerminalController } from './desktop-accessory'
 import { DesktopCommandQueue, parseDesktopDeepLink } from './desktop-navigation'
 import { isTrustedDesktopBridgeSender } from './desktop-security'
 import { HarnessService } from './harness-service'
@@ -147,6 +153,7 @@ let oauthCoordinator: LinearOAuthCoordinator | undefined
 let automationScheduler: AutomationScheduler | undefined
 let appSnapshots: AppSnapshotController | undefined
 let controlledBrowser: BrowserController | undefined
+let desktopTerminal: DesktopTerminalController | undefined
 let pluginInstaller: DshPluginInstaller | undefined
 let pluginRestartTimer: NodeJS.Timeout | undefined
 let shuttingDown = false
@@ -581,6 +588,8 @@ function publishRecoveryExhausted(maxAttempts: number): void {
 function installIpcHandlers(
   snapshots: AppSnapshotController,
   browser: BrowserController,
+  files: DesktopFilesController,
+  terminal: DesktopTerminalController,
   connections: ConnectionManager,
   plugins: PluginPolicyController,
   installer: DshPluginInstaller,
@@ -633,6 +642,32 @@ function installIpcHandlers(
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('desktop:files:list', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return files.list(validInput(parseDesktopFilesListInput(value)))
+  })
+  ipcMain.handle('desktop:files:open', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    const input = validInput(parseDesktopFileOpenInput(value))
+    await files.open(input.workspaceRoot, input.path)
+    return { opened: true }
+  })
+  ipcMain.handle('desktop:terminal:get-state', event => {
+    assertTrustedSender(event)
+    return terminal.snapshot()
+  })
+  ipcMain.handle('desktop:terminal:start', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return terminal.start(validInput(parseDesktopTerminalStartInput(value)))
+  })
+  ipcMain.handle('desktop:terminal:write', (event, value: unknown) => {
+    assertTrustedSender(event)
+    return terminal.write(validInput(parseDesktopTerminalWriteInput(value)))
+  })
+  ipcMain.handle('desktop:terminal:stop', async event => {
+    assertTrustedSender(event)
+    return terminal.stop()
   })
   ipcMain.handle('desktop:plugins:get-state', event => {
     assertTrustedSender(event)
@@ -745,6 +780,10 @@ function installIpcHandlers(
   ipcMain.handle('desktop:browser:refresh-frame', async event => {
     assertTrustedSender(event)
     return browser.refreshFrame()
+  })
+  ipcMain.handle('desktop:browser:resize-viewport', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.resizeViewport(validInput(parseBrowserUiViewportInput(value)))
   })
   ipcMain.handle('desktop:browser:stop', async event => {
     assertTrustedSender(event)
@@ -1420,10 +1459,30 @@ app.whenReady().then(async () => {
   })
   pluginInstaller = installer
 
+  const filesController = new DesktopFilesController(async path => {
+    const error = await shell.openPath(path)
+    if (error !== '') throw new Error(error)
+  })
+  const terminalController = new DesktopTerminalController({
+    onData: data => {
+      if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop:terminal-data', data)
+      }
+    },
+    onState: terminalState => {
+      if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop:terminal-changed', terminalState)
+      }
+    },
+  })
+  desktopTerminal = terminalController
+
   installMenu()
   installIpcHandlers(
     appSnapshots,
     controlledBrowser,
+    filesController,
+    terminalController,
     connections,
     pluginPolicy,
     installer,
@@ -1745,6 +1804,7 @@ app.on('before-quit', event => {
     appSnapshots?.dispose() ?? Promise.resolve(),
     computerObserver?.dispose() ?? Promise.resolve(),
     controlledBrowser?.dispose() ?? Promise.resolve(),
+    desktopTerminal?.dispose() ?? Promise.resolve(),
     pluginInstaller?.dispose() ?? Promise.resolve(),
     windowStateStore?.flush() ?? Promise.resolve(),
   ])

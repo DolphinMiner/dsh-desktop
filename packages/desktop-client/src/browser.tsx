@@ -12,7 +12,9 @@ import {
   IconChevronLeftOutline14,
   IconChevronRightOutline14,
   IconCloseOutline16,
-  IconPauseOutline16,
+  IconEllipsisOutline16,
+  IconGlobeOutline14,
+  IconPanelLeftOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
   IconTrashOutline16,
@@ -30,6 +32,7 @@ import type {
   BrowserUiPointerInput,
   BrowserUiScrollInput,
   BrowserUiTabInput,
+  BrowserUiViewportInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -44,6 +47,7 @@ import {
 } from './settings-ui.js'
 import {
   activeBrowserAddress,
+  browserAddressLabel,
   browserKeyboardAction,
   normalizeBrowserAddress,
   normalizedBrowserPoint,
@@ -65,6 +69,7 @@ export interface DesktopBrowserBridge {
   forward(): Promise<BrowserState>
   reload(): Promise<BrowserState>
   refreshFrame(): Promise<BrowserState>
+  resizeViewport(input: BrowserUiViewportInput): Promise<BrowserState>
   stop(): Promise<BrowserState>
   listHistory(): Promise<BrowserHistoryEntry[]>
   clearHistory(): Promise<BrowserState>
@@ -132,24 +137,28 @@ const styles = `
   background: var(--dsw-alias-bg-base, #fff);
   color: var(--dsw-alias-label-primary, #17191c);
   display: grid;
-  grid-template-rows: 38px 48px minmax(0, 1fr);
+  grid-template-rows: 52px 48px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
 }
 .dsh-desktop-browser-tabs {
-  align-items: end;
-  background: var(--dsw-alias-bg-layer-1, #f7f7f5);
-  border-bottom: 1px solid var(--dsw-alias-border-l2, #deded9);
+  align-items: center;
+  background: var(--dsw-alias-bg-base, #fff);
   display: flex;
-  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+.dsh-desktop-browser-tab-list {
+  align-items: center;
+  display: flex;
+  gap: 3px;
   min-width: 0;
   overflow-x: auto;
-  padding: 5px 8px 0;
 }
 .dsh-desktop-browser-tab {
   align-items: center;
-  border-radius: 6px 6px 0 0;
+  border-radius: 8px;
   display: grid;
   flex: 0 0 190px;
   grid-template-columns: minmax(0, 1fr) 28px;
@@ -157,7 +166,11 @@ const styles = `
   max-width: 220px;
 }
 .dsh-desktop-browser-tab[data-active="true"] {
-  background: var(--dsw-alias-bg-base, #fff);
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary, #17191c) 7%,
+    var(--dsw-alias-bg-base, #fff)
+  );
 }
 .dsh-desktop-browser-tab-main,
 .dsh-desktop-browser-icon-button {
@@ -168,12 +181,29 @@ const styles = `
   font: inherit;
 }
 .dsh-desktop-browser-tab-main {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 18px minmax(0, 1fr);
   height: 100%;
-  overflow: hidden;
   padding: 0 5px 0 10px;
   text-align: left;
+}
+.dsh-desktop-browser-tab-main span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.dsh-desktop-browser-window-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-left: auto;
+  padding-left: 6px;
+}
+.dsh-desktop-browser-panel-icon {
+  transform: scaleX(-1);
 }
 .dsh-desktop-browser-icon-button {
   align-items: center;
@@ -200,23 +230,26 @@ const styles = `
   padding: 8px 10px;
 }
 .dsh-desktop-browser-address {
-  background: var(--dsw-alias-bg-overlay, #f2f2ef);
+  background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
   color: inherit;
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   height: 31px;
   min-width: 0;
   outline: none;
   padding: 0 11px;
+  text-align: center;
   width: 100%;
 }
 .dsh-desktop-browser-address:focus {
+  background: var(--dsw-alias-bg-overlay, #f2f2ef);
   border-color: var(--dsw-alias-state-business-primary, #2f9cf4);
+  text-align: left;
 }
 .dsh-desktop-browser-stage {
-  background: #eef0f2;
+  background: var(--dsw-alias-bg-base, #fff);
   display: grid;
   min-height: 0;
   overflow: hidden;
@@ -231,18 +264,26 @@ const styles = `
   outline: none;
 }
 .dsh-desktop-browser-stage img {
+  display: block;
   height: 100%;
-  object-fit: contain;
   width: 100%;
 }
 .dsh-desktop-browser-empty {
   color: var(--dsw-alias-label-tertiary, #74777d);
   display: grid;
-  font-size: 13px;
-  gap: 10px;
+  font-size: 15px;
+  gap: 12px;
   justify-items: center;
   padding: 24px;
   text-align: center;
+}
+.dsh-desktop-browser-empty-icon {
+  color: var(--dsw-alias-label-secondary, #5f6268);
+}
+.dsh-desktop-browser-empty strong {
+  color: var(--dsw-alias-label-primary, #17191c);
+  font-size: 20px;
+  font-weight: 600;
 }
 .dsh-desktop-browser-error {
   background: var(--dsw-alias-interactive-bg-hover-danger, #fdefed);
@@ -581,17 +622,24 @@ export function BrowserSettingsSection({
 
 export function BrowserView({
   bridge,
+  onClose,
+  onOpenSettings,
   t,
 }: {
   bridge?: DesktopBrowserBridge
+  onClose?: () => void
+  onOpenSettings?: () => void
   t: DesktopTranslate
 }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>()
   const [frame, setFrame] = useState<BrowserFrame>()
   const [address, setAddress] = useState('')
+  const [addressFocused, setAddressFocused] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const busyRef = useRef(false)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef('')
   const interactionRef = useRef<{ snapshotId: string; tabId: string }>()
   const keyboardQueueRef = useRef<BrowserUiKeyboardAction[]>([])
   const keyboardRunningRef = useRef(false)
@@ -661,6 +709,49 @@ export function BrowserView({
     pendingScrollRef.current = undefined
   }, [])
 
+  useEffect(() => {
+    const stage = stageRef.current
+    if (bridge === undefined || stage === null || state?.settings.enabled !== true) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let pending: BrowserUiViewportInput | undefined
+    const flush = (): void => {
+      timer = undefined
+      const input = pending
+      pending = undefined
+      if (!active || input === undefined) return
+      const key = `${String(input.pixelWidth)}x${String(input.pixelHeight)}`
+      if (viewportRef.current === key) return
+      viewportRef.current = key
+      void bridge.resizeViewport(input).then(next => {
+        if (!active) return
+        setState(next)
+        setAddress(activeBrowserAddress(next))
+      }).catch(cause => {
+        if (!active) return
+        viewportRef.current = ''
+        setError(cause instanceof Error ? cause.message : t('The browser viewport could not be updated.'))
+      })
+    }
+    const queue = (): void => {
+      const bounds = stage.getBoundingClientRect()
+      const pixelWidth = Math.floor(bounds.width)
+      const pixelHeight = Math.floor(bounds.height)
+      if (pixelWidth < 240 || pixelHeight < 240) return
+      pending = { pixelWidth: Math.min(2_560, pixelWidth), pixelHeight: Math.min(2_560, pixelHeight) }
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(flush, 80)
+    }
+    const observer = new ResizeObserver(queue)
+    observer.observe(stage)
+    queue()
+    return () => {
+      active = false
+      observer.disconnect()
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [bridge, state?.settings.enabled, t])
+
   const run = (operation: () => Promise<BrowserState>): void => {
     if (busyRef.current) return
     busyRef.current = true
@@ -689,8 +780,11 @@ export function BrowserView({
   }
 
   const tabs = state?.tabs ?? []
+  const activeTab = tabs.find(tab => tab.id === state?.activeTabId)
+  const blankTab = activeTab === undefined || activeTab.url === 'about:blank'
+  const showFrame = frameUrl !== undefined && frame?.tabId === activeTab?.id && !blankTab
   const disabled = bridge === undefined || busy || state?.settings.enabled !== true
-  const interactive = bridge !== undefined && frameUrl !== undefined && state?.settings.enabled === true
+  const interactive = bridge !== undefined && showFrame && state?.settings.enabled === true
 
   const pointerInput = (
     event: ReactMouseEvent<HTMLDivElement>,
@@ -843,42 +937,58 @@ export function BrowserView({
   return (
     <section className="dsh-desktop-browser-view" aria-label={t('Browser')}>
       <style>{styles}</style>
-      <div className="dsh-desktop-browser-tabs" role="tablist" aria-label={t('Browser tabs')}>
-        {tabs.map(tab => (
-          <div className="dsh-desktop-browser-tab" data-active={tab.id === state?.activeTabId} key={tab.id}>
-            <button
-              type="button"
-              className="dsh-desktop-browser-tab-main"
-              role="tab"
-              aria-selected={tab.id === state?.activeTabId}
-              title={tab.title || tab.url || t('New tab')}
-              disabled={disabled}
-              onClick={() => { if (bridge !== undefined) run(() => bridge.activateTab({ tabId: tab.id })) }}
-            >
-              {tab.title || (tab.url === 'about:blank' ? t('New tab') : tab.url)}
-            </button>
+      <div className="dsh-desktop-browser-tabs">
+        <div className="dsh-desktop-browser-tab-list" role="tablist" aria-label={t('Browser tabs')}>
+          {tabs.map(tab => (
+            <div className="dsh-desktop-browser-tab" data-active={tab.id === state?.activeTabId} key={tab.id}>
+              <button
+                type="button"
+                className="dsh-desktop-browser-tab-main"
+                role="tab"
+                aria-selected={tab.id === state?.activeTabId}
+                title={tab.title || tab.url || t('New tab')}
+                disabled={disabled}
+                onClick={() => { if (bridge !== undefined) run(() => bridge.activateTab({ tabId: tab.id })) }}
+              >
+                <IconGlobeOutline14 size={16} />
+                <span>{tab.title || (tab.url === 'about:blank' ? t('New tab') : tab.url)}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-desktop-browser-icon-button"
+                title={t('Close tab')}
+                aria-label={t('Close {name}', { name: tab.title || t('tab') })}
+                disabled={disabled}
+                onClick={() => { if (bridge !== undefined) run(() => bridge.closeTab({ tabId: tab.id })) }}
+              >
+                <IconCloseOutline16 />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="dsh-desktop-browser-icon-button"
+            title={t('New tab')}
+            aria-label={t('New browser tab')}
+            disabled={disabled}
+            onClick={() => { if (bridge !== undefined) run(() => bridge.newTab()) }}
+          >
+            <IconPlusOutline16 />
+          </button>
+        </div>
+        {onClose !== undefined && (
+          <div className="dsh-desktop-browser-window-actions">
             <button
               type="button"
               className="dsh-desktop-browser-icon-button"
-              title={t('Close tab')}
-              aria-label={t('Close {name}', { name: tab.title || t('tab') })}
-              disabled={disabled}
-              onClick={() => { if (bridge !== undefined) run(() => bridge.closeTab({ tabId: tab.id })) }}
+              title={t('Close right sidebar')}
+              aria-label={t('Close right sidebar')}
+              onClick={onClose}
             >
-              <IconCloseOutline16 />
+              <IconPanelLeftOutline16 className="dsh-desktop-browser-panel-icon" />
             </button>
           </div>
-        ))}
-        <button
-          type="button"
-          className="dsh-desktop-browser-icon-button"
-          title={t('New tab')}
-          aria-label={t('New browser tab')}
-          disabled={disabled}
-          onClick={() => { if (bridge !== undefined) run(() => bridge.newTab()) }}
-        >
-          <IconPlusOutline16 />
-        </button>
+        )}
       </div>
       <form className="dsh-desktop-browser-toolbar" onSubmit={navigate}>
         <button
@@ -914,23 +1024,26 @@ export function BrowserView({
         <input
           className="dsh-desktop-browser-address"
           aria-label={t('Browser address')}
-          placeholder={t('Search or enter website')}
-          value={address}
+          placeholder={t('Enter URL')}
+          value={addressFocused ? address : browserAddressLabel(address)}
           disabled={disabled}
           onChange={event => setAddress(event.currentTarget.value)}
+          onFocus={() => setAddressFocused(true)}
+          onBlur={() => setAddressFocused(false)}
         />
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title={t('Stop browser')}
-          aria-label={t('Stop controlled browser')}
-          disabled={bridge === undefined || state?.settings.enabled !== true}
-          onClick={() => { if (bridge !== undefined) run(() => bridge.stop()) }}
+          title={t('Browser Settings')}
+          aria-label={t('Browser Settings')}
+          disabled={onOpenSettings === undefined}
+          onClick={onOpenSettings}
         >
-          <IconPauseOutline16 />
+          <IconEllipsisOutline16 />
         </button>
       </form>
       <div
+        ref={stageRef}
         className="dsh-desktop-browser-stage"
         data-busy={busy}
         data-interactive={interactive}
@@ -943,16 +1056,21 @@ export function BrowserView({
         onKeyDown={keyboardInput}
         onWheel={scrollInput}
       >
-        {frameUrl !== undefined ? (
+        {showFrame ? (
           <img src={frameUrl} alt={state?.lastObservation?.title || t('Controlled browser page')} draggable={false} />
         ) : (
           <div className="dsh-desktop-browser-empty">
-            <IconBrowseOutline16 />
-            <span>{state?.settings.enabled === true
-              ? state.runtimeStatus === 'starting'
+            <IconGlobeOutline14 className="dsh-desktop-browser-empty-icon" size={48} />
+            {state?.settings.enabled === true && blankTab && state.runtimeStatus !== 'starting' ? (
+              <>
+                <strong>{t('Start browsing')}</strong>
+                <span>{t('Enter a URL to begin')}</span>
+              </>
+            ) : (
+              <strong>{state?.settings.enabled === true
                 ? t('Starting browser')
-                : t('Enter a URL to begin')
-              : t('Enable Browser in Settings')}</span>
+                : t('Enable Browser in Settings')}</strong>
+            )}
           </div>
         )}
         {error !== undefined && <div className="dsh-desktop-browser-error" role="alert">{error}</div>}

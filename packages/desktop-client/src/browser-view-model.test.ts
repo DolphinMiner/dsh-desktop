@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   activeBrowserAddress,
+  browserAddressLabel,
   browserKeyboardAction,
   normalizeBrowserAddress,
   normalizedBrowserPoint,
@@ -19,13 +20,21 @@ test('projects the address from the active browser tab', () => {
   assert.equal(activeBrowserAddress({ tabs, activeTabId: undefined }), '')
 })
 
+test('presents web addresses like the compact Codex browser bar', () => {
+  assert.equal(browserAddressLabel('https://ailoha.ai/'), 'ailoha.ai')
+  assert.equal(browserAddressLabel('https://example.com/docs?q=browser#top'), 'example.com/docs?q=browser#top')
+  assert.equal(browserAddressLabel('http://localhost:3000/'), 'localhost:3000')
+  assert.equal(browserAddressLabel('not yet a URL'), 'not yet a URL')
+  assert.equal(browserAddressLabel(''), '')
+})
+
 test('normalizes browser addresses without rewriting explicit schemes', () => {
   assert.equal(normalizeBrowserAddress(' example.com '), 'https://example.com')
   assert.equal(normalizeBrowserAddress('http://localhost:3000'), 'http://localhost:3000')
   assert.equal(normalizeBrowserAddress(''), '')
 })
 
-test('maps pointer coordinates through a contained browser frame', () => {
+test('maps pointer coordinates through the full responsive browser frame', () => {
   const bounds = { left: 100, top: 50, width: 1_000, height: 600 }
   const frame = { pixelWidth: 1_280, pixelHeight: 800 }
 
@@ -33,11 +42,9 @@ test('maps pointer coordinates through a contained browser frame', () => {
     normalizedX: 0.5,
     normalizedY: 0.5,
   })
-  assert.deepEqual(normalizedBrowserPoint(100, 50, bounds, frame), undefined)
-  assert.deepEqual(normalizedBrowserPoint(1_080, 650, bounds, frame), {
-    normalizedX: 1,
-    normalizedY: 1,
-  })
+  assert.deepEqual(normalizedBrowserPoint(100, 50, bounds, frame), { normalizedX: 0, normalizedY: 0 })
+  assert.deepEqual(normalizedBrowserPoint(1_100, 650, bounds, frame), { normalizedX: 1, normalizedY: 1 })
+  assert.equal(normalizedBrowserPoint(1_101, 650, bounds, frame), undefined)
 })
 
 test('maps direct browser keyboard events to text and bounded key presses', () => {

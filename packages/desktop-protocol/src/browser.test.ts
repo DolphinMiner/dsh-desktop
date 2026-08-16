@@ -20,6 +20,7 @@ import {
   parseBrowserUiOpenManagementInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
+  parseBrowserUiViewportInput,
   parseControlledBrowserUrl,
   parseUpdateBrowserSettingsInput,
 } from './browser.js'
@@ -228,6 +229,17 @@ test('validates snapshot-bound renderer pointer and scroll intents', () => {
   }
   assert.deepEqual(parseBrowserUiScrollInput(scroll), scroll)
   assert.equal(parseBrowserUiScrollInput({ ...scroll, deltaY: 0 }), undefined)
+})
+
+test('accepts only bounded integer browser viewport dimensions', () => {
+  assert.deepEqual(parseBrowserUiViewportInput({ pixelWidth: 512, pixelHeight: 820 }), {
+    pixelWidth: 512,
+    pixelHeight: 820,
+  })
+  assert.equal(parseBrowserUiViewportInput({ pixelWidth: 239, pixelHeight: 820 }), undefined)
+  assert.equal(parseBrowserUiViewportInput({ pixelWidth: 512.5, pixelHeight: 820 }), undefined)
+  assert.equal(parseBrowserUiViewportInput({ pixelWidth: 512, pixelHeight: 2_561 }), undefined)
+  assert.equal(parseBrowserUiViewportInput({ pixelWidth: 512, pixelHeight: 820, scale: 2 }), undefined)
 })
 
 test('validates bounded snapshot-bound renderer keyboard batches', () => {

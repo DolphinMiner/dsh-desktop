@@ -105,6 +105,7 @@ export interface BrowserEngine {
     signal: AbortSignal,
   ): Promise<void>
   keyboard(tabId: string, actions: BrowserUiKeyboardAction[], signal: AbortSignal): Promise<void>
+  resizeViewport(pixelWidth: number, pixelHeight: number): Promise<void>
   activate(tabId: string): Promise<void>
   newTab(): Promise<void>
   closeTab(tabId: string): Promise<void>
@@ -135,6 +136,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
   private readonly registeredPages = new WeakSet<Page>()
   private readonly navigation = new Map<string, NavigationState>()
   private readonly loading = new Set<string>()
+  private viewport = DEFAULT_VIEWPORT
 
   async start(options: PlaywrightBrowserLaunchOptions, signal: AbortSignal): Promise<void> {
     throwIfAborted(signal)
@@ -150,14 +152,14 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
         this.context = await chromium.launchPersistentContext(options.profilePath, {
           ...launch,
           acceptDownloads: true,
-          viewport: DEFAULT_VIEWPORT,
+          viewport: this.viewport,
         })
         this.browser = this.context.browser() ?? undefined
       } else {
         this.browser = await chromium.launch(launch)
         this.context = await this.browser.newContext({
           acceptDownloads: true,
-          viewport: DEFAULT_VIEWPORT,
+          viewport: this.viewport,
         })
       }
     } catch (error) {
@@ -485,6 +487,14 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     throwIfAborted(signal)
   }
 
+  async resizeViewport(pixelWidth: number, pixelHeight: number): Promise<void> {
+    if (this.viewport.width === pixelWidth && this.viewport.height === pixelHeight) return
+    this.viewport = { width: pixelWidth, height: pixelHeight }
+    await Promise.all(this.requireContext().pages().map(async page => {
+      if (!page.isClosed()) await page.setViewportSize(this.viewport)
+    }))
+  }
+
   async activate(tabId: string): Promise<void> {
     this.activePage = this.page(tabId)
   }
@@ -557,6 +567,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       throw new ControlledBrowserError('CONFLICT', `The controlled browser supports at most ${String(MAX_TABS)} tabs.`)
     }
     const page = await context.newPage()
+    await page.setViewportSize(this.viewport)
     this.registerPage(page, true)
     return page
   }
