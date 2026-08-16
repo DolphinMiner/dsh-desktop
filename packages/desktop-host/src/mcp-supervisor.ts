@@ -32,6 +32,11 @@ interface MountedConnection {
   reportKey?: string
 }
 
+export interface AutomationConnectionScope {
+  allowedPrefixes: string[]
+  deniedToolNames: string[]
+}
+
 function connectionFingerprint(connection: ConnectionSummary): string {
   return JSON.stringify({
     id: connection.id,
@@ -91,6 +96,30 @@ export class McpConnectionSupervisor {
       return !isLikelyReadOnlyMcpTool(toolName.slice(prefix.length))
     }
     return false
+  }
+
+  automationScope(connectionIds: readonly string[]): AutomationConnectionScope {
+    const selected = new Set(connectionIds)
+    const missing = connectionIds.filter(connectionId => !this.mounted.has(connectionId))
+    if (missing.length > 0) {
+      throw new Error(`Selected Connections are unavailable: ${missing.join(', ')}`)
+    }
+    const allowedPrefixes: string[] = []
+    const deniedToolNames: string[] = []
+    for (const [connectionId, mounted] of this.mounted) {
+      const prefix = `mcp__${mounted.handle.serverName}__`
+      const tools = mounted.handle.toolNames().filter(name => name.startsWith(prefix))
+      if (selected.has(connectionId)) {
+        if (tools.length === 0) throw new Error(`Selected Connection "${connectionId}" has no available tools.`)
+        allowedPrefixes.push(prefix)
+      } else {
+        deniedToolNames.push(...tools)
+      }
+    }
+    return {
+      allowedPrefixes: allowedPrefixes.sort(),
+      deniedToolNames: [...new Set(deniedToolNames)].sort(),
+    }
   }
 
   async dispose(): Promise<void> {

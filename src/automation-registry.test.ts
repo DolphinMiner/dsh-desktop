@@ -387,6 +387,11 @@ test('cancels queued work locally and keeps claimed cancellation nonterminal unt
   assert.equal(requested.phase, 'dispatching')
   assert.equal(requested.cancellationRequested, true)
   assert.equal(new AutomationRegistry(path).getRun(claimedRun.id)?.phase, 'dispatching')
+  assert.throws(() => registry.markRunRunning({
+    operationId: 'run-cancel-claimed',
+    runId: claimedRun.id,
+    sessionEventSeq: 10,
+  }), (error: AutomationRegistryError) => error.code === 'CONFLICT')
   assert.throws(() => registry.requestRunCancellation({
     operationId: 'cancel-claimed-again',
     runId: claimedRun.id,

@@ -108,11 +108,18 @@ old dispatch identity.
    or dispatching the run again.
 5. Main atomically persists `dispatching` before returning the claim. This is
    the no-replay boundary.
-6. Host creates one top-level official Agent with a run-bound Session id and
-   the approved workspace, then submits one identified automation prompt.
-7. Host reports publication, turn boundaries, and the terminal Session result
-   back to Main with monotonic evidence.
-8. Main persists the run projection before publishing Task Center updates or
+6. Host creates one top-level official Agent with the run-bound Session id,
+   approved workspace, current default model, selected Skills, and only the
+   selected Connection tool prefixes. A managed checkout is bound to that
+   exact Session before execution.
+7. Main persists `running` from the published Session sequence before Host
+   submits one identified automation prompt. A missing or ambiguous
+   acknowledgement submits no prompt.
+8. Host waits for the official Agent to become idle, flushes its Session, and
+   maps the matching durable `turn/end` reason and sequence back to Main.
+   Only an exact terminal report may be retried after an ambiguous response;
+   the Agent turn itself is never replayed.
+9. Main persists the run projection before publishing Task Center updates or
    notifications.
 
 The parent-to-child event is only a wakeup, never the durable queue and never an

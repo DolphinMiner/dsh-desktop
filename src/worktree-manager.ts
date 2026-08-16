@@ -1310,9 +1310,16 @@ export class WorktreeManager {
       mapError(error, requestedRecord !== undefined)
     }
     const canonicalRelative = relative(canonicalRoot, canonicalPath!)
-    const record = requestedRecord ?? withMappedErrorSync(() => this.registry.getByCheckoutPath(canonicalPath!))
+    if (!isManagedCandidate(canonicalRelative)) return undefined
+    const observed = await withMappedError(() => this.git.discoverRepository(canonicalPath!, signal), true)
+    const record = requestedRecord ?? withMappedErrorSync(() => this.registry.getByCheckoutPath(observed.root))
     if (record === undefined) return undefined
-    if (!isManagedCandidate(canonicalRelative) || canonicalPath !== record.worktreePath) {
+    const checkoutRelative = record.worktreePath === undefined
+      ? '..'
+      : relative(record.worktreePath, canonicalPath!)
+    const insideCheckout = checkoutRelative === '' || checkoutRelative !== '..' &&
+      !checkoutRelative.startsWith(`..${sep}`) && !isAbsolute(checkoutRelative)
+    if (!insideCheckout || observed.root !== record.worktreePath) {
       try {
         this.registry.requireRecovery(record.id, 'moved')
       } catch (registryError) {
@@ -1320,8 +1327,7 @@ export class WorktreeManager {
       }
       throw new WorktreeManagerError('CONFLICT', 'The worktree path no longer matches its managed location.', true)
     }
-    const observed = await withMappedError(() => this.git.discoverRepository(canonicalPath!, signal), true)
-    if (observed.root !== canonicalPath || observed.commonDir !== record.repository.commonDir) {
+    if (observed.commonDir !== record.repository.commonDir) {
       try {
         this.registry.requireRecovery(record.id, 'external-change')
       } catch (registryError) {

@@ -1,3 +1,5 @@
+import { isAbsolute, relative, sep } from 'node:path'
+
 import type {
   WorktreeChangedEvent,
   WorktreeSnapshot,
@@ -18,6 +20,11 @@ export class WorktreeSessionConflictError extends Error {
 
 function checkoutPath(worktree: WorktreeSummary): string {
   return worktree.executionMode === 'local' ? worktree.repositoryRoot : worktree.worktreePath!
+}
+
+function containsPath(root: string, candidate: string): boolean {
+  const child = relative(root, candidate)
+  return child === '' || child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
 }
 
 export class WorktreeSessionGuard {
@@ -43,7 +50,9 @@ export class WorktreeSessionGuard {
   }
 
   claim(sessionId: string, workspacePath: string): WorktreeSessionClaim {
-    const worktree = [...this.worktrees.values()].find(item => checkoutPath(item) === workspacePath)
+    const worktree = [...this.worktrees.values()]
+      .filter(item => containsPath(checkoutPath(item), workspacePath))
+      .sort((left, right) => checkoutPath(right).length - checkoutPath(left).length)[0]
     if (worktree === undefined) return { managed: false }
     if (worktree.sessionId === sessionId) return { managed: true, recordId: worktree.id }
     if (worktree.sessionId !== undefined) {

@@ -1015,7 +1015,7 @@ export class AutomationRegistry {
     if (duplicate !== undefined) return duplicate
     this.assertUnusedOperationId(input.operationId)
     const current = this.requireRun(input.runId)
-    if (current.phase !== 'dispatching') {
+    if (current.phase !== 'dispatching' || current.cancellationRequested) {
       throw new AutomationRegistryError('CONFLICT', 'Only a dispatching run can become running.')
     }
     return this.appendRunEvent(current, {

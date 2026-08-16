@@ -157,3 +157,23 @@ test('projects reconnecting state when a mounted server temporarily has no tools
   assert.equal(connections.reports.at(-1)?.statusMessage, 'Reconnecting to the MCP server.')
   await supervisor.dispose()
 })
+
+test('builds a fail-closed per-automation MCP allowlist', async () => {
+  const connections = new FakeConnections()
+  connections.current = snapshot([summary('acme'), summary('labs')])
+  const mounts = new FakeMounts()
+  const supervisor = new McpConnectionSupervisor(connections, mounts)
+  await supervisor.reconcile()
+
+  assert.deepEqual(supervisor.automationScope(['labs']), {
+    allowedPrefixes: ['mcp__linear_labs__'],
+    deniedToolNames: [
+      'mcp__linear_acme__create_issue',
+      'mcp__linear_acme__list_issues',
+    ],
+  })
+  assert.throws(() => supervisor.automationScope(['missing']), /unavailable/)
+  mounts.handles.get('linear_labs')!.tools = []
+  assert.throws(() => supervisor.automationScope(['labs']), /no available tools/)
+  await supervisor.dispose()
+})

@@ -18,7 +18,7 @@ test('composes the official durable coding loop and diff UI into the desktop pro
     '@deepseek-ai/dsh-web-app',
   ])
 
-  const [baseManifestSource, webManifestSource, webPatch, editTool, diffModel] = await Promise.all([
+  const [baseManifestSource, webManifestSource, webPatch, editTool, diffModel, desktopHost] = await Promise.all([
     readFile(join(packageRoot('@deepseek-ai/dsh-base'), 'package.json'), 'utf8'),
     readFile(join(packageRoot('@deepseek-ai/dsh-web-app'), 'package.json'), 'utf8'),
     readFile(join(packageRoot('@deepseek-ai/dsh-web-app'), 'cordis.patch.yml'), 'utf8'),
@@ -27,6 +27,7 @@ test('composes the official durable coding loop and diff UI into the desktop pro
       packageRoot('@deepseek-ai/dsh-client-ui-tool'),
       'lib/types/client/tool/models/diff-card-model.d.ts',
     ), 'utf8'),
+    readFile(join(process.cwd(), 'packages/desktop-host/lib/automation-runner.js'), 'utf8'),
   ])
   const base = JSON.parse(baseManifestSource) as { dependencies?: Record<string, string> }
   const web = JSON.parse(webManifestSource) as { dependencies?: Record<string, string> }
@@ -46,4 +47,7 @@ test('composes the official durable coding loop and diff UI into the desktop pro
   assert.match(webPatch, /id: ui-tool\s+name: '@deepseek-ai\/dsh-client-ui-tool'/)
   assert.match(editTool, /card: "diff"/)
   assert.match(diffModel, /DiffBlock/)
+  assert.match(desktopHost, /agents\.create/)
+  assert.match(desktopHost, /sessions\.flush/)
+  assert.match(desktopHost, /installModelSelection/)
 })

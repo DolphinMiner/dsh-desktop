@@ -1,6 +1,10 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
+import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-skill'
 import {
   ConnectionRuntimeStatusParams,
   DESKTOP_PROTOCOL_VERSION,
@@ -18,11 +22,17 @@ import {
   processIpcTransport,
 } from './bridge.js'
 import { CordisMcpMountFactory } from './cordis-mcp.js'
+import {
+  AutomationDesktopClient,
+  AutomationRunCoordinator,
+  HarnessAutomationExecutor,
+} from './automation-runner.js'
 import { DesktopConnectionClient, McpConnectionSupervisor } from './mcp-supervisor.js'
 import { GitTurnBoundaryCoordinator, reportTurnBoundaryAndActivity } from './git-turn-boundary.js'
 import { WorktreeSessionGuard } from './worktree-guard.js'
 
 export * from './bridge.js'
+export * from './automation-runner.js'
 export * from './mcp-supervisor.js'
 export * from './git-turn-boundary.js'
 export * from './worktree-guard.js'
@@ -60,7 +70,7 @@ export class DesktopBridgeService extends Service {
   }
 }
 
-export const inject = ['sessions', 'tools']
+export const inject = ['agentDefaultModel', 'agents', 'sessions', 'skills', 'tools']
 
 export async function apply(ctx: Context): Promise<void> {
   const bridge = new DesktopBridgeService(ctx)
@@ -73,6 +83,36 @@ export async function apply(ctx: Context): Promise<void> {
       bridge.call('connections.reportStatus', params),
   }
   const supervisor = new McpConnectionSupervisor(connections, new CordisMcpMountFactory(ctx))
+  const automationClient: AutomationDesktopClient = {
+    claimNext: async (hostInstanceId: string, signal: AbortSignal) =>
+      (await bridge.call('automations.claimNext', { hostInstanceId }, { signal, timeoutMs: 70_000 })).dispatch,
+    bindSession: (sessionId: string, workspacePath: string, signal: AbortSignal) =>
+      bridge.call('desktop.reportSessionBinding', { sessionId, workspacePath }, { signal, timeoutMs: 40_000 }),
+    markRunning: (hostInstanceId: string, runId: string, sessionEventSeq: number) =>
+      bridge.call('automations.markRunning', { hostInstanceId, runId, sessionEventSeq }),
+    finish: (hostInstanceId, runId, evidence) =>
+      bridge.call('automations.finish', { hostInstanceId, runId, ...evidence }),
+  }
+  const automations = new AutomationRunCoordinator(
+    randomUUID(),
+    automationClient,
+    new HarnessAutomationExecutor(ctx, supervisor),
+    (message, error) => {
+      const detail = error instanceof Error ? error.message : String(error)
+      ctx.logger('dsh-desktop').warn('%s %s', message, detail)
+    },
+  )
+  const wakeAutomations = (): void => {
+    try {
+      void ctx.agents.withoutInitiator(() => automations.wake()).catch(error => {
+        const message = error instanceof Error ? error.message : String(error)
+        ctx.logger('dsh-desktop').warn('Durable automation wakeup failed: %s', message)
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.logger('dsh-desktop').warn('Durable automation wakeup failed: %s', message)
+    }
+  }
   const worktreeGuard = new WorktreeSessionGuard()
   const turnBoundaries = new GitTurnBoundaryCoordinator(params => reportTurnBoundaryAndActivity(
     params,
@@ -83,6 +123,7 @@ export async function apply(ctx: Context): Promise<void> {
     ctx.logger('dsh-desktop').warn('Git turn attribution unavailable: %s', message)
   })
   ctx.effect(() => () => supervisor.dispose(), 'dsh-desktop: MCP connection supervisor')
+  ctx.effect(() => () => automations.dispose(), 'dsh-desktop: durable automation runner')
 
   bridge.on('connections.changed', () => {
     void supervisor.reconcile().catch(() => undefined)
@@ -137,6 +178,8 @@ export async function apply(ctx: Context): Promise<void> {
   })
 
   await supervisor.reconcile()
+  bridge.on('automations.changed', wakeAutomations)
+  wakeAutomations()
 
   ctx.on('session/event', (session, event) => {
     if (event.type === 'turn/start' || event.type === 'turn/end') {

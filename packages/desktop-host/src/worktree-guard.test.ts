@@ -30,6 +30,11 @@ test('claims a pending checkout synchronously and rejects a second session', () 
     managed: true,
     recordId: '11111111-1111-4111-8111-111111111111',
   })
+  assert.deepEqual(guard.claim('session-created', '/managed/worktree/packages/app'), {
+    managed: true,
+    recordId: '11111111-1111-4111-8111-111111111111',
+  })
+  assert.deepEqual(guard.claim('session-neighbor', '/managed/worktree-other'), { managed: false })
   assert.deepEqual(guard.claim('session-created', '/managed/worktree'), {
     managed: true,
     recordId: '11111111-1111-4111-8111-111111111111',

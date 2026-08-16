@@ -139,9 +139,11 @@ test('provisions locked isolated worktrees and preserves parallel checkout state
   assert.match(porcelain, new RegExp(`worktree ${first.worktreePath!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   assert.match(porcelain, /locked DSH Desktop session/)
 
+  const nestedWorkspace = join(first.worktreePath!, 'packages', 'app')
+  await mkdir(nestedWorkspace, { recursive: true })
   const bound = await manager.bindSession({
     sessionId: 'session-worktree-1',
-    workspacePath: first.worktreePath!,
+    workspacePath: nestedWorkspace,
   }, new AbortController().signal)
   assert.equal(bound?.requestedBySessionId, 'session-1')
   assert.equal(bound?.sessionId, 'session-worktree-1')
