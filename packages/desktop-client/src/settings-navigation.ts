@@ -1,6 +1,6 @@
 const SECTION_LABELS: Readonly<Record<string, readonly string[]>> = {
   automations: ['Tasks'],
-  connections: ['Connections'],
+  connections: ['Plugins', '插件'],
   computer: ['Computer', 'Computer Control'],
   worktrees: ['Worktrees'],
   snapshots: ['App Snapshots'],

@@ -10,7 +10,6 @@ import {
   IconCloseOutline16,
   IconDownloadOutline16,
   IconLinkOutline16,
-  IconPlusOutline16,
   IconRefreshOutline16,
   IconRightUpOutline16,
   IconTrashOutline16,
@@ -445,9 +444,11 @@ function ConnectionsSection(): React.JSX.Element {
   ), [connections])
 
   return (
-    <section style={styles.root} aria-labelledby="desktop-connections-heading">
+    <section style={{ ...styles.root, paddingTop: 6 }} aria-label="Apps">
       <header style={styles.header}>
-        <h2 id="desktop-connections-heading" style={styles.heading}>Connections</h2>
+        <span style={{ ...styles.metadata, fontSize: 13 }}>
+          Connect services that add tools to the Agent.
+        </span>
         <div style={styles.toolbar}>
           <Button
             size="sm"
@@ -461,14 +462,25 @@ function ConnectionsSection(): React.JSX.Element {
           <Button
             size="sm"
             variant="primary"
-            icon={<IconPlusOutline16 />}
+            icon={<IconLinkOutline16 />}
+            disabled={!vaultAvailable}
+            onClick={() => {
+              if (oauthAvailable) void beginOAuth()
+              else setShowForm(true)
+            }}
+          >
+            Connect Linear
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             disabled={!vaultAvailable}
             onClick={() => {
               if (showForm) resetForm()
               else setShowForm(true)
             }}
           >
-            Add Linear
+            Advanced
           </Button>
         </div>
       </header>
@@ -476,7 +488,9 @@ function ConnectionsSection(): React.JSX.Element {
       {showForm && (
         <form style={styles.form} onSubmit={event => void submitApiKey(event)}>
           <div style={styles.formHeader}>
-            <h3 style={styles.formTitle}>{connectionId === undefined ? 'Connect Linear' : 'Reconnect Linear'}</h3>
+            <h3 style={styles.formTitle}>
+              {connectionId === undefined ? 'Advanced Linear connection' : 'Reconnect Linear with API key'}
+            </h3>
             <Button
               type="button"
               size="sm"
@@ -528,17 +542,6 @@ function ConnectionsSection(): React.JSX.Element {
             >
               Connect with API key
             </Button>
-            {oauthAvailable && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={busy !== undefined}
-                onClick={() => void beginOAuth()}
-              >
-                Continue with OAuth
-              </Button>
-            )}
           </div>
         </form>
       )}
@@ -1583,11 +1586,11 @@ export function apply(ctx: ClientContext): void {
     order: 12,
     label: 'Browser',
   }, () => <BrowserSettingsSection bridge={bridge?.browser} />))
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'connections',
-    order: 31,
-    label: 'Connections',
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: 'apps',
+    order: 20,
+    label: 'Apps',
   }, ConnectionsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
