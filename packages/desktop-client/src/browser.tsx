@@ -48,6 +48,7 @@ import {
   normalizeBrowserAddress,
   normalizedBrowserPoint,
 } from './browser-view-model.js'
+import type { DesktopTranslate } from './locales.js'
 
 export interface DesktopBrowserBridge {
   getState(): Promise<BrowserState>
@@ -263,25 +264,27 @@ const styles = `
 }
 `
 
-const BROWSER_MANAGEMENT_TITLES: Record<BrowserManagementPage, string> = {
-  import: 'Import Browser Data',
-  passwords: 'Password Manager',
-  contacts: 'Contact Information',
+function browserManagementTitle(page: BrowserManagementPage, t: DesktopTranslate): string {
+  if (page === 'import') return t('Import Browser Data')
+  if (page === 'passwords') return t('Password Manager')
+  return t('Contact Information')
 }
 
-function browserStatus(state: BrowserState | undefined): string {
-  if (state === undefined) return 'Loading'
-  if (!state.settings.enabled) return 'Off'
-  if (state.runtimeStatus === 'ready') return 'Ready'
-  if (state.runtimeStatus === 'starting') return 'Starting'
-  if (state.runtimeStatus === 'error') return 'Needs attention'
-  return 'Stopped'
+function browserStatus(state: BrowserState | undefined, t: DesktopTranslate): string {
+  if (state === undefined) return t('Controlled browser loading')
+  if (!state.settings.enabled) return t('Controlled browser off')
+  if (state.runtimeStatus === 'ready') return t('Controlled browser ready')
+  if (state.runtimeStatus === 'starting') return t('Controlled browser starting')
+  if (state.runtimeStatus === 'error') return t('Controlled browser needs attention')
+  return t('Controlled browser stopped')
 }
 
 export function BrowserSettingsSection({
   bridge,
+  t,
 }: {
   bridge?: DesktopBrowserBridge
+  t: DesktopTranslate
 }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>()
   const [history, setHistory] = useState<BrowserHistoryEntry[]>([])
@@ -295,13 +298,13 @@ export function BrowserSettingsSection({
     setBusy(true)
     setError(undefined)
     void operation().then(setState).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browser settings could not be updated.')
+      setError(cause instanceof Error ? cause.message : t('Browser settings could not be updated.'))
     }).finally(() => setBusy(false))
   }
 
   useEffect(() => {
     if (bridge === undefined) {
-      setError('Browser is unavailable in this desktop build.')
+      setError(t('Browser is unavailable in this desktop build.'))
       return
     }
     let active = true
@@ -311,13 +314,13 @@ export function BrowserSettingsSection({
     void bridge.getState().then(next => {
       if (active) setState(next)
     }).catch(cause => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Browser is unavailable.')
+      if (active) setError(cause instanceof Error ? cause.message : t('Browser is unavailable.'))
     })
     return () => {
       active = false
       stop()
     }
-  }, [bridge])
+  }, [bridge, t])
 
   const update = (input: UpdateBrowserSettingsInput): void => {
     if (bridge !== undefined) run(() => bridge.update(input))
@@ -328,7 +331,7 @@ export function BrowserSettingsSection({
     setHistoryOpen(true)
     setError(undefined)
     void bridge.listHistory().then(setHistory).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browsing history could not be loaded.')
+      setError(cause instanceof Error ? cause.message : t('Browsing history could not be loaded.'))
     })
   }
 
@@ -339,7 +342,7 @@ export function BrowserSettingsSection({
       setState(next)
       setHistory([])
     }).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browsing history could not be cleared.')
+      setError(cause instanceof Error ? cause.message : t('Browsing history could not be cleared.'))
     }).finally(() => setBusy(false))
   }
 
@@ -352,7 +355,7 @@ export function BrowserSettingsSection({
       setHistory([])
       setClearOpen(false)
     }).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browsing data could not be cleared.')
+      setError(cause instanceof Error ? cause.message : t('Browsing data could not be cleared.'))
     }).finally(() => setBusy(false))
   }
 
@@ -364,21 +367,21 @@ export function BrowserSettingsSection({
       setState(next)
       setManagementPage(page)
     }).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browser management could not be opened.')
+      setError(cause instanceof Error ? cause.message : t('Browser management could not be opened.'))
     }).finally(() => setBusy(false))
   }
 
   return (
-    <SettingsPage title="Browser" subtitle="Manage the controlled browser used by DSH.">
+    <SettingsPage title={t('Browser')} subtitle={t('Manage the controlled browser used by DSH.')}>
       <style>{styles}</style>
       <SettingsGroup>
         <SettingsRow
           icon={<span className="dsh-desktop-browser-icon"><IconBrowseOutline16 /></span>}
-          title="Browser"
-          description={`Controlled browser ${browserStatus(state).toLocaleLowerCase()}`}
+          title={t('Browser')}
+          description={browserStatus(state, t)}
           control={state === undefined ? undefined : (
             <SettingsToggle
-              label="Enable controlled browser"
+              label={t('Enable controlled browser')}
               checked={state.settings.enabled}
               disabled={busy}
               onChange={enabled => update({ enabled })}
@@ -388,7 +391,7 @@ export function BrowserSettingsSection({
       </SettingsGroup>
 
       <SettingsSection
-        title="General"
+        title={t('General')}
         action={(
           <Button
             size="sm"
@@ -396,83 +399,85 @@ export function BrowserSettingsSection({
             disabled={busy || bridge === undefined || state?.settings.enabled !== true}
             onClick={() => openManagement('import')}
           >
-            Import...
+            {t('Import...')}
           </Button>
         )}
       >
         <SettingsGroup>
           <SettingsRow
-            title="Web URLs and links open in"
-            description="Default destination for web links"
+            title={t('Web URLs and links open in')}
+            description={t('Default destination for web links')}
             control={state === undefined ? undefined : (
               <SettingsSelect
-                label="Web URL target"
+                label={t('Web URL target')}
                 value={state.settings.webUrlTarget}
                 disabled={busy}
                 onChange={value => update({ webUrlTarget: value as 'system' | 'controlled' })}
               >
-                <option value="system">Default browser</option>
-                <option value="controlled">DSH Browser</option>
+                <option value="system">{t('Default browser')}</option>
+                <option value="controlled">{t('DSH Browser')}</option>
               </SettingsSelect>
             )}
           />
           <SettingsRow
-            title="Local URLs open in"
-            description="Default destination for local development links"
+            title={t('Local URLs open in')}
+            description={t('Default destination for local development links')}
             control={state === undefined ? undefined : (
               <SettingsSelect
-                label="Local URL target"
+                label={t('Local URL target')}
                 value={state.settings.localUrlTarget}
                 disabled={busy}
                 onChange={value => update({ localUrlTarget: value as 'system' | 'controlled' })}
               >
-                <option value="controlled">DSH Browser</option>
-                <option value="system">Default browser</option>
+                <option value="controlled">{t('DSH Browser')}</option>
+                <option value="system">{t('Default browser')}</option>
               </SettingsSelect>
             )}
           />
           <SettingsRow
-            title="Browsing data"
-            description="Cookies, site storage, permissions, cache, downloads, and history"
+            title={t('Browsing data')}
+            description={t('Cookies, site storage, permissions, cache, downloads, and history')}
             control={(
               <Button size="sm" variant="outline" disabled={busy || bridge === undefined} onClick={() => setClearOpen(true)}>
-                Clear
+                {t('Clear')}
               </Button>
             )}
           />
           <SettingsRow
-            title="Browsing history"
-            description={`${String(state?.historyCount ?? 0)} visited ${state?.historyCount === 1 ? 'page' : 'pages'}`}
+            title={t('Browsing history')}
+            description={t(state?.historyCount === 1 ? '{count} visited page' : '{count} visited pages', {
+              count: String(state?.historyCount ?? 0),
+            })}
             control={(
               <Button size="sm" variant="outline" disabled={busy || bridge === undefined} onClick={openHistory}>
-                Manage
+                {t('Manage')}
               </Button>
             )}
           />
           <SettingsRow
-            title="Annotated screenshots"
-            description="Control when page images accompany browser observations"
+            title={t('Annotated screenshots')}
+            description={t('Control when page images accompany browser observations')}
             control={state === undefined ? undefined : (
               <SettingsSelect
-                label="Browser screenshot policy"
+                label={t('Browser screenshot policy')}
                 value={state.settings.screenshotPolicy}
                 disabled={busy}
                 onChange={value => update({ screenshotPolicy: value as 'always' | 'on-demand' | 'never' })}
               >
-                <option value="always">Always include</option>
-                <option value="on-demand">On demand</option>
-                <option value="never">Never include</option>
+                <option value="always">{t('Always include')}</option>
+                <option value="on-demand">{t('On demand')}</option>
+                <option value="never">{t('Never include')}</option>
               </SettingsSelect>
             )}
           />
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection title="Autofill and passwords">
+      <SettingsSection title={t('Autofill and passwords')}>
         <SettingsGroup>
           <SettingsRow
-            title="Password Manager"
-            description="Add, delete, and edit saved passwords"
+            title={t('Password Manager')}
+            description={t('Add, delete, and edit saved passwords')}
             control={(
               <Button
                 size="sm"
@@ -480,13 +485,13 @@ export function BrowserSettingsSection({
                 disabled={busy || bridge === undefined || state?.settings.enabled !== true}
                 onClick={() => openManagement('passwords')}
               >
-                Manage
+                {t('Manage')}
               </Button>
             )}
           />
           <SettingsRow
-            title="Contact Information"
-            description="Add, delete, and edit saved addresses, phone numbers, and email addresses"
+            title={t('Contact Information')}
+            description={t('Add, delete, and edit saved addresses, phone numbers, and email addresses')}
             control={(
               <Button
                 size="sm"
@@ -494,7 +499,7 @@ export function BrowserSettingsSection({
                 disabled={busy || bridge === undefined || state?.settings.enabled !== true}
                 onClick={() => openManagement('contacts')}
               >
-                Manage
+                {t('Manage')}
               </Button>
             )}
           />
@@ -509,24 +514,24 @@ export function BrowserSettingsSection({
       <Modal
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
-        title="Browsing History"
-        closeLabel="Close browsing history"
+        title={t('Browsing History')}
+        closeLabel={t('Close browsing history')}
         footer={(
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <Button variant="outline" onClick={() => setHistoryOpen(false)}>Done</Button>
+            <Button variant="outline" onClick={() => setHistoryOpen(false)}>{t('Done')}</Button>
             <Button
               variant="outline"
               icon={<IconTrashOutline16 />}
               disabled={busy || history.length === 0}
               onClick={clearHistory}
             >
-              Clear History
+              {t('Clear History')}
             </Button>
           </div>
         )}
       >
         <div className="dsh-desktop-browser-history">
-          {history.length === 0 && <div className="dsh-desktop-browser-history-row">No browsing history</div>}
+          {history.length === 0 && <div className="dsh-desktop-browser-history-row">{t('No browsing history')}</div>}
           {history.map(entry => (
             <div className="dsh-desktop-browser-history-row" key={entry.id}>
               <span className="dsh-desktop-browser-history-title">{entry.title || entry.url}</span>
@@ -540,21 +545,21 @@ export function BrowserSettingsSection({
       <Modal
         open={clearOpen}
         onClose={() => setClearOpen(false)}
-        title="Clear Browsing Data"
-        closeLabel="Close clear browsing data confirmation"
+        title={t('Clear Browsing Data')}
+        closeLabel={t('Close clear browsing data confirmation')}
         footer={(
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <Button variant="outline" disabled={busy} onClick={() => setClearOpen(false)}>Cancel</Button>
+            <Button variant="outline" disabled={busy} onClick={() => setClearOpen(false)}>{t('Cancel')}</Button>
             <Button variant="primary" icon={<IconTrashOutline16 />} disabled={busy} onClick={clearData}>
-              Clear Data
+              {t('Clear Data')}
             </Button>
           </div>
         )}
       >
         <div className="dsh-desktop-browser-confirm">
-          <span>Cookies, site storage, permissions, cache, downloads, and browsing history will be removed.</span>
+          <span>{t('Cookies, site storage, permissions, cache, downloads, and browsing history will be removed.')}</span>
           {state?.settings.storageMode === 'persistent' && (
-            <span>You will be signed out of websites in the persistent browser session.</span>
+            <span>{t('You will be signed out of websites in the persistent browser session.')}</span>
           )}
         </div>
       </Modal>
@@ -562,12 +567,12 @@ export function BrowserSettingsSection({
       <Modal
         open={managementPage !== undefined}
         onClose={() => setManagementPage(undefined)}
-        title={managementPage === undefined ? 'Browser Management' : BROWSER_MANAGEMENT_TITLES[managementPage]}
-        closeLabel="Close browser management"
+        title={managementPage === undefined ? t('Browser Management') : browserManagementTitle(managementPage, t)}
+        closeLabel={t('Close browser management')}
         className="dsh-desktop-browser-management-modal"
       >
         <div className="dsh-desktop-browser-management">
-          <BrowserView bridge={bridge} />
+          <BrowserView bridge={bridge} t={t} />
         </div>
       </Modal>
     </SettingsPage>
@@ -576,8 +581,10 @@ export function BrowserSettingsSection({
 
 export function BrowserView({
   bridge,
+  t,
 }: {
   bridge?: DesktopBrowserBridge
+  t: DesktopTranslate
 }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>()
   const [frame, setFrame] = useState<BrowserFrame>()
@@ -600,7 +607,7 @@ export function BrowserView({
 
   useEffect(() => {
     if (bridge === undefined) {
-      setError('Browser is unavailable in this desktop build.')
+      setError(t('Browser is unavailable in this desktop build.'))
       return
     }
     let active = true
@@ -628,14 +635,14 @@ export function BrowserView({
         : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
       if (next.settings.enabled && next.runtimeStatus === 'ready') await bridge.refreshFrame()
     }).catch(cause => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Browser is unavailable.')
+      if (active) setError(cause instanceof Error ? cause.message : t('Browser is unavailable.'))
     })
     return () => {
       active = false
       offChanged()
       offFrame()
     }
-  }, [bridge])
+  }, [bridge, t])
 
   const frameUrl = useMemo(() => {
     if (frame === undefined) return undefined
@@ -666,7 +673,7 @@ export function BrowserView({
         ? undefined
         : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
     }).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'The browser operation failed.')
+      setError(cause instanceof Error ? cause.message : t('The browser operation failed.'))
     }).finally(() => {
       busyRef.current = false
       setBusy(false)
@@ -725,13 +732,13 @@ export function BrowserView({
     setError(undefined)
     void bridge.scrollAt({ ...identity, ...input }).then(next => {
       const observation = next.lastObservation
-      if (observation === undefined) throw new Error('The controlled browser stopped before scrolling completed.')
+      if (observation === undefined) throw new Error(t('The controlled browser stopped before scrolling completed.'))
       interactionRef.current = { snapshotId: observation.snapshotId, tabId: observation.tabId }
       setState(next)
       setAddress(activeBrowserAddress(next))
     }).catch(cause => {
       pendingScrollRef.current = undefined
-      setError(cause instanceof Error ? cause.message : 'The browser scroll operation failed.')
+      setError(cause instanceof Error ? cause.message : t('The browser scroll operation failed.'))
     }).finally(() => {
       scrollRunningRef.current = false
       busyRef.current = false
@@ -787,7 +794,7 @@ export function BrowserView({
         const actions = keyboardQueueRef.current.splice(0, 64)
         const next = await bridge.keyboard({ ...identity, actions })
         const observation = next.lastObservation
-        if (observation === undefined) throw new Error('The controlled browser stopped before keyboard input completed.')
+        if (observation === undefined) throw new Error(t('The controlled browser stopped before keyboard input completed.'))
         identity = { snapshotId: observation.snapshotId, tabId: observation.tabId }
         interactionRef.current = identity
         setState(next)
@@ -795,7 +802,7 @@ export function BrowserView({
       }
     })().catch(cause => {
       keyboardQueueRef.current = []
-      setError(cause instanceof Error ? cause.message : 'The browser keyboard operation failed.')
+      setError(cause instanceof Error ? cause.message : t('The browser keyboard operation failed.'))
     }).finally(() => {
       keyboardRunningRef.current = false
       busyRef.current = false
@@ -824,7 +831,7 @@ export function BrowserView({
       return
     }
     if (keyboardQueueRef.current.length >= 256) {
-      setError('Browser input is still catching up. Pause briefly before typing more.')
+      setError(t('Browser input is still catching up. Pause briefly before typing more.'))
       return
     }
     keyboardQueueRef.current.push(action)
@@ -834,9 +841,9 @@ export function BrowserView({
   }
 
   return (
-    <section className="dsh-desktop-browser-view" aria-label="Browser">
+    <section className="dsh-desktop-browser-view" aria-label={t('Browser')}>
       <style>{styles}</style>
-      <div className="dsh-desktop-browser-tabs" role="tablist" aria-label="Browser tabs">
+      <div className="dsh-desktop-browser-tabs" role="tablist" aria-label={t('Browser tabs')}>
         {tabs.map(tab => (
           <div className="dsh-desktop-browser-tab" data-active={tab.id === state?.activeTabId} key={tab.id}>
             <button
@@ -844,17 +851,17 @@ export function BrowserView({
               className="dsh-desktop-browser-tab-main"
               role="tab"
               aria-selected={tab.id === state?.activeTabId}
-              title={tab.title || tab.url || 'New tab'}
+              title={tab.title || tab.url || t('New tab')}
               disabled={disabled}
               onClick={() => { if (bridge !== undefined) run(() => bridge.activateTab({ tabId: tab.id })) }}
             >
-              {tab.title || (tab.url === 'about:blank' ? 'New tab' : tab.url)}
+              {tab.title || (tab.url === 'about:blank' ? t('New tab') : tab.url)}
             </button>
             <button
               type="button"
               className="dsh-desktop-browser-icon-button"
-              title="Close tab"
-              aria-label={`Close ${tab.title || 'tab'}`}
+              title={t('Close tab')}
+              aria-label={t('Close {name}', { name: tab.title || t('tab') })}
               disabled={disabled}
               onClick={() => { if (bridge !== undefined) run(() => bridge.closeTab({ tabId: tab.id })) }}
             >
@@ -865,8 +872,8 @@ export function BrowserView({
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title="New tab"
-          aria-label="New browser tab"
+          title={t('New tab')}
+          aria-label={t('New browser tab')}
           disabled={disabled}
           onClick={() => { if (bridge !== undefined) run(() => bridge.newTab()) }}
         >
@@ -877,8 +884,8 @@ export function BrowserView({
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title="Back"
-          aria-label="Go back"
+          title={t('Back')}
+          aria-label={t('Go back')}
           disabled={disabled || state?.canGoBack !== true}
           onClick={() => { if (bridge !== undefined) run(() => bridge.back()) }}
         >
@@ -887,8 +894,8 @@ export function BrowserView({
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title="Forward"
-          aria-label="Go forward"
+          title={t('Forward')}
+          aria-label={t('Go forward')}
           disabled={disabled || state?.canGoForward !== true}
           onClick={() => { if (bridge !== undefined) run(() => bridge.forward()) }}
         >
@@ -897,8 +904,8 @@ export function BrowserView({
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title="Reload"
-          aria-label="Reload page"
+          title={t('Reload')}
+          aria-label={t('Reload page')}
           disabled={disabled || state?.activeTabId === undefined}
           onClick={() => { if (bridge !== undefined) run(() => bridge.reload()) }}
         >
@@ -906,8 +913,8 @@ export function BrowserView({
         </button>
         <input
           className="dsh-desktop-browser-address"
-          aria-label="Browser address"
-          placeholder="Search or enter website"
+          aria-label={t('Browser address')}
+          placeholder={t('Search or enter website')}
           value={address}
           disabled={disabled}
           onChange={event => setAddress(event.currentTarget.value)}
@@ -915,8 +922,8 @@ export function BrowserView({
         <button
           type="button"
           className="dsh-desktop-browser-icon-button"
-          title="Stop browser"
-          aria-label="Stop controlled browser"
+          title={t('Stop browser')}
+          aria-label={t('Stop controlled browser')}
           disabled={bridge === undefined || state?.settings.enabled !== true}
           onClick={() => { if (bridge !== undefined) run(() => bridge.stop()) }}
         >
@@ -929,7 +936,7 @@ export function BrowserView({
         data-interactive={interactive}
         tabIndex={interactive ? 0 : -1}
         role="application"
-        aria-label="Controlled browser page"
+        aria-label={t('Controlled browser page')}
         aria-busy={busy}
         onClick={event => pointerInput(event, 'left')}
         onContextMenu={event => pointerInput(event, 'right')}
@@ -937,15 +944,15 @@ export function BrowserView({
         onWheel={scrollInput}
       >
         {frameUrl !== undefined ? (
-          <img src={frameUrl} alt={state?.lastObservation?.title || 'Controlled browser page'} draggable={false} />
+          <img src={frameUrl} alt={state?.lastObservation?.title || t('Controlled browser page')} draggable={false} />
         ) : (
           <div className="dsh-desktop-browser-empty">
             <IconBrowseOutline16 />
             <span>{state?.settings.enabled === true
               ? state.runtimeStatus === 'starting'
-                ? 'Starting browser'
-                : 'Enter a URL to begin'
-              : 'Enable Browser in Settings'}</span>
+                ? t('Starting browser')
+                : t('Enter a URL to begin')
+              : t('Enable Browser in Settings')}</span>
           </div>
         )}
         {error !== undefined && <div className="dsh-desktop-browser-error" role="alert">{error}</div>}

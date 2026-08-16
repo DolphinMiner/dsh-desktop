@@ -20,9 +20,11 @@ import {
 import type {
   AutomationChangedNotice,
   AutomationDefinition,
+  AutomationRunPhase,
   AutomationRunSummary,
   AutomationRunPage,
   AutomationTaskCenterSnapshot,
+  AutomationState,
   ConnectionSnapshot,
   DesktopCancelAutomationRunInput,
   DesktopCreateAutomationInput,
@@ -34,11 +36,10 @@ import type {
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import {
-  automationRunPhaseLabel,
   automationRunStateDot,
   automationStateDot,
-  automationStateLabel,
 } from './view-model.js'
+import type { DesktopTranslate } from './locales.js'
 
 export interface DesktopAutomationsBridge {
   list(): Promise<AutomationTaskCenterSnapshot>
@@ -56,6 +57,7 @@ interface AutomationTaskCenterProps {
   bridge?: DesktopAutomationsBridge
   pickProjectDirectory(): Promise<string | null>
   listConnections?(): Promise<ConnectionSnapshot>
+  t: DesktopTranslate
 }
 
 const styles: Record<string, CSSProperties> = {
@@ -195,11 +197,28 @@ const styles: Record<string, CSSProperties> = {
   empty: { color: 'var(--dsw-alias-label-secondary, #5f6268)', fontSize: 13, padding: '18px 2px' },
 }
 
-function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return 'The desktop operation failed.'
+function errorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof Error)) return fallback
   const marker = 'Error invoking remote method'
   const index = error.message.indexOf(marker)
   return index < 0 ? error.message : error.message.slice(error.message.indexOf(':', index) + 1).trim()
+}
+
+function automationStateText(state: AutomationState, t: DesktopTranslate): string {
+  if (state === 'enabled') return t('Scheduled')
+  if (state === 'paused') return t('Paused')
+  return t('Completed')
+}
+
+function automationRunPhaseText(phase: AutomationRunPhase, t: DesktopTranslate): string {
+  if (phase === 'queued') return t('Queued')
+  if (phase === 'dispatching') return t('Preparing workspace')
+  if (phase === 'running') return t('Running')
+  if (phase === 'succeeded') return t('Finished')
+  if (phase === 'failed') return t('Failed')
+  if (phase === 'cancelled') return t('Cancelled')
+  if (phase === 'interrupted') return t('Interrupted')
+  return t('Outcome uncertain')
 }
 
 function defaultOnceValue(): string {
@@ -240,6 +259,7 @@ export function AutomationTaskCenter({
   bridge,
   pickProjectDirectory,
   listConnections,
+  t,
 }: AutomationTaskCenterProps): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AutomationTaskCenterSnapshot>()
   const revision = useRef(-1)
@@ -288,7 +308,7 @@ export function AutomationTaskCenter({
 
   const refresh = async (): Promise<void> => {
     if (bridge === undefined) {
-      setError('The desktop automation bridge is unavailable.')
+      setError(t('The desktop automation bridge is unavailable.'))
       setLoading(false)
       return
     }
@@ -296,7 +316,7 @@ export function AutomationTaskCenter({
       applySnapshot(await bridge.list())
       setError(undefined)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setLoading(false)
     }
@@ -311,7 +331,7 @@ export function AutomationTaskCenter({
     return bridge.onChanged(() => {
       void refresh()
     })
-  }, [bridge, listConnections])
+  }, [bridge, listConnections, t])
 
   const runMutation = async (
     key: string,
@@ -323,7 +343,7 @@ export function AutomationTaskCenter({
       applySnapshot(await operation())
       return true
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
       void refresh()
       return false
     } finally {
@@ -357,11 +377,11 @@ export function AutomationTaskCenter({
     if (bridge === undefined) return
     const date = triggerKind === 'once' ? new Date(onceAt) : undefined
     if (triggerKind === 'once' && (date === undefined || Number.isNaN(date.getTime()))) {
-      setError('Choose a valid run time.')
+      setError(t('Choose a valid run time.'))
       return
     }
     if (executionMode === 'local' && !localAcknowledged) {
-      setError('Confirm local checkout execution before creating this automation.')
+      setError(t('Confirm local checkout execution before creating this automation.'))
       return
     }
     const created = await runMutation('create', async () => bridge.create({
@@ -428,7 +448,7 @@ export function AutomationTaskCenter({
     try {
       await bridge.openSession({ sessionId: run.payload.sessionId })
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     }
   }
 
@@ -443,12 +463,12 @@ export function AutomationTaskCenter({
         limit: 100,
       })
       if (page.revision !== snapshot.revision || page.totalRunCount !== snapshot.totalRunCount) {
-        throw new Error('Automation history changed. Refresh Task Center and try again.')
+        throw new Error(t('Automation history changed. Refresh Task Center and try again.'))
       }
       setOlderRuns(current => [...current, ...page.runs])
       setNextBeforeRunId(page.nextBeforeRunId)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
       void refresh()
     } finally {
       setBusy(undefined)
@@ -456,19 +476,19 @@ export function AutomationTaskCenter({
   }
 
   return (
-    <section style={styles.root} aria-label="Task Center">
+    <section style={styles.root} aria-label={t('Task Center')}>
       <div style={styles.header}>
         <div style={styles.headingGroup}>
-          <h2 style={styles.heading}>Task Center</h2>
-          <span style={styles.meta}>Runs while DSH Desktop is open</span>
+          <h2 style={styles.heading}>{t('Task Center')}</h2>
+          <span style={styles.meta}>{t('Runs while DSH Desktop is open')}</span>
         </div>
         <div style={styles.toolbar}>
           <Button
             size="sm"
             variant="toolbar"
             icon={<IconRefreshOutline16 />}
-            aria-label="Refresh automations"
-            title="Refresh automations"
+            aria-label={t('Refresh automations')}
+            title={t('Refresh automations')}
             disabled={loading || busy !== undefined}
             onClick={() => void refresh()}
           />
@@ -478,7 +498,7 @@ export function AutomationTaskCenter({
             icon={<IconPlusOutline16 />}
             onClick={() => setShowForm(value => !value)}
           >
-            New automation
+            {t('New automation')}
           </Button>
         </div>
       </div>
@@ -488,23 +508,23 @@ export function AutomationTaskCenter({
       {showForm && (
         <form style={styles.form} onSubmit={event => void submit(event)}>
           <div style={styles.formHeader}>
-            <h3 style={styles.formTitle}>New automation</h3>
+            <h3 style={styles.formTitle}>{t('New automation')}</h3>
             <Button
               type="button"
               size="sm"
               variant="toolbar"
               icon={<IconCloseOutline16 />}
-              aria-label="Close"
-              title="Close"
+              aria-label={t('Close')}
+              title={t('Close')}
               onClick={resetForm}
             />
           </div>
           <label style={styles.field}>
-            <span style={styles.label}>Name</span>
+            <span style={styles.label}>{t('Name')}</span>
             <Input required maxLength={120} value={name} onChange={event => setName(event.target.value)} />
           </label>
           <label style={styles.field}>
-            <span style={styles.label}>Prompt</span>
+            <span style={styles.label}>{t('Prompt')}</span>
             <textarea
               required
               maxLength={100_000}
@@ -514,9 +534,9 @@ export function AutomationTaskCenter({
             />
           </label>
           <div style={styles.field}>
-            <span style={styles.label}>Project</span>
+            <span style={styles.label}>{t('Project')}</span>
             <div style={styles.projectRow}>
-              <Input required readOnly value={projectPath} placeholder="Choose a Git project" />
+              <Input required readOnly value={projectPath} placeholder={t('Choose a Git project')} />
               <Button
                 type="button"
                 size="sm"
@@ -524,39 +544,39 @@ export function AutomationTaskCenter({
                 icon={<IconFolderOpenOutline16 />}
                 onClick={() => void chooseProject()}
               >
-                Choose
+                {t('Choose')}
               </Button>
             </div>
           </div>
           <div style={styles.fieldRow}>
             <label style={styles.field}>
-              <span style={styles.label}>Schedule</span>
+              <span style={styles.label}>{t('Schedule')}</span>
               <select style={styles.select} value={triggerKind} onChange={event => setTriggerKind(event.target.value as 'once' | 'cron')}>
-                <option value="once">Once</option>
-                <option value="cron">Recurring</option>
+                <option value="once">{t('Once')}</option>
+                <option value="cron">{t('Recurring')}</option>
               </select>
             </label>
             {triggerKind === 'once' ? (
               <label style={styles.field}>
-                <span style={styles.label}>Run at</span>
+                <span style={styles.label}>{t('Run at')}</span>
                 <Input required type="datetime-local" value={onceAt} onChange={event => setOnceAt(event.target.value)} />
               </label>
             ) : (
               <label style={styles.field}>
-                <span style={styles.label}>Time zone</span>
+                <span style={styles.label}>{t('Time zone')}</span>
                 <Input required value={timeZone} onChange={event => setTimeZone(event.target.value)} />
               </label>
             )}
           </div>
           {triggerKind === 'cron' && (
             <label style={styles.field}>
-              <span style={styles.label}>Cron</span>
+              <span style={styles.label}>{t('Cron')}</span>
               <Input required value={cron} onChange={event => setCron(event.target.value)} />
             </label>
           )}
           <div style={styles.fieldRow}>
             <label style={styles.field}>
-              <span style={styles.label}>Workspace</span>
+              <span style={styles.label}>{t('Workspace')}</span>
               <select
                 style={styles.select}
                 value={executionMode}
@@ -565,25 +585,25 @@ export function AutomationTaskCenter({
                   setLocalAcknowledged(false)
                 }}
               >
-                <option value="worktree">Isolated worktree</option>
-                <option value="local">Local checkout</option>
+                <option value="worktree">{t('Isolated worktree')}</option>
+                <option value="local">{t('Local checkout')}</option>
               </select>
             </label>
             <label style={styles.field}>
-              <span style={styles.label}>Overlap</span>
+              <span style={styles.label}>{t('Overlap')}</span>
               <select
                 style={styles.select}
                 value={concurrencyPolicy}
                 onChange={event => setConcurrencyPolicy(event.target.value as 'skip' | 'queue-one')}
               >
-                <option value="skip">Skip while active</option>
-                <option value="queue-one">Queue one run</option>
+                <option value="skip">{t('Skip while active')}</option>
+                <option value="queue-one">{t('Queue one run')}</option>
               </select>
             </label>
           </div>
           {executionMode === 'worktree' ? (
             <label style={styles.field}>
-              <span style={styles.label}>Base ref</span>
+              <span style={styles.label}>{t('Base ref')}</span>
               <Input required value={baseRef} onChange={event => setBaseRef(event.target.value)} />
             </label>
           ) : (
@@ -594,13 +614,13 @@ export function AutomationTaskCenter({
                   checked={localAcknowledged}
                   onChange={event => setLocalAcknowledged(event.target.checked)}
                 />
-                <span>I understand this automation can modify my current checkout.</span>
+                <span>{t('I understand this automation can modify my current checkout.')}</span>
               </label>
             </div>
           )}
           {availableConnections.length > 0 && (
             <div style={styles.field}>
-              <span style={styles.label}>Connections</span>
+              <span style={styles.label}>{t('Connections')}</span>
               <div style={styles.connectionList}>
                 {availableConnections.map(connection => (
                   <label key={connection.id} style={styles.checkbox}>
@@ -618,18 +638,18 @@ export function AutomationTaskCenter({
             </div>
           )}
           <div style={styles.actions}>
-            <Button type="submit" variant="primary" disabled={busy !== undefined}>Create</Button>
-            <Button type="button" variant="ghost" onClick={resetForm}>Cancel</Button>
+            <Button type="submit" variant="primary" disabled={busy !== undefined}>{t('Create')}</Button>
+            <Button type="button" variant="ghost" onClick={resetForm}>{t('Cancel')}</Button>
           </div>
         </form>
       )}
 
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
-          <h3 style={styles.sectionTitle}>Automations</h3>
+          <h3 style={styles.sectionTitle}>{t('Automations')}</h3>
           <span style={styles.meta}>{definitions.length}</span>
         </div>
-        {!loading && definitions.length === 0 && <div style={styles.empty}>No automations</div>}
+        {!loading && definitions.length === 0 && <div style={styles.empty}>{t('No automations')}</div>}
         {definitions.map(definition => {
           const latest = latestRun.get(definition.id)
           const operationBusy = busy?.endsWith(definition.id) === true
@@ -642,31 +662,31 @@ export function AutomationTaskCenter({
                 </div>
                 <span style={styles.status}>
                   <StateDot state={automationStateDot(definition.state)} />
-                  {automationStateLabel(definition.state)}
+                  {automationStateText(definition.state, t)}
                 </span>
               </div>
               <div style={styles.facts}>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Schedule</span>
+                  <span style={styles.factLabel}>{t('Schedule')}</span>
                   <span style={styles.factValue}>{scheduleLabel(definition)}</span>
                 </span>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Next run</span>
+                  <span style={styles.factLabel}>{t('Next run')}</span>
                   <span style={styles.factValue}>{definition.nextTriggerAt === undefined
-                    ? 'None'
+                    ? t('None')
                     : new Date(definition.nextTriggerAt).toLocaleString()}</span>
                 </span>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Workspace</span>
+                  <span style={styles.factLabel}>{t('Workspace')}</span>
                   <span style={styles.factValue}>{definition.execution.mode === 'worktree'
-                    ? `Worktree from ${definition.execution.baseRef}`
-                    : 'Local checkout'}</span>
+                    ? t('Worktree from {ref}', { ref: definition.execution.baseRef })
+                    : t('Local checkout')}</span>
                 </span>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Latest run</span>
+                  <span style={styles.factLabel}>{t('Latest run')}</span>
                   <span style={styles.factValue}>{latest === undefined
-                    ? 'No recent run'
-                    : automationRunPhaseLabel(latest.phase)}</span>
+                    ? t('No recent run')
+                    : automationRunPhaseText(latest.phase, t)}</span>
                 </span>
               </div>
               <div style={styles.itemBottom}>
@@ -679,7 +699,7 @@ export function AutomationTaskCenter({
                       disabled={operationBusy}
                       onClick={() => setState(definition, 'paused')}
                     >
-                      Pause
+                      {t('Pause')}
                     </Button>
                   )}
                   {definition.state === 'paused' && (
@@ -690,7 +710,7 @@ export function AutomationTaskCenter({
                       disabled={operationBusy}
                       onClick={() => setState(definition, 'enabled')}
                     >
-                      Resume
+                      {t('Resume')}
                     </Button>
                   )}
                   <Button
@@ -700,12 +720,12 @@ export function AutomationTaskCenter({
                     disabled={operationBusy}
                     onClick={() => queueRun(definition.id)}
                   >
-                    Run now
+                    {t('Run now')}
                   </Button>
                 </div>
                 {confirmDelete === definition.id ? (
                   <div style={styles.actions}>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(undefined)}>Cancel</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(undefined)}>{t('Cancel')}</Button>
                     <Button
                       size="sm"
                       variant="outline"
@@ -713,7 +733,7 @@ export function AutomationTaskCenter({
                       disabled={operationBusy}
                       onClick={() => deleteDefinition(definition)}
                     >
-                      Delete
+                      {t('Delete')}
                     </Button>
                   </div>
                 ) : (
@@ -721,8 +741,8 @@ export function AutomationTaskCenter({
                     size="sm"
                     variant="toolbar"
                     icon={<IconTrashOutline16 />}
-                    aria-label={`Delete ${definition.name}`}
-                    title={`Delete ${definition.name}`}
+                    aria-label={t('Delete {name}', { name: definition.name })}
+                    title={t('Delete {name}', { name: definition.name })}
                     onClick={() => setConfirmDelete(definition.id)}
                   />
                 )}
@@ -734,10 +754,10 @@ export function AutomationTaskCenter({
 
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
-          <h3 style={styles.sectionTitle}>Recent runs</h3>
+          <h3 style={styles.sectionTitle}>{t('Recent runs')}</h3>
           <span style={styles.meta}>{snapshot?.totalRunCount ?? 0}</span>
         </div>
-        {!loading && runs.length === 0 && <div style={styles.empty}>No runs</div>}
+        {!loading && runs.length === 0 && <div style={styles.empty}>{t('No runs')}</div>}
         {runs.map(run => {
           const workspace = runWorkspace(run)
           const detail = runDetail(run)
@@ -753,21 +773,21 @@ export function AutomationTaskCenter({
                 </div>
                 <span style={styles.status}>
                   <StateDot state={automationRunStateDot(run.phase)} />
-                  {run.cancellationRequested && active ? 'Stopping' : automationRunPhaseLabel(run.phase)}
+                  {run.cancellationRequested && active ? t('Stopping') : automationRunPhaseText(run.phase, t)}
                 </span>
               </div>
               <div style={styles.facts}>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Started by</span>
-                  <span style={styles.factValue}>{run.payload.invocation.kind === 'manual' ? 'Manual' : 'Schedule'}</span>
+                  <span style={styles.factLabel}>{t('Started by')}</span>
+                  <span style={styles.factValue}>{run.payload.invocation.kind === 'manual' ? t('Manual') : t('Schedule')}</span>
                 </span>
                 <span style={styles.fact}>
-                  <span style={styles.factLabel}>Workspace</span>
-                  <span style={styles.factValue}>{workspace ?? 'Not prepared'}</span>
+                  <span style={styles.factLabel}>{t('Workspace')}</span>
+                  <span style={styles.factValue}>{workspace ?? t('Not prepared')}</span>
                 </span>
                 {detail !== undefined && (
                   <span style={styles.fact}>
-                    <span style={styles.factLabel}>Result</span>
+                    <span style={styles.factLabel}>{t('Result')}</span>
                     <span style={styles.factValue}>{detail}</span>
                   </span>
                 )}
@@ -781,7 +801,7 @@ export function AutomationTaskCenter({
                       icon={<IconRightUpOutline16 />}
                       onClick={() => void openRun(run)}
                     >
-                      Open session
+                      {t('Open session')}
                     </Button>
                   )}
                   {active && !run.cancellationRequested && (
@@ -792,7 +812,7 @@ export function AutomationTaskCenter({
                       disabled={busy === `cancel:${run.id}`}
                       onClick={() => cancelRun(run)}
                     >
-                      Cancel
+                      {t('Cancel')}
                     </Button>
                   )}
                   {canRetry && (
@@ -803,13 +823,13 @@ export function AutomationTaskCenter({
                       disabled={busy === `run:${run.automationId}`}
                       onClick={() => queueRun(run.automationId, run.id)}
                     >
-                      Retry
+                      {t('Retry')}
                     </Button>
                   )}
                 </div>
               </div>
               <details style={styles.details}>
-                <summary style={styles.summary}>Run log</summary>
+                <summary style={styles.summary}>{t('Run log')}</summary>
                 <div style={styles.eventList}>
                   {run.events.map(event => (
                     <div key={event.operationId} style={styles.event}>
@@ -831,7 +851,7 @@ export function AutomationTaskCenter({
               disabled={busy !== undefined}
               onClick={() => void loadOlderRuns()}
             >
-              Load older
+              {t('Load older')}
             </Button>
           </div>
         )}

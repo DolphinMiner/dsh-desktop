@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PluginInventorySnapshot } from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   Button,
@@ -62,7 +63,6 @@ import type {
 import {
   canReconnect,
   connectionStateDot,
-  connectionStatusLabel,
 } from './view-model.js'
 import { AutomationTaskCenter, type DesktopAutomationsBridge } from './automations.js'
 import {
@@ -80,6 +80,12 @@ import {
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
 import { SettingsStyles, SettingsToggle } from './settings-ui.js'
+import {
+  DESKTOP_LOCALE_NAMESPACE,
+  en as desktopEn,
+  zh as desktopZh,
+  type DesktopTranslate,
+} from './locales.js'
 
 interface OAuthResultNotice {
   ok: boolean
@@ -297,8 +303,8 @@ interface PendingOAuth {
   expiresAt: string
 }
 
-function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return 'The desktop operation failed.'
+function errorMessage(error: unknown, fallback = 'The desktop operation failed.'): string {
+  if (!(error instanceof Error)) return fallback
   return error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '').trim()
 }
 
@@ -306,7 +312,24 @@ function connectionMeta(connection: ConnectionSummary): string {
   return [connection.workspace, connection.account].filter(Boolean).join(' / ') || 'Linear'
 }
 
-function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): React.JSX.Element {
+function localizedConnectionStatus(
+  status: ConnectionSummary['status'],
+  t: DesktopTranslate,
+): string {
+  if (status === 'connected') return t('Connected')
+  if (status === 'connecting') return t('Connecting')
+  if (status === 'expired') return t('Authorization expired')
+  if (status === 'error') return t('Connection error')
+  return t('Disconnected')
+}
+
+function ConnectionsSection({
+  bridge,
+  t,
+}: {
+  bridge?: DesktopConnectionsBridge
+  t: DesktopTranslate
+}): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -326,7 +349,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
 
   const refresh = async (): Promise<void> => {
     if (bridge === undefined) {
-      setError('The desktop connection bridge is unavailable.')
+      setError(t('The desktop connection bridge is unavailable.'))
       setLoading(false)
       return
     }
@@ -334,7 +357,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
       setSnapshot(await bridge.list())
       setError(undefined)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setLoading(false)
     }
@@ -356,7 +379,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
       offChanged()
       offOAuth()
     }
-  }, [bridge])
+  }, [bridge, t])
 
   const resetForm = (): void => {
     setShowForm(false)
@@ -384,7 +407,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
       setSnapshot(next)
       resetForm()
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setBusy(undefined)
     }
@@ -406,9 +429,9 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
         ...(target === undefined ? {} : { connectionId: target.id }),
       })
       setPendingOAuth({ requestId, flowId: result.flowId, expiresAt: result.expiresAt })
-      setNotice({ ok: true, message: 'Waiting for Linear authorization.' })
+      setNotice({ ok: true, message: t('Waiting for Linear authorization.') })
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setBusy(undefined)
     }
@@ -425,7 +448,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
       setPendingOAuth(undefined)
       setNotice(undefined)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setBusy(undefined)
     }
@@ -451,7 +474,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
       setSnapshot(await bridge.disconnect({ requestId: crypto.randomUUID(), connectionId: id }))
       setConfirmDisconnect(undefined)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setBusy(undefined)
     }
@@ -462,10 +485,10 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
   ), [connections])
 
   return (
-    <section style={{ ...styles.root, paddingTop: 6 }} aria-label="Apps">
+    <section style={{ ...styles.root, paddingTop: 6 }} aria-label={t('Apps')}>
       <header style={styles.header}>
         <span style={{ ...styles.metadata, fontSize: 13 }}>
-          Connect services that add tools to the Agent.
+          {t('Connect services that add tools to the Agent.')}
         </span>
         <div style={styles.toolbar}>
           <Button
@@ -478,7 +501,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
               else setShowForm(true)
             }}
           >
-            Connect Linear
+            {t('Connect Linear')}
           </Button>
           <Button
             size="sm"
@@ -489,7 +512,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
               else setShowForm(true)
             }}
           >
-            Advanced
+            {t('Advanced')}
           </Button>
         </div>
       </header>
@@ -498,40 +521,40 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
         <form style={styles.form} onSubmit={event => void submitApiKey(event)}>
           <div style={styles.formHeader}>
             <h3 style={styles.formTitle}>
-              {connectionId === undefined ? 'Advanced Linear connection' : 'Reconnect Linear with API key'}
+              {connectionId === undefined ? t('Advanced Linear connection') : t('Reconnect Linear with API key')}
             </h3>
             <Button
               type="button"
               size="sm"
               variant="toolbar"
               icon={<IconCloseOutline16 />}
-              aria-label="Close connection form"
-              title="Close"
+              aria-label={t('Close connection form')}
+              title={t('Close')}
               onClick={resetForm}
             />
           </div>
           <label style={styles.field}>
-            <span style={styles.label}>Connection name</span>
+            <span style={styles.label}>{t('Connection name')}</span>
             <Input
               value={label}
               maxLength={160}
-              placeholder="Linear workspace"
+              placeholder={t('Linear workspace')}
               onChange={event => setLabel(event.currentTarget.value)}
             />
           </label>
           <div style={styles.field}>
-            <span style={styles.label}>Access</span>
-            <div style={styles.access} role="group" aria-label="Linear access mode">
+            <span style={styles.label}>{t('Access')}</span>
+            <div style={styles.access} role="group" aria-label={t('Linear access mode')}>
               <Pill type="button" active={access === 'read-only'} onClick={() => setAccess('read-only')}>
-                Read only
+                {t('Read only')}
               </Pill>
               <Pill type="button" active={access === 'read-write'} onClick={() => setAccess('read-write')}>
-                Read and write
+                {t('Read and write')}
               </Pill>
             </div>
           </div>
           <label style={styles.field}>
-            <span style={styles.label}>Linear API key</span>
+            <span style={styles.label}>{t('Linear API key')}</span>
             <Input
               type="password"
               autoComplete="off"
@@ -549,7 +572,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
               icon={<IconLinkOutline16 />}
               disabled={apiKey.trim().length === 0 || busy !== undefined}
             >
-              Connect with API key
+              {t('Connect with API key')}
             </Button>
           </div>
         </form>
@@ -573,7 +596,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
               disabled={busy === 'oauth-cancel'}
               onClick={() => void cancelOAuth()}
             >
-              Cancel
+              {t('Cancel')}
             </Button>
           )}
         </div>
@@ -585,8 +608,8 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
         </div>
       )}
 
-      {loading && <div style={styles.empty}>Loading connections...</div>}
-      {!loading && sorted.length === 0 && <div style={styles.empty}>No connections</div>}
+      {loading && <div style={styles.empty}>{t('Loading connections...')}</div>}
+      {!loading && sorted.length === 0 && <div style={styles.empty}>{t('No connections')}</div>}
       <div style={styles.list}>
         {sorted.map(connection => (
           <article key={connection.id} style={styles.item}>
@@ -597,14 +620,16 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
               </div>
               <span style={styles.status}>
                 <StateDot state={connectionStateDot(connection.status)} />
-                {connectionStatusLabel(connection.status)}
+                {localizedConnectionStatus(connection.status, t)}
               </span>
             </div>
             <div style={styles.pills}>
-              <Pill>{connection.access === 'read-only' ? 'Read only' : 'Read and write'}</Pill>
-              <Pill>{connection.authKind === 'oauth' ? 'OAuth' : 'API key'}</Pill>
+              <Pill>{connection.access === 'read-only' ? t('Read only') : t('Read and write')}</Pill>
+              <Pill>{connection.authKind === 'oauth' ? t('OAuth') : t('API key')}</Pill>
               {connection.scopes.map(scope => <Pill key={scope}>{scope}</Pill>)}
-              {connection.enabledTools.length > 0 && <Pill>{connection.enabledTools.length} tools</Pill>}
+              {connection.enabledTools.length > 0 && (
+                <Pill>{t('{count} tools', { count: String(connection.enabledTools.length) })}</Pill>
+              )}
             </div>
             {connection.statusMessage !== undefined && (
               <p style={styles.statusMessage}>{connection.statusMessage}</p>
@@ -612,19 +637,19 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
             <div style={styles.itemBottom}>
               <span style={styles.metadata}>
                 {connection.lastConnectedAt === undefined
-                  ? 'Not connected yet'
-                  : `Last connected ${new Date(connection.lastConnectedAt).toLocaleString()}`}
+                  ? t('Not connected yet')
+                  : t('Last connected {time}', { time: new Date(connection.lastConnectedAt).toLocaleString() })}
               </span>
               {confirmDisconnect === connection.id ? (
                 <div style={styles.confirm}>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmDisconnect(undefined)}>Cancel</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmDisconnect(undefined)}>{t('Cancel')}</Button>
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={busy === connection.id}
                     onClick={() => void disconnect(connection.id)}
                   >
-                    Disconnect
+                    {t('Disconnect')}
                   </Button>
                 </div>
               ) : (
@@ -637,7 +662,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
                       disabled={busy !== undefined}
                       onClick={() => reconnect(connection)}
                     >
-                      Reconnect
+                      {t('Reconnect')}
                     </Button>
                   )}
                   {connection.status !== 'disconnected' && (
@@ -648,7 +673,7 @@ function ConnectionsSection({ bridge }: { bridge?: DesktopConnectionsBridge }): 
                       disabled={busy !== undefined}
                       onClick={() => setConfirmDisconnect(connection.id)}
                     >
-                      Disconnect
+                      {t('Disconnect')}
                     </Button>
                   )}
                 </div>
@@ -886,12 +911,16 @@ function isUserFacingPlugin(entry: PluginInventoryEntry): boolean {
     !entry.moduleName.startsWith('@dolphinminer/')
 }
 
-function pluginRuntimeLabel(entry: PluginInventoryEntry, desiredEnabled = entry.enabled): string {
-  if (desiredEnabled !== entry.enabled) return desiredEnabled ? 'Unavailable' : 'Still running'
-  if (!entry.enabled) return 'Disabled'
-  if (entry.fiberPhase === 'active') return 'Installed'
-  if (entry.fiberPhase === 'failed') return 'Unavailable'
-  return 'Starting'
+function pluginRuntimeLabel(
+  entry: PluginInventoryEntry,
+  desiredEnabled: boolean,
+  t: DesktopTranslate,
+): string {
+  if (desiredEnabled !== entry.enabled) return desiredEnabled ? t('Unavailable') : t('Still running')
+  if (!entry.enabled) return t('Disabled')
+  if (entry.fiberPhase === 'active') return t('Installed')
+  if (entry.fiberPhase === 'failed') return t('Unavailable')
+  return t('Starting')
 }
 
 function PluginCatalogTab({
@@ -902,6 +931,7 @@ function PluginCatalogTab({
   policy,
   pending,
   onToggle,
+  t,
 }: {
   entries: readonly PluginInventoryEntry[]
   loading: boolean
@@ -910,6 +940,7 @@ function PluginCatalogTab({
   policy?: DesktopPluginPolicySnapshot
   pending: ReadonlySet<string>
   onToggle: (entry: PluginInventoryEntry, enabled: boolean) => void
+  t: DesktopTranslate
 }): React.JSX.Element {
   const normalized = query.trim().toLocaleLowerCase()
   const filtered = normalized.length === 0
@@ -921,10 +952,10 @@ function PluginCatalogTab({
   return (
     <div>
       {failure !== undefined && <div className="dsh-plugin-center__notice" role="alert">{failure}</div>}
-      {loading && <div className="dsh-plugin-center__empty">Loading plugins...</div>}
+      {loading && <div className="dsh-plugin-center__empty">{t('Loading plugins...')}</div>}
       {!loading && filtered.length === 0 && (
         <div className="dsh-plugin-center__empty">
-          {entries.length === 0 ? 'No user plugins are installed.' : 'No plugins match this search.'}
+          {entries.length === 0 ? t('No user plugins are installed.') : t('No plugins match this search.')}
         </div>
       )}
       <ul className="dsh-plugin-center__list">
@@ -941,12 +972,14 @@ function PluginCatalogTab({
               <span className="dsh-plugin-center__identity">
                 <span className="dsh-plugin-center__name">{pluginDisplayName(entry.moduleName)}</span>
                 <span className={`dsh-plugin-center__description${drifting ? ' dsh-plugin-center__runtime-error' : ''}`}>
-                  {pluginRuntimeLabel(entry, desiredEnabled)} · {entry.moduleName}
+                  {pluginRuntimeLabel(entry, desiredEnabled, t)} · {entry.moduleName}
                 </span>
               </span>
               <SettingsToggle
                 checked={desiredEnabled}
-                label={`${desiredEnabled ? 'Disable' : 'Enable'} ${pluginDisplayName(entry.moduleName)}`}
+                label={t(desiredEnabled ? 'Disable {name}' : 'Enable {name}', {
+                  name: pluginDisplayName(entry.moduleName),
+                })}
                 disabled={policy === undefined || pending.has(entryId)}
                 onChange={enabled => onToggle(entry, enabled)}
               />
@@ -963,21 +996,23 @@ function McpTab({
   loading,
   failure,
   onManageApps,
+  t,
 }: {
   snapshot?: ConnectionSnapshot
   loading: boolean
   failure?: string
   onManageApps: () => void
+  t: DesktopTranslate
 }): React.JSX.Element {
   const servers = snapshot?.connections ?? []
   return (
     <div>
       <div className="dsh-plugin-center__panel-toolbar" style={{ gap: 8 }}>
-        <Button size="sm" variant="outline" onClick={onManageApps}>Manage Apps</Button>
+        <Button size="sm" variant="outline" onClick={onManageApps}>{t('Manage Apps')}</Button>
       </div>
       {failure !== undefined && <div className="dsh-plugin-center__notice" role="alert">{failure}</div>}
-      {loading && <div className="dsh-plugin-center__empty">Loading MCP servers...</div>}
-      {!loading && servers.length === 0 && <div className="dsh-plugin-center__empty">No MCP servers</div>}
+      {loading && <div className="dsh-plugin-center__empty">{t('Loading MCP servers...')}</div>}
+      {!loading && servers.length === 0 && <div className="dsh-plugin-center__empty">{t('No MCP servers')}</div>}
       <ul className="dsh-plugin-center__list">
         {servers.map(connection => (
           <li className="dsh-plugin-center__row" key={connection.id}>
@@ -987,12 +1022,14 @@ function McpTab({
             <span className="dsh-plugin-center__identity">
               <span className="dsh-plugin-center__name">{connection.label}</span>
               <span className="dsh-plugin-center__description">
-                {connection.enabledTools.length} tools · {connection.access === 'read-only' ? 'Read only' : 'Read and write'}
+                {t('{count} tools', { count: String(connection.enabledTools.length) })} · {connection.access === 'read-only'
+                  ? t('Read only')
+                  : t('Read and write')}
               </span>
             </span>
             <span className="dsh-plugin-center__status">
               <StateDot state={connectionStateDot(connection.status)} />
-              {connectionStatusLabel(connection.status)}
+              {localizedConnectionStatus(connection.status, t)}
             </span>
           </li>
         ))}
@@ -1001,7 +1038,7 @@ function McpTab({
   )
 }
 
-function MarketplaceTab(): React.JSX.Element {
+function MarketplaceTab({ t }: { t: DesktopTranslate }): React.JSX.Element {
   return (
     <div className="dsh-plugin-center__marketplace">
       <div className="dsh-plugin-center__row">
@@ -1009,11 +1046,11 @@ function MarketplaceTab(): React.JSX.Element {
           <IconBrowseOutline16 size={18} />
         </span>
         <span className="dsh-plugin-center__identity">
-          <span className="dsh-plugin-center__name">DeepSeek Harness plugin directory</span>
-          <span className="dsh-plugin-center__description">Community plugins tagged dsh-plugin on GitHub</span>
+          <span className="dsh-plugin-center__name">{t('DeepSeek Harness plugin directory')}</span>
+          <span className="dsh-plugin-center__description">{t('Community plugins tagged dsh-plugin on GitHub')}</span>
         </span>
         <Button size="sm" variant="outline" icon={<IconRightUpOutline16 />} onClick={openPluginDirectory}>
-          Browse
+          {t('Browse')}
         </Button>
       </div>
     </div>
@@ -1024,10 +1061,12 @@ function PluginsSettingsSection({
   bridge,
   listPlugins,
   pluginPolicyBridge,
+  t,
 }: {
   bridge?: DesktopConnectionsBridge
   listPlugins: () => Promise<PluginInventorySnapshot>
   pluginPolicyBridge?: DesktopPluginPolicyBridge
+  t: DesktopTranslate
 }): React.JSX.Element {
   const [active, setActive] = useState<PluginCenterTabId>('plugins')
   const [query, setQuery] = useState('')
@@ -1053,7 +1092,7 @@ function PluginsSettingsSection({
       setPlugins(await listPlugins())
       setPluginsFailure(undefined)
     } catch (cause) {
-      setPluginsFailure(errorMessage(cause))
+      setPluginsFailure(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setPluginsLoading(false)
     }
@@ -1061,7 +1100,7 @@ function PluginsSettingsSection({
 
   const refreshConnections = async (): Promise<void> => {
     if (bridge === undefined) {
-      setConnectionsFailure('The desktop connection bridge is unavailable.')
+      setConnectionsFailure(t('The desktop connection bridge is unavailable.'))
       setConnectionsLoading(false)
       return
     }
@@ -1070,7 +1109,7 @@ function PluginsSettingsSection({
       setConnections(await bridge.list())
       setConnectionsFailure(undefined)
     } catch (cause) {
-      setConnectionsFailure(errorMessage(cause))
+      setConnectionsFailure(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setConnectionsLoading(false)
     }
@@ -1078,11 +1117,11 @@ function PluginsSettingsSection({
 
   useEffect(() => {
     void refreshPlugins()
-  }, [listPlugins])
+  }, [listPlugins, t])
 
   useEffect(() => {
     if (pluginPolicyBridge === undefined) {
-      setPluginPolicyFailure('Desktop plugin preferences are unavailable.')
+      setPluginPolicyFailure(t('Plugin settings are unavailable.'))
       return
     }
     let active = true
@@ -1091,7 +1130,7 @@ function PluginsSettingsSection({
       setPluginPolicySnapshot(snapshot)
       setPluginPolicyFailure(snapshot.statusMessage)
     }).catch(cause => {
-      if (active) setPluginPolicyFailure(errorMessage(cause))
+      if (active) setPluginPolicyFailure(errorMessage(cause, t('The desktop operation failed.')))
     })
     const dispose = pluginPolicyBridge.onChanged(snapshot => {
       setPluginPolicySnapshot(snapshot)
@@ -1101,7 +1140,7 @@ function PluginsSettingsSection({
       active = false
       dispose()
     }
-  }, [pluginPolicyBridge])
+  }, [pluginPolicyBridge, t])
 
   useEffect(() => {
     void refreshConnections()
@@ -1111,7 +1150,7 @@ function PluginsSettingsSection({
       setConnectionsFailure(undefined)
       setConnectionsLoading(false)
     })
-  }, [bridge])
+  }, [bridge, t])
 
   const pluginEntries = useMemo(
     () => (plugins?.entries ?? []).filter(isUserFacingPlugin),
@@ -1120,10 +1159,10 @@ function PluginsSettingsSection({
   const connectedApps = connections?.connections.filter(connection => connection.status !== 'disconnected').length ?? 0
   const mcpServers = connections?.connections.length ?? 0
   const tabs: ReadonlyArray<{ id: PluginCenterTabId; label: string; count?: number }> = [
-    { id: 'plugins', label: 'Plugins', count: pluginEntries.length },
-    { id: 'apps', label: 'Apps', count: connectedApps },
-    { id: 'mcp', label: 'MCP', count: mcpServers },
-    { id: 'marketplace', label: 'Marketplace', count: 1 },
+    { id: 'plugins', label: t('Plugins'), count: pluginEntries.length },
+    { id: 'apps', label: t('Apps'), count: connectedApps },
+    { id: 'mcp', label: t('MCP'), count: mcpServers },
+    { id: 'marketplace', label: t('Marketplace'), count: 1 },
   ]
 
   const togglePlugin = async (entry: PluginInventoryEntry, enabled: boolean): Promise<void> => {
@@ -1133,7 +1172,7 @@ function PluginsSettingsSection({
     try {
       const current = pluginPolicySnapshot
       if (pluginPolicyBridge === undefined || current === undefined) {
-        throw new Error('Plugin settings are unavailable.')
+        throw new Error(t('Plugin settings are unavailable.'))
       }
       const saved = await pluginPolicyBridge.update({
         expectedRevision: current.revision,
@@ -1145,7 +1184,7 @@ function PluginsSettingsSection({
       setPluginPolicyFailure(saved.statusMessage)
       const savedOverride = saved.overrides[entryId]
       if (savedOverride?.moduleName !== entry.moduleName || savedOverride.enabled !== enabled) {
-        throw new Error('The plugin preference could not be saved.')
+        throw new Error(t('The plugin preference could not be saved.'))
       }
 
       const deadline = Date.now() + 5_000
@@ -1154,15 +1193,15 @@ function PluginsSettingsSection({
         setPlugins(next)
         const runtime = next.entries.find(candidate => String(candidate.entryId) === entryId)
         if (runtime === undefined || runtime.moduleName !== entry.moduleName) {
-          throw new Error('The plugin is no longer installed.')
+          throw new Error(t('The plugin is no longer installed.'))
         }
         if (runtime.enabled === enabled && (!enabled || runtime.fiberPhase === 'active')) return
-        if (enabled && runtime.fiberPhase === 'failed') throw new Error('The plugin failed to start.')
+        if (enabled && runtime.fiberPhase === 'failed') throw new Error(t('The plugin failed to start.'))
         await new Promise(resolve => setTimeout(resolve, 125))
       }
-      throw new Error(enabled ? 'The plugin did not start.' : 'The plugin did not stop.')
+      throw new Error(enabled ? t('The plugin did not start.') : t('The plugin did not stop.'))
     } catch (cause) {
-      setPluginsFailure(errorMessage(cause))
+      setPluginsFailure(errorMessage(cause, t('The desktop operation failed.')))
       if (pluginPolicyBridge !== undefined) {
         void pluginPolicyBridge.getState().then(setPluginPolicySnapshot).catch(() => undefined)
       }
@@ -1179,8 +1218,8 @@ function PluginsSettingsSection({
     if (result === undefined) return
     setInstallFailure(undefined)
     setInstallNotice(result.changed
-      ? `Installed ${result.packageName}. Reloading Harness...`
-      : `${result.packageName} is already installed.`)
+      ? t('Installed {name}. Reloading Harness...', { name: result.packageName })
+      : t('{name} is already installed.', { name: result.packageName }))
     if (!result.changed) {
       setActive('plugins')
       void refreshPlugins()
@@ -1195,7 +1234,7 @@ function PluginsSettingsSection({
     try {
       completeInstall(await pluginPolicyBridge.installDirectory())
     } catch (cause) {
-      setInstallFailure(errorMessage(cause))
+      setInstallFailure(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setInstalling(false)
     }
@@ -1213,20 +1252,20 @@ function PluginsSettingsSection({
       setPackageSpec('')
       completeInstall(result)
     } catch (cause) {
-      setInstallFailure(errorMessage(cause))
+      setInstallFailure(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setInstalling(false)
     }
   }
 
   return (
-    <section className="dsh-plugin-center" aria-label="Plugins">
+    <section className="dsh-plugin-center" aria-label={t('Plugins')}>
       <SettingsStyles />
       <style>{pluginCenterStyles}</style>
       <header className="dsh-plugin-center__header">
         <div>
-          <h2 className="dsh-plugin-center__title">Plugins</h2>
-          <p className="dsh-plugin-center__subtitle">Manage plugins, apps, and MCP servers</p>
+          <h2 className="dsh-plugin-center__title">{t('Plugins')}</h2>
+          <p className="dsh-plugin-center__subtitle">{t('Manage plugins, apps, and MCP servers')}</p>
         </div>
         <div className="dsh-plugin-center__toolbar">
           <Button
@@ -1236,7 +1275,7 @@ function PluginsSettingsSection({
             disabled={pluginPolicyBridge === undefined || installing}
             onClick={() => { void browseDirectory() }}
           >
-            Browse directory
+            {t('Browse directory')}
           </Button>
           <Button
             size="sm"
@@ -1248,12 +1287,12 @@ function PluginsSettingsSection({
               setInstallOpen(true)
             }}
           >
-            Add
+            {t('Add')}
           </Button>
         </div>
       </header>
       <div className="dsh-plugin-center__tabs-row">
-        <div className="dsh-plugin-center__tabs" role="tablist" aria-label="Plugin categories">
+        <div className="dsh-plugin-center__tabs" role="tablist" aria-label={t('Plugin categories')}>
           {tabs.map((tab, index) => (
             <button
               ref={element => { tabRefs.current[index] = element }}
@@ -1288,8 +1327,8 @@ function PluginsSettingsSection({
             <input
               type="search"
               value={query}
-              aria-label="Search plugins"
-              placeholder="Search plugins"
+              aria-label={t('Search plugins')}
+              placeholder={t('Search plugins')}
               onChange={event => setQuery(event.currentTarget.value)}
             />
           </label>
@@ -1313,28 +1352,30 @@ function PluginsSettingsSection({
             policy={pluginPolicySnapshot}
             pending={pendingPlugins}
             onToggle={(entry, enabled) => { void togglePlugin(entry, enabled) }}
+            t={t}
           />
         )}
-        {active === 'apps' && <ConnectionsSection bridge={bridge} />}
+        {active === 'apps' && <ConnectionsSection bridge={bridge} t={t} />}
         {active === 'mcp' && (
           <McpTab
             snapshot={connections}
             loading={connectionsLoading}
             failure={connectionsFailure}
             onManageApps={() => setActive('apps')}
+            t={t}
           />
         )}
-        {active === 'marketplace' && <MarketplaceTab />}
+        {active === 'marketplace' && <MarketplaceTab t={t} />}
       </div>
       <Modal
         open={installOpen}
         onClose={() => { if (!installing) setInstallOpen(false) }}
-        title="Add plugin"
-        closeLabel="Close plugin installer"
+        title={t('Add plugin')}
+        closeLabel={t('Close plugin installer')}
         footer={(
           <div style={styles.formActions}>
             <Button variant="outline" disabled={installing} onClick={() => setInstallOpen(false)}>
-              Cancel
+              {t('Cancel')}
             </Button>
             <Button
               type="submit"
@@ -1342,14 +1383,14 @@ function PluginsSettingsSection({
               variant="primary"
               disabled={installing || packageSpec.trim() === ''}
             >
-              {installing ? 'Adding...' : 'Add'}
+              {installing ? t('Adding...') : t('Add')}
             </Button>
           </div>
         )}
       >
         <form id="dsh-plugin-install-form" style={styles.form} onSubmit={event => { void installRegistry(event) }}>
           <label style={styles.field}>
-            <span style={styles.label}>npm package</span>
+            <span style={styles.label}>{t('npm package')}</span>
             <Input
               autoFocus
               autoComplete="off"
@@ -1374,84 +1415,90 @@ function worktreeBranch(worktree: WorktreeSummary): string {
   return branch.startsWith('refs/heads/') ? branch.slice('refs/heads/'.length) : branch
 }
 
-function worktreeStatus(worktree: WorktreeSummary): {
+function worktreeStatus(worktree: WorktreeSummary, t: DesktopTranslate): {
   state: 'done' | 'warning' | 'ongoing' | 'error'
   label: string
 } {
-  if (worktree.lifecycle === 'provisioning') return { state: 'ongoing', label: 'Creating' }
-  if (worktree.lifecycle === 'removing') return { state: 'ongoing', label: 'Cleaning up' }
-  if (worktree.lifecycle === 'recovery-required') return { state: 'error', label: 'Needs attention' }
-  if (worktree.lifecycle === 'orphaned') return { state: 'warning', label: 'Orphaned' }
-  if (worktree.lifecycle === 'removed') return { state: 'done', label: 'Removed' }
-  return { state: 'done', label: 'Ready' }
+  if (worktree.lifecycle === 'provisioning') return { state: 'ongoing', label: t('Creating') }
+  if (worktree.lifecycle === 'removing') return { state: 'ongoing', label: t('Cleaning up') }
+  if (worktree.lifecycle === 'recovery-required') return { state: 'error', label: t('Needs attention') }
+  if (worktree.lifecycle === 'orphaned') return { state: 'warning', label: t('Orphaned') }
+  if (worktree.lifecycle === 'removed') return { state: 'done', label: t('Removed') }
+  return { state: 'done', label: t('Ready') }
 }
 
-function worktreeRecoveryLabel(reason: WorktreeSummary['recoveryReason']): string | undefined {
+function worktreeRecoveryLabel(
+  reason: WorktreeSummary['recoveryReason'],
+  t: DesktopTranslate,
+): string | undefined {
   if (reason === undefined) return undefined
-  const labels: Record<NonNullable<WorktreeSummary['recoveryReason']>, string> = {
-    'create-ambiguous': 'Creation result is ambiguous',
-    'interrupted-create': 'Creation was interrupted',
-    'interrupted-remove': 'Cleanup was interrupted',
-    'inspection-failed': 'Git inspection failed',
-    'external-change': 'Checkout identity changed',
-    locked: 'Managed lock changed',
-    missing: 'Checkout is missing',
-    moved: 'Branch moved to another checkout',
-  }
-  return labels[reason]
+  if (reason === 'create-ambiguous') return t('Creation result is ambiguous')
+  if (reason === 'interrupted-create') return t('Creation was interrupted')
+  if (reason === 'interrupted-remove') return t('Cleanup was interrupted')
+  if (reason === 'inspection-failed') return t('Git inspection failed')
+  if (reason === 'external-change') return t('Checkout identity changed')
+  if (reason === 'locked') return t('Managed lock changed')
+  if (reason === 'missing') return t('Checkout is missing')
+  return t('Branch moved to another checkout')
 }
 
-function repositoryIdentityStateLabel(state: 'matching' | 'changed' | 'not-a-repository'): string {
-  if (state === 'matching') return 'Matches original repository'
-  if (state === 'changed') return 'Different repository identity'
-  return 'Not a Git repository'
+function repositoryIdentityStateLabel(
+  state: 'matching' | 'changed' | 'not-a-repository',
+  t: DesktopTranslate,
+): string {
+  if (state === 'matching') return t('Matches original repository')
+  if (state === 'changed') return t('Different repository identity')
+  return t('Not a Git repository')
 }
 
-function worktreeRegistrationStateLabel(state: 'matching' | 'changed' | 'missing' | 'unavailable'): string {
-  if (state === 'matching') return 'Matches registered checkout'
-  if (state === 'changed') return 'Registration identity changed'
-  if (state === 'missing') return 'Registration missing'
-  return 'Unavailable because the original repository changed'
+function worktreeRegistrationStateLabel(
+  state: 'matching' | 'changed' | 'missing' | 'unavailable',
+  t: DesktopTranslate,
+): string {
+  if (state === 'matching') return t('Matches registered checkout')
+  if (state === 'changed') return t('Registration identity changed')
+  if (state === 'missing') return t('Registration missing')
+  return t('Unavailable because the original repository changed')
 }
 
-function handoffBlockerLabel(blocker: WorktreeHandoffBlocker): string {
-  const labels: Record<WorktreeHandoffBlocker, string> = {
-    'source-detached': 'The source checkout is detached.',
-    'source-conflicts': 'Resolve source merge conflicts first.',
-    'source-diverged': 'The source no longer descends from the managed base commit.',
-    'destination-detached': 'The destination checkout is detached.',
-    'destination-head-changed': 'The destination HEAD is no longer the managed base commit.',
-    'destination-dirty': 'The destination contains changes. Preserve or remove them first.',
-    'destination-collision': 'An ignored or untracked destination path collides with this transfer.',
-    'no-changes': 'The source has no changes relative to the managed base commit.',
-  }
-  return labels[blocker]
+function handoffBlockerLabel(blocker: WorktreeHandoffBlocker, t: DesktopTranslate): string {
+  if (blocker === 'source-detached') return t('The source checkout is detached.')
+  if (blocker === 'source-conflicts') return t('Resolve source merge conflicts first.')
+  if (blocker === 'source-diverged') return t('The source no longer descends from the managed base commit.')
+  if (blocker === 'destination-detached') return t('The destination checkout is detached.')
+  if (blocker === 'destination-head-changed') return t('The destination HEAD is no longer the managed base commit.')
+  if (blocker === 'destination-dirty') return t('The destination contains changes. Preserve or remove them first.')
+  if (blocker === 'destination-collision') return t('An ignored or untracked destination path collides with this transfer.')
+  return t('The source has no changes relative to the managed base commit.')
 }
 
-function handoffFileStatus(status: WorktreeHandoffPreview['preflight']['files'][number]['status']): string {
-  const labels = {
-    added: 'Added',
-    modified: 'Modified',
-    deleted: 'Deleted',
-    renamed: 'Renamed',
-    copied: 'Copied',
-    'type-changed': 'Type changed',
-    unmerged: 'Conflict',
-    untracked: 'Untracked',
-  }
-  return labels[status]
+function handoffFileStatus(
+  status: WorktreeHandoffPreview['preflight']['files'][number]['status'],
+  t: DesktopTranslate,
+): string {
+  if (status === 'added') return t('Added')
+  if (status === 'modified') return t('Modified')
+  if (status === 'deleted') return t('Deleted')
+  if (status === 'renamed') return t('Renamed')
+  if (status === 'copied') return t('Copied')
+  if (status === 'type-changed') return t('Type changed')
+  if (status === 'unmerged') return t('Conflict')
+  return t('Untracked')
 }
 
-function cleanupChangeStatus(change: WorktreeCleanupPreview['inspection']['changes'][number]): string {
-  if (change.kind === 'ignored') return 'Ignored'
-  if (change.kind === 'untracked') return 'Untracked'
-  if (change.kind === 'unmerged') return 'Conflict'
-  if (change.kind === 'renamed') return 'Renamed'
-  if (change.indexStatus !== '.' && change.worktreeStatus !== '.') return 'Staged + changed'
-  return change.indexStatus !== '.' ? 'Staged' : 'Changed'
+function cleanupChangeStatus(
+  change: WorktreeCleanupPreview['inspection']['changes'][number],
+  t: DesktopTranslate,
+): string {
+  if (change.kind === 'ignored') return t('Ignored')
+  if (change.kind === 'untracked') return t('Untracked')
+  if (change.kind === 'unmerged') return t('Conflict')
+  if (change.kind === 'renamed') return t('Renamed')
+  if (change.indexStatus !== '.' && change.worktreeStatus !== '.') return t('Staged + changed')
+  return change.indexStatus !== '.' ? t('Staged') : t('Changed')
 }
 
-function WorktreesSection(): React.JSX.Element {
+function WorktreesSection({ t }: { t: DesktopTranslate }): React.JSX.Element {
   const bridge = window.dshDesktop?.worktrees
   const [snapshot, setSnapshot] = useState<WorktreeSnapshot>()
   const [loading, setLoading] = useState(true)
@@ -1476,7 +1523,7 @@ function WorktreesSection(): React.JSX.Element {
 
   const refresh = async (): Promise<void> => {
     if (bridge === undefined) {
-      setError('The desktop worktree bridge is unavailable.')
+      setError(t('The desktop worktree bridge is unavailable.'))
       setLoading(false)
       return
     }
@@ -1485,7 +1532,7 @@ function WorktreesSection(): React.JSX.Element {
       applySnapshot(await bridge.reconcile())
       setError(undefined)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setLoading(false)
     }
@@ -1493,7 +1540,7 @@ function WorktreesSection(): React.JSX.Element {
 
   useEffect(() => {
     if (bridge === undefined) {
-      setError('The desktop worktree bridge is unavailable.')
+      setError(t('The desktop worktree bridge is unavailable.'))
       setLoading(false)
       return
     }
@@ -1507,7 +1554,7 @@ function WorktreesSection(): React.JSX.Element {
         setError(undefined)
       }
     }).catch(cause => {
-      if (active) setError(errorMessage(cause))
+      if (active) setError(errorMessage(cause, t('The desktop operation failed.')))
     }).finally(() => {
       if (active) setLoading(false)
     })
@@ -1515,7 +1562,7 @@ function WorktreesSection(): React.JSX.Element {
       active = false
       unsubscribe()
     }
-  }, [bridge])
+  }, [bridge, t])
 
   const inspectCleanup = async (worktreeId: string): Promise<void> => {
     if (bridge === undefined) return
@@ -1526,7 +1573,7 @@ function WorktreesSection(): React.JSX.Element {
       setCleanupPreview(await bridge.previewCleanup({ worktreeId }))
       setCleanupAcknowledged(false)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setCleanupPreviewingId(undefined)
     }
@@ -1551,7 +1598,7 @@ function WorktreesSection(): React.JSX.Element {
     } catch (cause) {
       setCleanupPreview(undefined)
       setCleanupAcknowledged(false)
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setCleaning(false)
     }
@@ -1574,11 +1621,11 @@ function WorktreesSection(): React.JSX.Element {
     setNotice(undefined)
     try {
       const preview = await bridge.previewRecovery({ worktreeId, action })
-      if (preview.action !== action) throw new Error('The desktop returned a different worktree recovery action.')
+      if (preview.action !== action) throw new Error(t('The desktop returned a different worktree recovery action.'))
       setRecoveryPreview(preview)
       setRecoveryAcknowledged(false)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setRecoveryPreviewingId(undefined)
     }
@@ -1598,25 +1645,25 @@ function WorktreesSection(): React.JSX.Element {
     setNotice(undefined)
     try {
       const result = await bridge.confirmRecovery({ previewId: recoveryPreview.previewId, confirmed: true })
-      if (result.action !== action) throw new Error('The desktop returned a different worktree recovery result.')
+      if (result.action !== action) throw new Error(t('The desktop returned a different worktree recovery result.'))
       setRecoveryPreview(undefined)
       setRecoveryAcknowledged(false)
       setNotice(action === 'forget-missing'
-        ? 'The stale missing-worktree record was forgotten. No files or Git branches were changed.'
+        ? t('The stale missing-worktree record was forgotten. No files or Git branches were changed.')
         : action === 'stop-tracking'
-          ? 'DSH Desktop stopped tracking the changed checkout. Its directory, files, Git metadata, and branch were left untouched.'
+          ? t('DSH Desktop stopped tracking the changed checkout. Its directory, files, Git metadata, and branch were left untouched.')
         : action === 'restore-moved'
           ? result.worktree.lifecycle === 'orphaned'
-            ? 'The checkout was restored to its registered path with its files and branch intact. It is now orphaned.'
-            : 'The checkout was restored to its registered path with its files and branch intact.'
+            ? t('The checkout was restored to its registered path with its files and branch intact. It is now orphaned.')
+            : t('The checkout was restored to its registered path with its files and branch intact.')
         : result.worktree.lifecycle === 'orphaned'
-          ? 'The interrupted cleanup was cancelled. The unchanged checkout is now orphaned.'
-          : 'The interrupted cleanup was cancelled. The unchanged checkout is ready.')
+          ? t('The interrupted cleanup was cancelled. The unchanged checkout is now orphaned.')
+          : t('The interrupted cleanup was cancelled. The unchanged checkout is ready.'))
       applySnapshot(await bridge.list())
     } catch (cause) {
       setRecoveryPreview(undefined)
       setRecoveryAcknowledged(false)
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setRecovering(false)
     }
@@ -1634,7 +1681,7 @@ function WorktreesSection(): React.JSX.Element {
       setHandoffPreview(await bridge.previewHandoff({ worktreeId, direction }))
       setHandoffAcknowledged(false)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setHandoffPreviewingKey(undefined)
     }
@@ -1658,13 +1705,13 @@ function WorktreesSection(): React.JSX.Element {
       setHandoffPreview(undefined)
       setHandoffAcknowledged(false)
       setNotice(direction === 'local-to-worktree'
-        ? 'Local changes were staged in the managed worktree. The local checkout is unchanged.'
-        : 'Worktree changes were staged in the local checkout. The managed worktree is unchanged.')
+        ? t('Local changes were staged in the managed worktree. The local checkout is unchanged.')
+        : t('Worktree changes were staged in the local checkout. The managed worktree is unchanged.'))
       applySnapshot(await bridge.list())
     } catch (cause) {
       setHandoffPreview(undefined)
       setHandoffAcknowledged(false)
-      setError(errorMessage(cause))
+      setError(errorMessage(cause, t('The desktop operation failed.')))
     } finally {
       setTransferring(false)
     }
@@ -1677,13 +1724,13 @@ function WorktreesSection(): React.JSX.Element {
   return (
     <section style={styles.root} aria-labelledby="desktop-worktrees-heading">
       <header style={styles.header}>
-        <h2 id="desktop-worktrees-heading" style={styles.heading}>Worktrees</h2>
+        <h2 id="desktop-worktrees-heading" style={styles.heading}>{t('Worktrees')}</h2>
         <Button
           size="sm"
           variant="toolbar"
           icon={<IconRefreshOutline16 />}
-          aria-label="Recheck worktrees"
-          title="Recheck worktrees"
+          aria-label={t('Recheck worktrees')}
+          title={t('Recheck worktrees')}
           disabled={loading}
           onClick={() => void refresh()}
         />
@@ -1700,11 +1747,11 @@ function WorktreesSection(): React.JSX.Element {
         </div>
       )}
 
-      {!loading && worktrees.length === 0 && <div style={styles.empty}>No managed worktrees.</div>}
+      {!loading && worktrees.length === 0 && <div style={styles.empty}>{t('No managed worktrees.')}</div>}
       <div style={styles.list}>
         {worktrees.map(worktree => {
-          const status = worktreeStatus(worktree)
-          const recovery = worktreeRecoveryLabel(worktree.recoveryReason)
+          const status = worktreeStatus(worktree, t)
+          const recovery = worktreeRecoveryLabel(worktree.recoveryReason, t)
           const cleanupAvailable = worktree.executionMode === 'worktree' &&
             (worktree.lifecycle === 'ready' || worktree.lifecycle === 'orphaned')
           const handoffAvailable = cleanupAvailable
@@ -1734,18 +1781,21 @@ function WorktreesSection(): React.JSX.Element {
                 </span>
               </div>
               <div style={styles.worktreeDetails}>
-                <span style={styles.metadata}>Repository: {worktree.repositoryRoot}</span>
+                <span style={styles.metadata}>{t('Repository: {path}', { path: worktree.repositoryRoot })}</span>
                 <span style={styles.metadata}>
-                  Base: {worktree.baseRef} at {worktree.baseCommit.slice(0, 12)}
+                  {t('Base: {ref} at {commit}', {
+                    ref: worktree.baseRef,
+                    commit: worktree.baseCommit.slice(0, 12),
+                  })}
                 </span>
                 {worktree.sessionId !== undefined && (
-                  <span style={styles.metadata}>Session: {worktree.sessionId}</span>
+                  <span style={styles.metadata}>{t('Session: {id}', { id: worktree.sessionId })}</span>
                 )}
                 {recovery !== undefined && <p style={styles.statusMessage}>{recovery}</p>}
               </div>
               <div style={styles.itemBottom}>
                 <span style={styles.metadata}>
-                  {worktree.sessionState === 'bound' ? 'Session bound' : 'Awaiting session'}
+                  {worktree.sessionState === 'bound' ? t('Session bound') : t('Awaiting session')}
                 </span>
                 <div style={styles.worktreeActions}>
                   {keepInterruptedRemoval && (
@@ -1756,7 +1806,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectRecovery(worktree.id, 'keep-interrupted-removal')}
                     >
-                      Keep checkout
+                      {t('Keep checkout')}
                     </Button>
                   )}
                   {forgetMissing && (
@@ -1767,7 +1817,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectRecovery(worktree.id, 'forget-missing')}
                     >
-                      Forget record
+                      {t('Forget record')}
                     </Button>
                   )}
                   {restoreMoved && (
@@ -1778,7 +1828,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectRecovery(worktree.id, 'restore-moved')}
                     >
-                      Restore path
+                      {t('Restore path')}
                     </Button>
                   )}
                   {stopTracking && (
@@ -1789,7 +1839,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectRecovery(worktree.id, 'stop-tracking')}
                     >
-                      Stop tracking
+                      {t('Stop tracking')}
                     </Button>
                   )}
                   {handoffAvailable && (
@@ -1800,7 +1850,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectHandoff(worktree.id, 'local-to-worktree')}
                     >
-                      Import local
+                      {t('Import local')}
                     </Button>
                   )}
                   {handoffAvailable && (
@@ -1811,7 +1861,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectHandoff(worktree.id, 'worktree-to-local')}
                     >
-                      Send to local
+                      {t('Send to local')}
                     </Button>
                   )}
                   {cleanupAvailable && (
@@ -1822,7 +1872,7 @@ function WorktreesSection(): React.JSX.Element {
                       disabled={operationsBusy}
                       onClick={() => void inspectCleanup(worktree.id)}
                     >
-                      Clean up
+                      {t('Clean up')}
                     </Button>
                   )}
                 </div>
@@ -1835,15 +1885,15 @@ function WorktreesSection(): React.JSX.Element {
       <Modal
         open={cleanupPreview !== undefined}
         onClose={closeCleanupPreview}
-        title={cleanupPreview?.canRemove === false ? 'Worktree has changes' : 'Clean up worktree'}
-        closeLabel="Close cleanup preview"
+        title={cleanupPreview?.canRemove === false ? t('Worktree has changes') : t('Clean up worktree')}
+        closeLabel={t('Close cleanup preview')}
         description={cleanupPreview?.canRemove === false
-          ? 'Cleanup is blocked so modified, untracked, and ignored files remain in the checkout.'
-          : 'The clean checkout directory will be removed. Its Git branch will be kept.'}
+          ? t('Cleanup is blocked so modified, untracked, and ignored files remain in the checkout.')
+          : t('The clean checkout directory will be removed. Its Git branch will be kept.')}
         footer={(
           <div style={styles.formActions}>
             <Button variant="outline" disabled={cleaning} onClick={closeCleanupPreview}>
-              {cleanupPreview?.canRemove === false ? 'Keep worktree' : 'Cancel'}
+              {cleanupPreview?.canRemove === false ? t('Keep worktree') : t('Cancel')}
             </Button>
             {cleanupPreview?.canRemove === false ? (
               <Button
@@ -1852,7 +1902,7 @@ function WorktreesSection(): React.JSX.Element {
                 disabled={cleaning}
                 onClick={reviewCleanupTransfer}
               >
-                Review transfer
+                {t('Review transfer')}
               </Button>
             ) : (
               <Button
@@ -1861,7 +1911,7 @@ function WorktreesSection(): React.JSX.Element {
                 disabled={!cleanupAcknowledged || cleaning}
                 onClick={() => void confirmCleanup()}
               >
-                Clean up
+                {t('Clean up')}
               </Button>
             )}
           </div>
@@ -1871,15 +1921,15 @@ function WorktreesSection(): React.JSX.Element {
           <div style={styles.worktreeConfirmBody}>
             <div style={styles.worktreeConfirmDetails}>
               <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Branch</span>
+                <span style={styles.label}>{t('Branch')}</span>
                 <span style={styles.metadata}>{worktreeBranch(cleanupPreview.worktree)}</span>
               </div>
               <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Checkout</span>
+                <span style={styles.label}>{t('Checkout')}</span>
                 <span style={styles.metadata}>{cleanupPreview.inspection.worktreePath}</span>
               </div>
               <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Commit</span>
+                <span style={styles.label}>{t('Commit')}</span>
                 <span style={styles.metadata}>{cleanupPreview.inspection.head}</span>
               </div>
             </div>
@@ -1892,15 +1942,17 @@ function WorktreesSection(): React.JSX.Element {
                   onChange={event => setCleanupAcknowledged(event.currentTarget.checked)}
                   style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
                 />
-                <span>I understand this removes the checkout directory and keeps the branch.</span>
+                <span>{t('I understand this removes the checkout directory and keeps the branch.')}</span>
               </label>
             ) : (
               <div style={styles.field}>
-                <span style={styles.label}>Preserved changes ({cleanupPreview.inspection.changes.length})</span>
+                <span style={styles.label}>{t('Preserved changes ({count})', {
+                  count: String(cleanupPreview.inspection.changes.length),
+                })}</span>
                 <div style={styles.handoffFiles}>
                   {cleanupPreview.inspection.changes.map(change => (
                     <div key={change.path} style={styles.handoffFile}>
-                      <span style={styles.label}>{cleanupChangeStatus(change)}</span>
+                      <span style={styles.label}>{cleanupChangeStatus(change, t)}</span>
                       <span style={styles.metadata}>
                         {change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}
                       </span>
@@ -1909,7 +1961,7 @@ function WorktreesSection(): React.JSX.Element {
                 </div>
                 {cleanupPreview.inspection.changes.some(change => change.kind === 'ignored') && (
                   <p style={styles.statusMessage}>
-                    Ignored files stay only in this checkout and are not included in a Git transfer.
+                    {t('Ignored files stay only in this checkout and are not included in a Git transfer.')}
                   </p>
                 )}
               </div>
@@ -1922,23 +1974,23 @@ function WorktreesSection(): React.JSX.Element {
         open={recoveryPreview !== undefined}
         onClose={closeRecoveryPreview}
         title={recoveryPreview?.action === 'forget-missing'
-          ? 'Forget missing worktree'
+          ? t('Forget missing worktree')
           : recoveryPreview?.action === 'stop-tracking'
-            ? 'Stop tracking changed checkout'
+            ? t('Stop tracking changed checkout')
           : recoveryPreview?.action === 'restore-moved'
-            ? 'Restore moved worktree'
-            : 'Keep interrupted worktree'}
-        closeLabel="Close recovery preview"
+            ? t('Restore moved worktree')
+            : t('Keep interrupted worktree')}
+        closeLabel={t('Close recovery preview')}
         description={recoveryPreview?.action === 'forget-missing'
-          ? 'Remove a stale desktop record only after Git metadata and the checkout path are both absent.'
+          ? t('Remove a stale desktop record only after Git metadata and the checkout path are both absent.')
           : recoveryPreview?.action === 'stop-tracking'
-            ? 'Remove only the DSH Desktop assignment after the registered repository or checkout identity changed.'
+            ? t('Remove only the DSH Desktop assignment after the registered repository or checkout identity changed.')
           : recoveryPreview?.action === 'restore-moved'
-            ? 'Move the exact managed checkout back to its registered path without changing its branch or files.'
-            : 'Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged.'}
+            ? t('Move the exact managed checkout back to its registered path without changing its branch or files.')
+            : t('Cancel the old cleanup intent while leaving the checkout, branch, and files unchanged.')}
         footer={(
           <div style={styles.formActions}>
-            <Button variant="outline" disabled={recovering} onClick={closeRecoveryPreview}>Cancel</Button>
+            <Button variant="outline" disabled={recovering} onClick={closeRecoveryPreview}>{t('Cancel')}</Button>
             <Button
               variant="primary"
               icon={recoveryPreview?.action === 'forget-missing' || recoveryPreview?.action === 'stop-tracking'
@@ -1950,12 +2002,12 @@ function WorktreesSection(): React.JSX.Element {
               onClick={() => void confirmRecovery()}
             >
               {recoveryPreview?.action === 'forget-missing'
-                ? 'Forget record'
+                ? t('Forget record')
                 : recoveryPreview?.action === 'stop-tracking'
-                  ? 'Stop tracking'
+                  ? t('Stop tracking')
                 : recoveryPreview?.action === 'restore-moved'
-                  ? 'Restore path'
-                  : 'Keep checkout'}
+                  ? t('Restore path')
+                  : t('Keep checkout')}
             </Button>
           </div>
         )}
@@ -1964,16 +2016,16 @@ function WorktreesSection(): React.JSX.Element {
           <div style={styles.worktreeConfirmBody}>
             <div style={styles.worktreeConfirmDetails}>
               <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Branch</span>
+                <span style={styles.label}>{t('Branch')}</span>
                 <span style={styles.metadata}>{worktreeBranch(recoveryPreview.worktree)}</span>
               </div>
               <div style={styles.worktreeDetail}>
                 <span style={styles.label}>
                   {recoveryPreview.action === 'restore-moved'
-                    ? 'Current checkout'
+                    ? t('Current checkout')
                     : recoveryPreview.action === 'stop-tracking'
-                      ? 'Registered checkout'
-                      : 'Checkout'}
+                      ? t('Registered checkout')
+                      : t('Checkout')}
                 </span>
                 <span style={styles.metadata}>
                   {recoveryPreview.action === 'restore-moved'
@@ -1986,59 +2038,61 @@ function WorktreesSection(): React.JSX.Element {
               {recoveryPreview.action === 'keep-interrupted-removal' ? (
                 <>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Current commit</span>
+                    <span style={styles.label}>{t('Current commit')}</span>
                     <span style={styles.metadata}>{recoveryPreview.inspection.head}</span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Checkout state</span>
+                    <span style={styles.label}>{t('Checkout state')}</span>
                     <span style={styles.metadata}>
                       {recoveryPreview.inspection.clean
-                        ? 'Clean'
-                        : `${String(recoveryPreview.inspection.changes.length)} preserved changes`}
+                        ? t('Clean')
+                        : t('{count} preserved changes', {
+                          count: String(recoveryPreview.inspection.changes.length),
+                        })}
                     </span>
                   </div>
                 </>
               ) : recoveryPreview.action === 'forget-missing' ? (
                 <>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Git worktree metadata</span>
-                    <span style={styles.metadata}>Absent</span>
+                    <span style={styles.label}>{t('Git worktree metadata')}</span>
+                    <span style={styles.metadata}>{t('Absent')}</span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Checkout path</span>
-                    <span style={styles.metadata}>Absent</span>
+                    <span style={styles.label}>{t('Checkout path')}</span>
+                    <span style={styles.metadata}>{t('Absent')}</span>
                   </div>
                 </>
               ) : recoveryPreview.action === 'stop-tracking' ? (
                 <>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Original repository</span>
+                    <span style={styles.label}>{t('Original repository')}</span>
                     <span style={styles.metadata}>
-                      {repositoryIdentityStateLabel(recoveryPreview.inspection.repositoryRootObservation.state)}
+                      {repositoryIdentityStateLabel(recoveryPreview.inspection.repositoryRootObservation.state, t)}
                     </span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Checkout identity</span>
+                    <span style={styles.label}>{t('Checkout identity')}</span>
                     <span style={styles.metadata}>
-                      {repositoryIdentityStateLabel(recoveryPreview.inspection.checkoutObservation.state)}
+                      {repositoryIdentityStateLabel(recoveryPreview.inspection.checkoutObservation.state, t)}
                     </span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Git registration</span>
+                    <span style={styles.label}>{t('Git registration')}</span>
                     <span style={styles.metadata}>
-                      {worktreeRegistrationStateLabel(recoveryPreview.inspection.registrationObservation.state)}
+                      {worktreeRegistrationStateLabel(recoveryPreview.inspection.registrationObservation.state, t)}
                     </span>
                   </div>
                   {recoveryPreview.inspection.repositoryRootObservation.state === 'changed' && (
                     <>
                       <div style={styles.worktreeDetail}>
-                        <span style={styles.label}>Observed repository</span>
+                        <span style={styles.label}>{t('Observed repository')}</span>
                         <span style={styles.metadata}>
                           {recoveryPreview.inspection.repositoryRootObservation.identity.root}
                         </span>
                       </div>
                       <div style={styles.worktreeDetail}>
-                        <span style={styles.label}>Observed common directory</span>
+                        <span style={styles.label}>{t('Observed common directory')}</span>
                         <span style={styles.metadata}>
                           {recoveryPreview.inspection.repositoryRootObservation.identity.commonDir}
                         </span>
@@ -2048,13 +2102,13 @@ function WorktreesSection(): React.JSX.Element {
                   {recoveryPreview.inspection.checkoutObservation.state === 'changed' && (
                     <>
                       <div style={styles.worktreeDetail}>
-                        <span style={styles.label}>Checkout repository</span>
+                        <span style={styles.label}>{t('Checkout repository')}</span>
                         <span style={styles.metadata}>
                           {recoveryPreview.inspection.checkoutObservation.identity.root}
                         </span>
                       </div>
                       <div style={styles.worktreeDetail}>
-                        <span style={styles.label}>Checkout common directory</span>
+                        <span style={styles.label}>{t('Checkout common directory')}</span>
                         <span style={styles.metadata}>
                           {recoveryPreview.inspection.checkoutObservation.identity.commonDir}
                         </span>
@@ -2064,19 +2118,19 @@ function WorktreesSection(): React.JSX.Element {
                   {recoveryPreview.inspection.registrationObservation.state === 'changed' && (
                     <>
                       <div style={styles.worktreeDetail}>
-                        <span style={styles.label}>Observed branch</span>
+                        <span style={styles.label}>{t('Observed branch')}</span>
                         <span style={styles.metadata}>
                           {recoveryPreview.inspection.registrationObservation.entry.branch ??
                             (recoveryPreview.inspection.registrationObservation.entry.detached
-                              ? 'Detached HEAD'
+                              ? t('Detached HEAD')
                               : recoveryPreview.inspection.registrationObservation.entry.bare
-                                ? 'Bare repository'
-                                : 'No branch')}
+                                ? t('Bare repository')
+                                : t('No branch'))}
                         </span>
                       </div>
                       {recoveryPreview.inspection.registrationObservation.entry.head !== undefined && (
                         <div style={styles.worktreeDetail}>
-                          <span style={styles.label}>Observed commit</span>
+                          <span style={styles.label}>{t('Observed commit')}</span>
                           <span style={styles.metadata}>
                             {recoveryPreview.inspection.registrationObservation.entry.head}
                           </span>
@@ -2088,19 +2142,21 @@ function WorktreesSection(): React.JSX.Element {
               ) : (
                 <>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Registered path</span>
+                    <span style={styles.label}>{t('Registered path')}</span>
                     <span style={styles.metadata}>{recoveryPreview.inspection.registeredPath}</span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Current commit</span>
+                    <span style={styles.label}>{t('Current commit')}</span>
                     <span style={styles.metadata}>{recoveryPreview.inspection.current.head}</span>
                   </div>
                   <div style={styles.worktreeDetail}>
-                    <span style={styles.label}>Checkout state</span>
+                    <span style={styles.label}>{t('Checkout state')}</span>
                     <span style={styles.metadata}>
                       {recoveryPreview.inspection.current.clean
-                        ? 'Clean'
-                        : `${String(recoveryPreview.inspection.current.changes.length)} preserved changes`}
+                        ? t('Clean')
+                        : t('{count} preserved changes', {
+                          count: String(recoveryPreview.inspection.current.changes.length),
+                        })}
                     </span>
                   </div>
                 </>
@@ -2109,12 +2165,14 @@ function WorktreesSection(): React.JSX.Element {
             {recoveryPreview.action === 'keep-interrupted-removal' && !recoveryPreview.inspection.clean && (
               <div style={styles.field}>
                 <span style={styles.label}>
-                  Preserved checkout changes ({recoveryPreview.inspection.changes.length})
+                  {t('Preserved checkout changes ({count})', {
+                    count: String(recoveryPreview.inspection.changes.length),
+                  })}
                 </span>
                 <div style={styles.handoffFiles}>
                   {recoveryPreview.inspection.changes.map(change => (
                     <div key={change.path} style={styles.handoffFile}>
-                      <span style={styles.label}>{cleanupChangeStatus(change)}</span>
+                      <span style={styles.label}>{cleanupChangeStatus(change, t)}</span>
                       <span style={styles.metadata}>
                         {change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}
                       </span>
@@ -2126,12 +2184,14 @@ function WorktreesSection(): React.JSX.Element {
             {recoveryPreview.action === 'restore-moved' && !recoveryPreview.inspection.current.clean && (
               <div style={styles.field}>
                 <span style={styles.label}>
-                  Preserved checkout changes ({recoveryPreview.inspection.current.changes.length})
+                  {t('Preserved checkout changes ({count})', {
+                    count: String(recoveryPreview.inspection.current.changes.length),
+                  })}
                 </span>
                 <div style={styles.handoffFiles}>
                   {recoveryPreview.inspection.current.changes.map(change => (
                     <div key={`${change.kind}:${change.path}`} style={styles.handoffFile}>
-                      <span style={styles.label}>{cleanupChangeStatus(change)}</span>
+                      <span style={styles.label}>{cleanupChangeStatus(change, t)}</span>
                       <span style={styles.metadata}>
                         {change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}
                       </span>
@@ -2150,12 +2210,12 @@ function WorktreesSection(): React.JSX.Element {
               />
               <span>
                 {recoveryPreview.action === 'forget-missing'
-                  ? 'I understand this forgets only the stale desktop record and does not delete files or the Git branch.'
+                  ? t('I understand this forgets only the stale desktop record and does not delete files or the Git branch.')
                   : recoveryPreview.action === 'stop-tracking'
-                    ? 'I understand DSH Desktop will stop managing this checkout without deleting or modifying its directory, files, Git metadata, or branch.'
+                    ? t('I understand DSH Desktop will stop managing this checkout without deleting or modifying its directory, files, Git metadata, or branch.')
                   : recoveryPreview.action === 'restore-moved'
-                    ? 'I understand this moves the checkout directory while preserving its branch, commit, and checkout files.'
-                    : 'I understand this cancels the interrupted cleanup and does not modify checkout files.'}
+                    ? t('I understand this moves the checkout directory while preserving its branch, commit, and checkout files.')
+                    : t('I understand this cancels the interrupted cleanup and does not modify checkout files.')}
               </span>
             </label>
           </div>
@@ -2166,14 +2226,14 @@ function WorktreesSection(): React.JSX.Element {
         open={handoffPreview !== undefined}
         onClose={closeHandoffPreview}
         title={handoffPreview?.preflight.direction === 'worktree-to-local'
-          ? 'Send changes to local checkout'
-          : 'Import local changes'}
-        closeLabel="Close handoff preview"
-        description="Review the exact combined source tree before staging it in the destination checkout."
+          ? t('Send changes to local checkout')
+          : t('Import local changes')}
+        closeLabel={t('Close handoff preview')}
+        description={t('Review the exact combined source tree before staging it in the destination checkout.')}
         footer={(
           <div style={styles.formActions}>
             <Button variant="outline" disabled={transferring} onClick={closeHandoffPreview}>
-              {handoffPreview?.preflight.canTransfer === false ? 'Close' : 'Cancel'}
+              {handoffPreview?.preflight.canTransfer === false ? t('Close') : t('Cancel')}
             </Button>
             {handoffPreview?.preflight.canTransfer === true && (
               <Button
@@ -2182,7 +2242,7 @@ function WorktreesSection(): React.JSX.Element {
                 disabled={!handoffAcknowledged || transferring}
                 onClick={() => void confirmHandoff()}
               >
-                Stage in destination
+                {t('Stage in destination')}
               </Button>
             )}
           </div>
@@ -2191,21 +2251,21 @@ function WorktreesSection(): React.JSX.Element {
         {handoffPreview !== undefined && (
           <div style={styles.handoffScroll}>
             <div style={styles.handoffPath}>
-              <span style={styles.label}>Source remains unchanged</span>
+              <span style={styles.label}>{t('Source remains unchanged')}</span>
               <span style={styles.metadata}>{handoffPreview.preflight.source.path}</span>
             </div>
             <div style={styles.handoffPath}>
-              <span style={styles.label}>Destination receives staged changes</span>
+              <span style={styles.label}>{t('Destination receives staged changes')}</span>
               <span style={styles.metadata}>{handoffPreview.preflight.destination.path}</span>
             </div>
             <div style={styles.worktreeConfirmDetails}>
               <div style={styles.worktreeDetail}>
-                <span style={styles.label}>Base commit</span>
+                <span style={styles.label}>{t('Base commit')}</span>
                 <span style={styles.metadata}>{handoffPreview.preflight.baseCommit}</span>
               </div>
               {handoffPreview.preflight.sourceTree !== undefined && (
                 <div style={styles.worktreeDetail}>
-                  <span style={styles.label}>Reviewed source tree</span>
+                  <span style={styles.label}>{t('Reviewed source tree')}</span>
                   <span style={styles.metadata}>{handoffPreview.preflight.sourceTree}</span>
                 </div>
               )}
@@ -2213,16 +2273,18 @@ function WorktreesSection(): React.JSX.Element {
             {handoffPreview.preflight.blockers.length > 0 && (
               <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-warning-secondary, #fff6df)', marginBottom: 0 }}>
                 {handoffPreview.preflight.blockers.map(blocker => (
-                  <div key={blocker}>{handoffBlockerLabel(blocker)}</div>
+                  <div key={blocker}>{handoffBlockerLabel(blocker, t)}</div>
                 ))}
               </div>
             )}
             <div style={styles.field}>
-              <span style={styles.label}>Files ({handoffPreview.preflight.files.length})</span>
+              <span style={styles.label}>{t('Files ({count})', {
+                count: String(handoffPreview.preflight.files.length),
+              })}</span>
               <div style={styles.handoffFiles}>
                 {handoffPreview.preflight.files.map(file => (
                   <div key={file.path} style={styles.handoffFile}>
-                    <span style={styles.label}>{handoffFileStatus(file.status)}</span>
+                    <span style={styles.label}>{handoffFileStatus(file.status, t)}</span>
                     <span style={styles.metadata}>
                       {file.originalPath === undefined ? file.path : `${file.originalPath} -> ${file.path}`}
                     </span>
@@ -2232,7 +2294,7 @@ function WorktreesSection(): React.JSX.Element {
             </div>
             {handoffPreview.preflight.patch !== '' && (
               <details>
-                <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Review patch</summary>
+                <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>{t('Review patch')}</summary>
                 <pre style={styles.handoffPatch}>{handoffPreview.preflight.patch}</pre>
               </details>
             )}
@@ -2246,8 +2308,7 @@ function WorktreesSection(): React.JSX.Element {
                   style={{ flex: '0 0 auto', height: 16, margin: '2px 0 0', width: 16 }}
                 />
                 <span>
-                  I understand the reviewed source tree will be staged in the destination. The source is unchanged,
-                  and nothing is committed or pushed.
+                  {t('I understand the reviewed source tree will be staged in the destination. The source is unchanged, and nothing is committed or pushed.')}
                 </span>
               </label>
             )}
@@ -2258,19 +2319,21 @@ function WorktreesSection(): React.JSX.Element {
   )
 }
 
-function AutomationsSection(): React.JSX.Element {
+function AutomationsSection({ t }: { t: DesktopTranslate }): React.JSX.Element {
   const desktop = window.dshDesktop
   return (
     <AutomationTaskCenter
       bridge={desktop?.automations}
       pickProjectDirectory={() => desktop?.pickProjectDirectory() ?? Promise.resolve(null)}
       listConnections={desktop?.connections.list}
+      t={t}
     />
   )
 }
 
 export const inject = [
   'connection',
+  'locale',
   'slots',
   'sessions',
   'workspaces',
@@ -2281,6 +2344,11 @@ export const inject = [
 
 export function apply(ctx: ClientContext): void {
   const bridge = window.dshDesktop
+  ctx.effect(() => ctx.locale.register(DESKTOP_LOCALE_NAMESPACE, {
+    zh: desktopZh,
+    en: desktopEn,
+  }), 'dsh-desktop: locale dictionaries')
+  const desktopT = ctx.locale.bind(DESKTOP_LOCALE_NAMESPACE)
   const listPlugins = async (): Promise<PluginInventorySnapshot> => {
     const result = await ctx.remote.pluginInventory.list()
     if (!result.ok) {
@@ -2304,60 +2372,69 @@ export function apply(ctx: ClientContext): void {
     name: 'settings.section',
     id: 'snapshots',
     order: 11,
-    label: 'App Snapshots',
-  }, () => <AppSnapshotsSection bridge={bridge?.appSnapshots} sessions={ctx.sessions.list} />))
+    label: () => desktopT('App Snapshots'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, ({ t }) => <AppSnapshotsSection bridge={bridge?.appSnapshots} sessions={ctx.sessions.list} t={t} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'automations',
     order: 30,
-    label: 'Tasks',
+    label: () => desktopT('Tasks'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
   }, AutomationsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'browser',
     order: 12,
-    label: 'Browser',
-  }, () => <BrowserSettingsSection bridge={bridge?.browser} />))
+    label: () => desktopT('Browser'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, ({ t }) => <BrowserSettingsSection bridge={bridge?.browser} t={t} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'plugins',
     order: 15,
-    label: 'Plugins',
-  }, () => (
+    label: () => desktopT('Plugins'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, ({ t }) => (
     <PluginsSettingsSection
       bridge={bridge?.connections}
       listPlugins={listPlugins}
       pluginPolicyBridge={bridge?.plugins}
+      t={t}
     />
   )))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'computer',
     order: 13,
-    label: 'Computer Control',
-  }, () => (
+    label: () => desktopT('Computer Control'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, ({ t }) => (
     <ComputerControlSection
       bridge={bridge?.computer}
       browser={bridge?.browser}
       openBrowserSettings={() => openOfficialSettings('browser')}
+      t={t}
     />
   )))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'worktrees',
     order: 32,
-    label: 'Worktrees',
+    label: () => desktopT('Worktrees'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
   }, WorktreesSection))
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'browser',
     order: 19,
-    label: 'Browser',
-  }, (props: ConvViewProps) => <BrowserView {...props} bridge={bridge?.browser} />))
+    label: () => desktopT('Browser'),
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, (props: ConvViewProps & { t: DesktopTranslate }) => <BrowserView {...props} bridge={bridge?.browser} t={props.t} />))
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'review',
     order: 20,
-    label: 'Review',
+    label: () => desktopT('Review'),
   }, (props: ConvViewProps) => <GitReviewView {...props} bridge={bridge?.git} />))
 }

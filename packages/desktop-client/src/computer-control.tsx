@@ -24,7 +24,7 @@ import {
   SettingsSection,
   SettingsToggle,
 } from './settings-ui.js'
-import { computerPermissionLabel } from './view-model.js'
+import type { DesktopTranslate } from './locales.js'
 
 export interface DesktopComputerBridge {
   getState(): Promise<ComputerControlSnapshot>
@@ -77,23 +77,32 @@ function permissionNeedsAttention(status: ComputerPermissionStatus): boolean {
   return status !== 'granted' && status !== 'unavailable'
 }
 
-function managedBrowserDescription(state: BrowserState | undefined): string {
-  if (state === undefined) return 'Managed browser loading'
-  if (!state.settings.enabled) return 'Managed browser off'
-  if (state.runtimeStatus === 'ready') return 'Managed browser ready'
-  if (state.runtimeStatus === 'starting') return 'Managed browser starting'
-  if (state.runtimeStatus === 'error') return 'Managed browser needs attention'
-  return 'Managed browser stopped'
+function managedBrowserDescription(state: BrowserState | undefined, t: DesktopTranslate): string {
+  if (state === undefined) return t('Managed browser loading')
+  if (!state.settings.enabled) return t('Managed browser off')
+  if (state.runtimeStatus === 'ready') return t('Managed browser ready')
+  if (state.runtimeStatus === 'starting') return t('Managed browser starting')
+  if (state.runtimeStatus === 'error') return t('Managed browser needs attention')
+  return t('Managed browser stopped')
+}
+
+function permissionDescription(status: ComputerPermissionStatus, t: DesktopTranslate): string {
+  if (status === 'granted') return t('Allowed')
+  if (status === 'not-determined') return t('Not requested')
+  if (status === 'unavailable') return t('Unavailable')
+  return t('Not allowed')
 }
 
 export function ComputerControlSection({
   bridge,
   browser,
   openBrowserSettings,
+  t,
 }: {
   bridge?: DesktopComputerBridge
   browser?: DesktopBrowserBridge
   openBrowserSettings?: () => Promise<void>
+  t: DesktopTranslate
 }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ComputerControlSnapshot>()
   const [browserState, setBrowserState] = useState<BrowserState>()
@@ -105,13 +114,13 @@ export function ComputerControlSection({
     setBusy(true)
     setError(undefined)
     void operation().then(setSnapshot).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Computer Control could not be updated.')
+      setError(cause instanceof Error ? cause.message : t('Computer Control could not be updated.'))
     }).finally(() => setBusy(false))
   }
 
   useEffect(() => {
     if (bridge === undefined) {
-      setError('Computer Control is unavailable in this desktop build.')
+      setError(t('Computer Control is unavailable in this desktop build.'))
       return
     }
     let active = true
@@ -121,13 +130,13 @@ export function ComputerControlSection({
     void bridge.refresh().then(next => {
       if (active) setSnapshot(next)
     }).catch(cause => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Computer Control is unavailable.')
+      if (active) setError(cause instanceof Error ? cause.message : t('Computer Control is unavailable.'))
     })
     return () => {
       active = false
       stop()
     }
-  }, [bridge])
+  }, [bridge, t])
 
   useEffect(() => {
     if (browser === undefined) return
@@ -138,13 +147,13 @@ export function ComputerControlSection({
     void browser.getState().then(next => {
       if (active) setBrowserState(next)
     }).catch(cause => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Browser status is unavailable.')
+      if (active) setError(cause instanceof Error ? cause.message : t('Browser status is unavailable.'))
     })
     return () => {
       active = false
       stop()
     }
-  }, [browser])
+  }, [browser, t])
 
   const configuredRunning = useMemo(
     () => snapshot?.applications.filter(application => application.running && application.policy !== 'default') ?? [],
@@ -179,7 +188,7 @@ export function ComputerControlSection({
   const openPermission = (kind: 'screen-recording' | 'accessibility'): void => {
     if (bridge === undefined) return
     void bridge.openPermissionSettings(kind).then(() => bridge.refresh()).then(setSnapshot).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'System Settings could not be opened.')
+      setError(cause instanceof Error ? cause.message : t('System Settings could not be opened.'))
     })
   }
 
@@ -188,7 +197,7 @@ export function ComputerControlSection({
     setBusy(true)
     setError(undefined)
     void browser.update({ enabled }).then(setBrowserState).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browser could not be updated.')
+      setError(cause instanceof Error ? cause.message : t('Browser could not be updated.'))
     }).finally(() => setBusy(false))
   }
 
@@ -196,18 +205,18 @@ export function ComputerControlSection({
     if (openBrowserSettings === undefined) return
     setError(undefined)
     void openBrowserSettings().catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Browser settings could not be opened.')
+      setError(cause instanceof Error ? cause.message : t('Browser settings could not be opened.'))
     })
   }
 
   return (
     <SettingsPage
-      title="Computer Control"
-      subtitle="Manage how DSH can use other applications on your Mac."
+      title={t('Computer Control')}
+      subtitle={t('Manage how DSH can use other applications on your Mac.')}
     >
       <style>{styles}</style>
       <SettingsSection
-        title="Control"
+        title={t('Control')}
         action={(
           <Button
             size="sm"
@@ -215,17 +224,17 @@ export function ComputerControlSection({
             disabled={busy || snapshot === undefined}
             onClick={() => setApplicationsOpen(true)}
           >
-            Manage Apps
+            {t('Manage Apps')}
           </Button>
         )}
       >
         <SettingsGroup>
           <SettingsRow
-            title="Any application"
-            description="Allow DSH to control applications unless you turn one off below"
+            title={t('Any application')}
+            description={t('Allow DSH to control applications unless you turn one off below')}
             control={snapshot === undefined ? undefined : (
               <SettingsToggle
-                label="Allow any application"
+                label={t('Allow any application')}
                 checked={snapshot.policy.allowAnyApplication}
                 disabled={busy}
                 onChange={allowAnyApplication => updatePolicy({ allowAnyApplication })}
@@ -234,8 +243,8 @@ export function ComputerControlSection({
           />
           <SettingsRow
             icon={<span className="dsh-desktop-computer-app-icon"><IconBrowseOutline16 /></span>}
-            title="DSH Browser"
-            description={managedBrowserDescription(browserState)}
+            title={t('DSH Browser')}
+            description={managedBrowserDescription(browserState, t)}
             control={(
               <span className="dsh-desktop-computer-row-actions">
                 <Button
@@ -244,11 +253,11 @@ export function ComputerControlSection({
                   disabled={busy || openBrowserSettings === undefined}
                   onClick={manageBrowser}
                 >
-                  Manage
+                  {t('Manage')}
                 </Button>
                 {browserState !== undefined && (
                   <SettingsToggle
-                    label="Enable managed browser"
+                    label={t('Enable managed browser')}
                     checked={browserState.settings.enabled}
                     disabled={busy}
                     onChange={updateBrowser}
@@ -263,11 +272,11 @@ export function ComputerControlSection({
               icon={<AppIcon application={application} />}
               title={application.name}
               description={application.frontmost
-                ? 'Frontmost application'
-                : application.canSetPolicy ? 'Running' : 'Running · stable app identity unavailable'}
+                ? t('Frontmost application')
+                : application.canSetPolicy ? t('Running') : t('Running · stable app identity unavailable')}
               control={(
                 <SettingsToggle
-                  label={`Allow ${application.name}`}
+                  label={t('Allow {name}', { name: application.name })}
                   checked={application.allowed}
                   disabled={busy || !application.canSetPolicy}
                   onChange={allowed => updateApplication(application, allowed)}
@@ -281,11 +290,11 @@ export function ComputerControlSection({
       <SettingsSection>
         <SettingsGroup>
           <SettingsRow
-            title="Lock Screen Operations"
-            description="Allow control while this Mac is locked"
+            title={t('Lock Screen Operations')}
+            description={t('Allow control while this Mac is locked')}
             control={snapshot === undefined ? undefined : (
               <SettingsToggle
-                label="Allow lock screen operations"
+                label={t('Allow lock screen operations')}
                 checked={snapshot.policy.lockScreenOperations}
                 disabled={busy}
                 onChange={lockScreenOperations => updatePolicy({ lockScreenOperations })}
@@ -295,19 +304,19 @@ export function ComputerControlSection({
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection title="Always allowed applications">
+      <SettingsSection title={t('Always allowed applications')}>
         <SettingsGroup>
           {offlineAllowed.length === 0 ? (
-            <SettingsRow title="None" />
+            <SettingsRow title={t('None')} />
           ) : offlineAllowed.map(application => (
             <SettingsRow
               key={application.id}
               icon={<AppIcon application={application} />}
               title={application.name}
-              description="Not currently running"
+              description={t('Not currently running')}
               control={(
                 <SettingsToggle
-                  label={`Allow ${application.name}`}
+                  label={t('Allow {name}', { name: application.name })}
                   checked
                   disabled={busy}
                   onChange={allowed => updateApplication(application, allowed)}
@@ -319,12 +328,12 @@ export function ComputerControlSection({
       </SettingsSection>
 
       {showPermissions && bridge !== undefined && (
-        <SettingsSection title="Permissions">
+        <SettingsSection title={t('Permissions')}>
           <SettingsGroup>
             {permissionNeedsAttention(permissions.screenRecording) && (
               <SettingsRow
-                title="Screen Recording"
-                description={computerPermissionLabel(permissions.screenRecording)}
+                title={t('Screen Recording')}
+                description={permissionDescription(permissions.screenRecording, t)}
                 control={(
                   <Button
                     size="sm"
@@ -332,15 +341,15 @@ export function ComputerControlSection({
                     icon={<IconRightUpOutline16 />}
                     onClick={() => openPermission('screen-recording')}
                   >
-                    Open Settings
+                    {t('Open Settings')}
                   </Button>
                 )}
               />
             )}
             {permissionNeedsAttention(permissions.accessibility) && (
               <SettingsRow
-                title="Accessibility"
-                description={computerPermissionLabel(permissions.accessibility)}
+                title={t('Accessibility')}
+                description={permissionDescription(permissions.accessibility, t)}
                 control={(
                   <Button
                     size="sm"
@@ -348,7 +357,7 @@ export function ComputerControlSection({
                     icon={<IconRightUpOutline16 />}
                     onClick={() => openPermission('accessibility')}
                   >
-                    Open Settings
+                    {t('Open Settings')}
                   </Button>
                 )}
               />
@@ -365,26 +374,26 @@ export function ComputerControlSection({
       <Modal
         open={applicationsOpen}
         onClose={() => setApplicationsOpen(false)}
-        title="Applications"
-        description="Choose which running applications DSH can control."
-        closeLabel="Close application management"
+        title={t('Applications')}
+        description={t('Choose which running applications DSH can control.')}
+        closeLabel={t('Close application management')}
         className="dsh-desktop-computer-applications-modal"
       >
         <div className="dsh-desktop-computer-applications">
           <SettingsGroup>
             {manageableApplications.length === 0 ? (
-              <SettingsRow title="No applications available" />
+              <SettingsRow title={t('No applications available')} />
             ) : manageableApplications.map(application => (
               <SettingsRow
                 key={application.id}
                 icon={<AppIcon application={application} />}
                 title={application.name}
                 description={application.frontmost
-                  ? 'Frontmost application'
-                  : application.running ? 'Running' : 'Not currently running'}
+                  ? t('Frontmost application')
+                  : application.running ? t('Running') : t('Not currently running')}
                 control={(
                   <SettingsToggle
-                    label={`Allow ${application.name}`}
+                    label={t('Allow {name}', { name: application.name })}
                     checked={application.allowed}
                     disabled={busy || !application.canSetPolicy}
                     onChange={allowed => updateApplication(application, allowed)}

@@ -24,6 +24,7 @@ import {
   SettingsToggle,
 } from './settings-ui.js'
 import { attachAppSnapshotCapture, mountAppSnapshotDelivery } from './app-snapshot-delivery.js'
+import type { DesktopTranslate } from './locales.js'
 import { openOfficialSettings } from './settings-navigation.js'
 
 export interface DesktopAppSnapshotsBridge {
@@ -131,9 +132,11 @@ const shortcutLabels: Readonly<Record<AppSnapshotSettings['shortcut'], string>> 
 export function AppSnapshotsSection({
   bridge,
   sessions,
+  t,
 }: {
   bridge?: DesktopAppSnapshotsBridge
   sessions: SnapshotSource<SessionListState>
+  t: DesktopTranslate
 }): React.JSX.Element {
   const sessionState = useSnapshot(sessions)
   const snapshotPresentation = useSnapshot(PRESENTATION_SOURCE)
@@ -150,7 +153,7 @@ export function AppSnapshotsSection({
     void bridge.getState().then(next => {
       if (active) setState(next)
     }).catch(error => {
-      if (active) setLocalError(error instanceof Error ? error.message : 'App Snapshots are unavailable.')
+      if (active) setLocalError(error instanceof Error ? error.message : t('App Snapshots are unavailable.'))
     })
     return () => {
       active = false
@@ -163,7 +166,7 @@ export function AppSnapshotsSection({
     setBusy(true)
     setLocalError(undefined)
     void bridge.update(input).then(setState).catch(error => {
-      setLocalError(error instanceof Error ? error.message : 'The App Snapshot setting could not be saved.')
+      setLocalError(error instanceof Error ? error.message : t('The App Snapshot setting could not be saved.'))
     }).finally(() => setBusy(false))
   }
 
@@ -174,23 +177,23 @@ export function AppSnapshotsSection({
   const permissionDenied = state !== undefined && state.permissions.screenRecording !== 'granted'
 
   return (
-    <SettingsPage title="App Snapshots">
+    <SettingsPage title={t('App Snapshots')}>
       <SettingsGroup>
         <SettingsRow
           icon={<IconFullscreenOutline16 />}
-          title="Capture the frontmost app"
-          description="Add a visual snapshot and extracted on-screen text to a conversation draft."
+          title={t('Capture the frontmost app')}
+          description={t('Add a visual snapshot and extracted on-screen text to a conversation draft.')}
         />
       </SettingsGroup>
 
       <div className="dsh-desktop-settings-grid">
         <SettingsGroup>
           <SettingsRow
-            title="Shortcut"
-            description={state?.shortcutRegistered === false ? 'Shortcut unavailable' : undefined}
+            title={t('Shortcut')}
+            description={state?.shortcutRegistered === false ? t('Shortcut unavailable') : undefined}
             control={settings === undefined ? undefined : (
               <SettingsSelect
-                label="App Snapshot shortcut"
+                label={t('Shortcut')}
                 value={settings.shortcut}
                 disabled={busy}
                 onChange={value => update({ shortcut: value as AppSnapshotSettings['shortcut'] })}
@@ -202,11 +205,11 @@ export function AppSnapshotsSection({
             )}
           />
           <SettingsRow
-            title="Snapshot destination"
-            description="Automatic uses the current conversation"
+            title={t('Snapshot destination')}
+            description={t('Automatic uses the current conversation')}
             control={settings === undefined ? undefined : (
               <SettingsSelect
-                label="App Snapshot destination"
+                label={t('Snapshot destination')}
                 value={destinationValue}
                 disabled={busy}
                 onChange={value => update({
@@ -215,7 +218,7 @@ export function AppSnapshotsSection({
                     : { kind: 'session', sessionId: value.slice('session:'.length) },
                 })}
               >
-                <option value="automatic">Automatic</option>
+                <option value="automatic">{t('Automatic')}</option>
                 {sessionState.ids.map(id => (
                   <option key={id} value={`session:${id}`}>{sessionState.byId[id]?.displayTitle ?? id}</option>
                 ))}
@@ -223,10 +226,10 @@ export function AppSnapshotsSection({
             )}
           />
           <SettingsRow
-            title="Play sound"
+            title={t('Play sound')}
             control={settings === undefined ? undefined : (
               <SettingsToggle
-                label="Play App Snapshot capture sound"
+                label={t('Play App Snapshot capture sound')}
                 checked={settings.captureSound}
                 disabled={busy}
                 onChange={captureSound => update({ captureSound })}
@@ -235,10 +238,10 @@ export function AppSnapshotsSection({
           />
         </SettingsGroup>
 
-        <div className="dsh-desktop-settings-preview" aria-label="Latest App Snapshot preview">
+        <div className="dsh-desktop-settings-preview" aria-label={t('Latest App Snapshot preview')}>
           {snapshotPresentation.previewUrl === undefined
-            ? <span className="dsh-desktop-settings-preview-empty">Your latest app snapshot appears here</span>
-            : <img src={snapshotPresentation.previewUrl} alt="Latest captured application" />}
+            ? <span className="dsh-desktop-settings-preview-empty">{t('Your latest app snapshot appears here')}</span>
+            : <img src={snapshotPresentation.previewUrl} alt={t('Latest captured application')} />}
           {snapshotPresentation.capture !== undefined && (
             <span className="dsh-desktop-settings-preview-caption">
               {snapshotPresentation.capture.sourceName} · {snapshotPresentation.capture.pixelWidth} × {snapshotPresentation.capture.pixelHeight}
@@ -248,11 +251,11 @@ export function AppSnapshotsSection({
       </div>
 
       {permissionDenied && (
-        <SettingsSection title="Permission">
+        <SettingsSection title={t('Permission')}>
           <SettingsGroup>
             <SettingsRow
-              title="Screen Recording"
-              description="Allow DSH Desktop to capture the frontmost application window."
+              title={t('Screen Recording')}
+              description={t('Allow DSH Desktop to capture the frontmost application window.')}
               control={(
                 <Button
                   size="sm"
@@ -262,7 +265,7 @@ export function AppSnapshotsSection({
                     void bridge?.openScreenRecordingSettings().then(() => bridge.refresh()).then(setState)
                   }}
                 >
-                  Open Settings
+                  {t('Open Settings')}
                 </Button>
               )}
             />

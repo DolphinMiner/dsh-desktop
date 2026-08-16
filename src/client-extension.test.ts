@@ -20,6 +20,7 @@ test('packages desktop settings and navigation through the official Harness load
   assert.equal(manifest.dsh?.client?.platform, 'web')
   assert.deepEqual(manifest.dsh?.client?.inject, [
     '@deepseek-ai/dsh-api-remotes',
+    '@deepseek-ai/dsh-client-locale',
     '@deepseek-ai/dsh-client-runtime',
     '@deepseek-ai/dsh-client-ui-conversation',
     '@deepseek-ai/dsh-client-ui-layout',
