@@ -164,6 +164,10 @@ export interface AutomationClaimNextResult {
   dispatch?: AutomationDispatchClaim
 }
 
+export interface AutomationInspectOwnedResult {
+  run?: AutomationRunSummary
+}
+
 export interface AutomationMarkRunningParams extends AutomationClaimNextParams {
   runId: string
   sessionEventSeq: number
@@ -526,6 +530,15 @@ export function parseAutomationClaimNextResult(value: unknown): AutomationClaimN
   if (value.dispatch === undefined) return {}
   const dispatch = parseAutomationDispatchClaim(value.dispatch)
   return dispatch === undefined ? undefined : { dispatch }
+}
+
+export function parseAutomationInspectOwnedResult(value: unknown): AutomationInspectOwnedResult | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['run'])) return undefined
+  if (value.run === undefined) return {}
+  const run = parseAutomationRunSummary(value.run)
+  return run === undefined || run.phase !== 'dispatching' && run.phase !== 'running'
+    ? undefined
+    : { run }
 }
 
 export function parseAutomationMarkRunningParams(value: unknown): AutomationMarkRunningParams | undefined {

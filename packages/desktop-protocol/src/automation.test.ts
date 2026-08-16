@@ -6,6 +6,7 @@ import {
   parseAutomationClaimNextResult,
   parseAutomationDefinition,
   parseAutomationFinishParams,
+  parseAutomationInspectOwnedResult,
   parseAutomationMarkRunningParams,
   parseAutomationRunSummary,
   parseAutomationSnapshot,
@@ -229,6 +230,9 @@ test('binds Host automation claims and lifecycle evidence to exact run state', (
     dispatch: { run: dispatching, workspacePath: '/managed/run-1', worktreeId },
   })
   assert.deepEqual(parseAutomationClaimNextResult({}), {})
+  assert.deepEqual(parseAutomationInspectOwnedResult({ run: dispatching }), { run: dispatching })
+  assert.deepEqual(parseAutomationInspectOwnedResult({}), {})
+  assert.equal(parseAutomationInspectOwnedResult({ run: queued }), undefined)
   assert.equal(parseAutomationClaimNextResult({ dispatch: {
     run: dispatching,
     workspacePath: '/different-path',

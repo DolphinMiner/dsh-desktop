@@ -223,6 +223,21 @@ export class AutomationDispatcher {
     })
   }
 
+  inspectOwned(input: AutomationClaimNextInput): AutomationRunSummary | undefined {
+    this.assertHost(input.hostInstanceId)
+    const owned = this.registry.snapshot().runs.filter(run =>
+      latestDispatch(run)?.hostInstanceId === input.hostInstanceId &&
+      (run.phase === 'dispatching' || run.phase === 'running'))
+    if (owned.length > 1) {
+      throw new AutomationDispatcherError(
+        'DESKTOP_UNAVAILABLE',
+        'The Harness host owns conflicting automation runs.',
+        true,
+      )
+    }
+    return owned[0]
+  }
+
   finish(input: AutomationFinishInput): AutomationRunSummary {
     this.assertHost(input.hostInstanceId)
     const run = this.requireHostRun(input.runId, input.hostInstanceId)

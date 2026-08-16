@@ -86,6 +86,8 @@ export async function apply(ctx: Context): Promise<void> {
   const automationClient: AutomationDesktopClient = {
     claimNext: async (hostInstanceId: string, signal: AbortSignal) =>
       (await bridge.call('automations.claimNext', { hostInstanceId }, { signal, timeoutMs: 70_000 })).dispatch,
+    inspectOwned: async hostInstanceId =>
+      (await bridge.call('automations.inspectOwned', { hostInstanceId })).run,
     bindSession: (sessionId: string, workspacePath: string, signal: AbortSignal) =>
       bridge.call('desktop.reportSessionBinding', { sessionId, workspacePath }, { signal, timeoutMs: 40_000 }),
     markRunning: (hostInstanceId: string, runId: string, sessionEventSeq: number) =>
@@ -102,9 +104,9 @@ export async function apply(ctx: Context): Promise<void> {
       ctx.logger('dsh-desktop').warn('%s %s', message, detail)
     },
   )
-  const wakeAutomations = (): void => {
+  const wakeAutomations = (changed = false): void => {
     try {
-      void ctx.agents.withoutInitiator(() => automations.wake()).catch(error => {
+      void ctx.agents.withoutInitiator(() => changed ? automations.notifyChanged() : automations.wake()).catch(error => {
         const message = error instanceof Error ? error.message : String(error)
         ctx.logger('dsh-desktop').warn('Durable automation wakeup failed: %s', message)
       })
@@ -178,7 +180,7 @@ export async function apply(ctx: Context): Promise<void> {
   })
 
   await supervisor.reconcile()
-  bridge.on('automations.changed', wakeAutomations)
+  bridge.on('automations.changed', () => wakeAutomations(true))
   wakeAutomations()
 
   ctx.on('session/event', (session, event) => {

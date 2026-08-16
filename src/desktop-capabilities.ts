@@ -80,6 +80,7 @@ export interface DesktopCapabilityDependencies {
   }
   automations?: {
     claimNext(params: AutomationClaimNextParams, signal: AbortSignal): Promise<AutomationClaimNextResult>
+    inspectOwned(params: AutomationClaimNextParams): AutomationRunSummary | undefined
     markRunning(params: AutomationMarkRunningParams): AutomationRunSummary
     finish(params: AutomationFinishParams): AutomationRunSummary
   }
@@ -139,6 +140,11 @@ export function createDesktopCapabilityHandlers(
       dependencies.worktrees.reportSessionBinding(params, context.signal),
     'automations.claimNext': (params, context) =>
       dependencies.automations?.claimNext(params, context.signal) ?? unsupportedAutomations(),
+    'automations.inspectOwned': params => {
+      if (dependencies.automations === undefined) return unsupportedAutomations()
+      const run = dependencies.automations.inspectOwned(params)
+      return run === undefined ? {} : { run }
+    },
     'automations.markRunning': params =>
       dependencies.automations?.markRunning(params) ?? unsupportedAutomations(),
     'automations.finish': params =>

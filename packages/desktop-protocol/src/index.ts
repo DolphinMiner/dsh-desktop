@@ -16,11 +16,13 @@ import {
   AutomationClaimNextParams,
   AutomationClaimNextResult,
   AutomationFinishParams,
+  AutomationInspectOwnedResult,
   AutomationMarkRunningParams,
   AutomationRunSummary,
   parseAutomationClaimNextParams,
   parseAutomationClaimNextResult,
   parseAutomationFinishParams,
+  parseAutomationInspectOwnedResult,
   parseAutomationMarkRunningParams,
   parseAutomationRunSummary,
 } from './automation.js'
@@ -74,7 +76,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 19 as const
+export const DESKTOP_PROTOCOL_VERSION = 20 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -295,6 +297,10 @@ export interface DesktopCapabilityMap {
   'automations.claimNext': {
     params: AutomationClaimNextParams
     result: AutomationClaimNextResult
+  }
+  'automations.inspectOwned': {
+    params: AutomationClaimNextParams
+    result: AutomationInspectOwnedResult
   }
   'automations.markRunning': {
     params: AutomationMarkRunningParams
@@ -740,7 +746,7 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'desktop.reportSessionBinding') {
     return parseWorktreeSessionBindingParams(value) as DesktopCapabilityParams<M> | undefined
   }
-  if (method === 'automations.claimNext') {
+  if (method === 'automations.claimNext' || method === 'automations.inspectOwned') {
     return parseAutomationClaimNextParams(value) as DesktopCapabilityParams<M> | undefined
   }
   if (method === 'automations.markRunning') {
@@ -837,6 +843,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'automations.claimNext') {
     return parseAutomationClaimNextResult(value) as DesktopCapabilityResult<M> | undefined
   }
+  if (method === 'automations.inspectOwned') {
+    return parseAutomationInspectOwnedResult(value) as DesktopCapabilityResult<M> | undefined
+  }
   if (method === 'automations.markRunning' || method === 'automations.finish') {
     return parseAutomationRunSummary(value) as DesktopCapabilityResult<M> | undefined
   }
@@ -924,7 +933,8 @@ export function createEvent<E extends DesktopEventName>(
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
     method === 'computer.act' || method === 'worktrees.provision' ||
-    method === 'automations.claimNext' || method === 'automations.markRunning' ||
+    method === 'automations.claimNext' || method === 'automations.inspectOwned' ||
+    method === 'automations.markRunning' ||
     method === 'automations.finish'
 }
 

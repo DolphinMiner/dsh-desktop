@@ -449,6 +449,10 @@ test('routes Host automation claim and lifecycle evidence through Main', async (
         calls.push(`claim:${params.hostInstanceId}`)
         return { dispatch: { run: dispatching, workspacePath: '/managed/run' } }
       },
+      inspectOwned: params => {
+        calls.push(`inspect:${params.hostInstanceId}`)
+        return dispatching
+      },
       markRunning: params => {
         calls.push(`running:${params.runId}:${String(params.sessionEventSeq)}`)
         return { ...dispatching, phase: 'running' }
@@ -462,6 +466,7 @@ test('routes Host automation claim and lifecycle evidence through Main', async (
   const context = { requestId: 'automation-1', signal: new AbortController().signal }
 
   assert.equal((await handlers['automations.claimNext']({ hostInstanceId }, context)).dispatch?.run.id, runId)
+  assert.equal((await handlers['automations.inspectOwned']({ hostInstanceId }, context)).run?.id, runId)
   assert.equal((await handlers['automations.markRunning']({
     hostInstanceId,
     runId,
@@ -474,6 +479,7 @@ test('routes Host automation claim and lifecycle evidence through Main', async (
   }, context)).phase, 'failed')
   assert.deepEqual(calls, [
     `claim:${hostInstanceId}`,
+    `inspect:${hostInstanceId}`,
     `running:${runId}:3`,
     `finish:${runId}:failed`,
   ])

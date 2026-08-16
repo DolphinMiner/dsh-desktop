@@ -92,10 +92,16 @@ class FakeDesktop implements AutomationDesktopClient {
   claims: AutomationDispatchClaim[] = [dispatch()]
   markError?: Error
   ambiguousFinishFailures = 0
+  inspected: AutomationRunSummary | undefined = { ...run(), phase: 'running' }
 
   claimNext(): Promise<AutomationDispatchClaim | undefined> {
     this.order.push('claim')
     return Promise.resolve(this.claims.shift())
+  }
+
+  inspectOwned(): Promise<AutomationRunSummary | undefined> {
+    this.order.push('inspect')
+    return Promise.resolve(this.inspected)
   }
 
   bindSession(): Promise<WorktreeSessionBindingResult> {
@@ -124,7 +130,7 @@ class FakeExecution implements AutomationExecutionHandle {
   readonly sessionId = SESSION_ID
   readonly publicationSeq = 7
   disposed = 0
-  cancelled = 0
+  readonly cancellations: Array<'user' | 'disposed'> = []
 
   constructor(
     private readonly order: string[],
@@ -140,8 +146,8 @@ class FakeExecution implements AutomationExecutionHandle {
     return Promise.resolve(this.evidence)
   }
 
-  cancel(): void {
-    this.cancelled += 1
+  cancel(cause: 'user' | 'disposed'): void {
+    this.cancellations.push(cause)
   }
 
   dispose(): Promise<void> {
@@ -178,6 +184,7 @@ test('binds and marks the official Session running before submitting one prompt'
     'prepare',
     'bind',
     'mark-running',
+    'inspect',
     'execute',
     'finish',
     'dispose',
@@ -231,6 +238,62 @@ test('finishes a claimed cancellation without creating an Agent Session', async 
   await coordinator.wake()
 
   assert.equal(executor.prepares, 0)
+  assert.equal(desktop.finishes[0]?.outcome, 'cancelled')
+  await coordinator.dispose()
+})
+
+test('cancels the exact live Agent when Main persists a running cancellation request', async () => {
+  const desktop = new FakeDesktop()
+  assert.equal(desktop.inspected?.id, RUN_ID)
+  assert.equal(desktop.inspected?.phase, 'running')
+  assert.equal(desktop.inspected?.cancellationRequested, false)
+  let release: ((evidence: AutomationTerminalEvidence) => void) | undefined
+  let reportStarted: (() => void) | undefined
+  const started = new Promise<void>(resolve => { reportStarted = resolve })
+  const execution: AutomationExecutionHandle = {
+    sessionId: SESSION_ID,
+    publicationSeq: 7,
+    execute: () => {
+      desktop.order.push('execute')
+      reportStarted?.()
+      return new Promise(resolve => { release = resolve })
+    },
+    cancel: cause => {
+      desktop.order.push(`cancel:${cause}`)
+      release?.({ outcome: 'cancelled', sessionEventSeq: 13, detail: 'Cancelled.' })
+    },
+    dispose: async () => { desktop.order.push('dispose') },
+  }
+  const executor: AutomationSessionExecutor = {
+    prepare: async () => {
+      desktop.order.push('prepare')
+      return execution
+    },
+  }
+  const coordinator = new AutomationRunCoordinator(HOST_ID, desktop, executor)
+  const draining = coordinator.wake()
+  await started
+  desktop.inspected = { ...run(true), phase: 'running' }
+
+  await coordinator.notifyChanged()
+  await draining
+
+  assert.equal(desktop.order.filter(item => item === 'cancel:user').length, 1)
+  assert.equal(desktop.finishes[0]?.outcome, 'cancelled')
+  assert.equal(desktop.finishes[0]?.sessionEventSeq, 13)
+  await coordinator.dispose()
+})
+
+test('honors a cancellation observed after running but before prompt submission', async () => {
+  const desktop = new FakeDesktop()
+  desktop.inspected = { ...run(true), phase: 'running' }
+  const executor = new FakeExecutor(desktop.order)
+  const coordinator = new AutomationRunCoordinator(HOST_ID, desktop, executor)
+
+  await coordinator.wake()
+
+  assert.equal(desktop.order.includes('execute'), false)
+  assert.deepEqual(executor.execution.cancellations, ['user'])
   assert.equal(desktop.finishes[0]?.outcome, 'cancelled')
   await coordinator.dispose()
 })

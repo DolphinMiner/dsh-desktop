@@ -1158,6 +1158,7 @@ app.whenReady().then(async () => {
           if (automationRegistry.status().revision !== revision) publishAutomationChange()
         }
       },
+      inspectOwned: params => automationDispatcher.inspectOwned(params),
       markRunning: params => {
         const run = automationDispatcher.markRunning(params)
         publishAutomationChange()

@@ -36,6 +36,7 @@ export interface AutomationTerminalEvidence {
 
 export interface AutomationDesktopClient {
   claimNext(hostInstanceId: string, signal: AbortSignal): Promise<AutomationDispatchClaim | undefined>
+  inspectOwned(hostInstanceId: string): Promise<AutomationRunSummary | undefined>
   bindSession(sessionId: string, workspacePath: string, signal: AbortSignal): Promise<WorktreeSessionBindingResult>
   markRunning(hostInstanceId: string, runId: string, sessionEventSeq: number): Promise<AutomationRunSummary>
   finish(hostInstanceId: string, runId: string, evidence: AutomationTerminalEvidence): Promise<AutomationRunSummary>
@@ -45,7 +46,7 @@ export interface AutomationExecutionHandle {
   readonly sessionId: string
   readonly publicationSeq: number
   execute(): Promise<AutomationTerminalEvidence>
-  cancel(): void
+  cancel(cause: 'user' | 'disposed'): void
   dispose(): Promise<void>
 }
 
@@ -220,8 +221,8 @@ class HarnessAutomationExecution implements AutomationExecutionHandle {
     return summarizeAutomationEvents(agent.session.events, firstSeq)
   }
 
-  cancel(): void {
-    this.handle.agent.cancel({ kind: 'disposed' })
+  cancel(cause: 'user' | 'disposed'): void {
+    this.handle.agent.cancel({ kind: cause })
   }
 
   dispose(): Promise<void> {
@@ -274,7 +275,10 @@ export class AutomationRunCoordinator {
   private requested = false
   private draining?: Promise<void>
   private active?: AutomationExecutionHandle
+  private activeRunId?: string
   private prepareAbort?: AbortController
+  private cancellationCheckRequested = false
+  private cancellationProbe?: Promise<void>
   private disposed = false
 
   constructor(
@@ -297,13 +301,20 @@ export class AutomationRunCoordinator {
     return this.draining
   }
 
+  notifyChanged(): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const cancellation = this.requestCancellationCheck()
+    void this.wake()
+    return cancellation
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return this.draining
     this.disposed = true
     this.requested = false
     this.prepareAbort?.abort()
-    this.active?.cancel()
-    await this.draining
+    this.active?.cancel('disposed')
+    await Promise.allSettled([this.draining, this.cancellationProbe])
   }
 
   private async drain(): Promise<void> {
@@ -342,6 +353,7 @@ export class AutomationRunCoordinator {
     try {
       execution = await this.executor.prepare(dispatch, prepareAbort.signal)
       this.active = execution
+      this.activeRunId = dispatch.run.id
       if (execution.sessionId !== dispatch.run.payload.sessionId) {
         throw new Error('The official Agent Session was created with the wrong identity.')
       }
@@ -377,6 +389,19 @@ export class AutomationRunCoordinator {
         await this.reportTerminal(dispatch.run.id, evidence)
         return
       }
+      const current = await this.client.inspectOwned(this.hostInstanceId)
+      if (current?.id !== dispatch.run.id || current.phase !== 'running') {
+        throw new Error('The running automation claim could not be verified before prompt submission.')
+      }
+      if (current.cancellationRequested) {
+        execution.cancel('user')
+        await this.reportTerminal(dispatch.run.id, {
+          outcome: 'cancelled',
+          sessionEventSeq: execution.publicationSeq,
+          detail: 'The automation was cancelled before its prompt was submitted.',
+        })
+        return
+      }
       const evidence = await execution.execute()
       await this.reportTerminal(dispatch.run.id, evidence)
     } catch (error) {
@@ -392,9 +417,42 @@ export class AutomationRunCoordinator {
       if (this.prepareAbort === prepareAbort) this.prepareAbort = undefined
       if (execution !== undefined) {
         if (this.active === execution) this.active = undefined
+        if (this.activeRunId === dispatch.run.id) this.activeRunId = undefined
         await execution.dispose().catch(error => {
           this.onError('Could not dispose an automation Agent Session cleanly.', error)
         })
+      }
+    }
+  }
+
+  private requestCancellationCheck(): Promise<void> {
+    if (this.disposed || this.activeRunId === undefined) return Promise.resolve()
+    this.cancellationCheckRequested = true
+    if (this.cancellationProbe === undefined) {
+      const probe = this.drainCancellationChecks()
+      this.cancellationProbe = probe.finally(() => {
+        this.cancellationProbe = undefined
+        if (this.cancellationCheckRequested && !this.disposed) void this.requestCancellationCheck()
+      })
+    }
+    return this.cancellationProbe
+  }
+
+  private async drainCancellationChecks(): Promise<void> {
+    while (this.cancellationCheckRequested && !this.disposed) {
+      this.cancellationCheckRequested = false
+      const runId = this.activeRunId
+      if (runId === undefined) return
+      let current: AutomationRunSummary | undefined
+      try {
+        current = await this.client.inspectOwned(this.hostInstanceId)
+      } catch (error) {
+        this.onError('Could not inspect the active automation for cancellation.', error)
+        return
+      }
+      if (this.activeRunId === runId && current?.id === runId && current.cancellationRequested) {
+        this.active?.cancel('user')
+        return
       }
     }
   }

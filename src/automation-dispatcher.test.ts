@@ -113,6 +113,8 @@ test('accepts lifecycle evidence only from the Host that owns the run', async t 
     prepare: async () => ({ workspacePath: '/managed/lifecycle' }),
   })
   await dispatcher.claimNext({ hostInstanceId: HOST_ONE }, new AbortController().signal)
+  assert.equal(dispatcher.inspectOwned({ hostInstanceId: HOST_ONE })?.id, queued.id)
+  assert.equal(dispatcher.inspectOwned({ hostInstanceId: HOST_TWO }), undefined)
 
   assert.throws(() => dispatcher.markRunning({
     hostInstanceId: HOST_TWO,
@@ -137,6 +139,7 @@ test('accepts lifecycle evidence only from the Host that owns the run', async t 
     outcome: 'succeeded',
     sessionEventSeq: 9,
   }).events.length, finished.events.length)
+  assert.equal(dispatcher.inspectOwned({ hostInstanceId: HOST_ONE }), undefined)
 })
 
 test('atomically makes every abandoned claimed run ambiguous without touching queued work', async t => {

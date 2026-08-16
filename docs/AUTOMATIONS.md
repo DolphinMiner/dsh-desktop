@@ -103,7 +103,7 @@ old dispatch identity.
 3. Main emits a best-effort `automations.changed` wakeup. Failure leaves the
    queued run durable.
 4. The Host plugin lists pending work and claims one exact run through the
-   typed protocol-v19 desktop capability bridge. A repeated pull from the same
+   typed protocol-v20 desktop capability bridge. A repeated pull from the same
    live Host identity returns the already-persisted claim instead of preparing
    or dispatching the run again.
 5. Main atomically persists `dispatching` before returning the claim. This is
@@ -113,8 +113,9 @@ old dispatch identity.
    selected Connection tool prefixes. A managed checkout is bound to that
    exact Session before execution.
 7. Main persists `running` from the published Session sequence before Host
-   submits one identified automation prompt. A missing or ambiguous
-   acknowledgement submits no prompt.
+   submits one identified automation prompt. Host re-reads its exact owned run
+   at this boundary; a cancellation, missing claim, or ambiguous acknowledgement
+   submits no prompt.
 8. Host waits for the official Agent to become idle, flushes its Session, and
    maps the matching durable `turn/end` reason and sequence back to Main.
    Only an exact terminal report may be retried after an ambiguous response;
@@ -149,8 +150,9 @@ any recovery requirement.
 - Notifications project the persisted terminal state. They never serve as the
   terminal commit.
 - Cancelling a queued run is local and terminal. Cancelling a claimed or
-  running run requests Agent cancellation, then records only the outcome that
-  can be verified.
+  running run is persisted first. The change event only wakes a Host read of
+  the owned run; a matching request calls `cancel({ kind: 'user' })` on that
+  exact official Agent and records only the resulting durable turn outcome.
 
 The run outcome describes the Agent lifecycle only. It does not imply that an
 external provider write succeeded; each tool keeps its own approval, timeout,
