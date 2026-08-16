@@ -67,6 +67,7 @@ export interface BrowserEngine {
     signal: AbortSignal,
   ): Promise<void>
   type(tabId: string, role: string, name: string, text: string, submit: boolean, signal: AbortSignal): Promise<void>
+  select(tabId: string, name: string, option: string, exact: boolean, signal: AbortSignal): Promise<void>
   scroll(tabId: string, deltaX: number, deltaY: number, signal: AbortSignal): Promise<void>
   scrollAt(
     tabId: string,
@@ -296,6 +297,23 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     await this.requireOne(locator.count(), role, name)
     await locator.fill(text)
     if (submit) await locator.press('Enter')
+    await settlePage(page)
+    throwIfAborted(signal)
+  }
+
+  async select(
+    tabId: string,
+    name: string,
+    option: string,
+    exact: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    const locator = page.getByRole('combobox', { name, exact })
+    await this.requireOne(locator.count(), 'combobox', name)
+    await this.requireOne(locator.getByRole('option', { name: option, exact: true }).count(), 'option', option)
+    await locator.selectOption({ label: option })
     await settlePage(page)
     throwIfAborted(signal)
   }

@@ -330,12 +330,29 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
         calls.push(`screenshot:${params.sessionId}:${params.snapshotId}`)
         return frame
       },
+      tabs: async params => {
+        calls.push(`tabs:${params.sessionId}`)
+        return {
+          version: 1,
+          revision: 2,
+          activeTabId: 'tab-1',
+          tabs: [{ id: 'tab-1', url: observation.url, title: observation.title, loading: false }],
+        }
+      },
+      tab: async params => {
+        calls.push(`tab:${params.action}:${params.tabId ?? 'new'}`)
+        return observation
+      },
       click: async params => {
         calls.push(`click:${params.snapshotId}:${params.name}`)
         return observation
       },
       type: async params => {
         calls.push(`type:${params.snapshotId}:${params.text}`)
+        return observation
+      },
+      select: async params => {
+        calls.push(`select:${params.snapshotId}:${params.option}`)
         return observation
       },
       scroll: async params => {
@@ -357,6 +374,13 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     sessionId: 'session-1',
     snapshotId: 'snapshot-1',
   }, context), frame)
+  await handlers['browser.tabs']({ sessionId: 'session-1' }, context)
+  await handlers['browser.tab']({
+    actionId: 'tab-1',
+    sessionId: 'session-1',
+    revision: 2,
+    action: 'new',
+  }, context)
   await handlers['browser.click']({
     actionId: 'click-1',
     sessionId: 'session-1',
@@ -372,6 +396,13 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     name: 'Search',
     text: 'DeepSeek',
   }, context)
+  await handlers['browser.select']({
+    actionId: 'select-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    name: 'Country',
+    option: 'China',
+  }, context)
   await handlers['browser.scroll']({
     actionId: 'scroll-1',
     sessionId: 'session-1',
@@ -383,8 +414,11 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     'navigate:navigate-1:https://example.com/',
     'observe:session-1',
     'screenshot:session-1:snapshot-1',
+    'tabs:session-1',
+    'tab:new:new',
     'click:snapshot-1:Continue',
     'type:snapshot-1:DeepSeek',
+    'select:snapshot-1:China',
     'scroll:snapshot-1:600',
   ])
 })

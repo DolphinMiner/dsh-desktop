@@ -30,8 +30,11 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'computer_observe',
     'browser_navigate',
     'browser_observe',
+    'browser_tabs',
+    'browser_tab',
     'browser_click',
     'browser_type',
+    'browser_select',
     'browser_scroll',
     'desktop_reveal_file',
     'desktop_open_file',
@@ -362,6 +365,14 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     desktopBridge: {
       call: async (method: string, params: Record<string, unknown>) => {
         calls.push({ method, params })
+        if (method === 'browser.tabs') {
+          return {
+            version: 1,
+            revision: 4,
+            activeTabId: 'tab-1',
+            tabs: [{ id: 'tab-1', url: 'https://example.com/', title: 'Example', loading: false }],
+          }
+        }
         return { snapshotId: 'snapshot-next' }
       },
     },
@@ -380,6 +391,11 @@ test('binds browser tools to one agent session and latest browser snapshots', as
   await definitions.find(definition => definition.name === 'browser_observe')!.execute({
     tab_id: 'tab-1',
   }, execution)
+  await definitions.find(definition => definition.name === 'browser_tabs')!.execute({}, execution)
+  await definitions.find(definition => definition.name === 'browser_tab')!.execute({
+    action: 'new',
+    revision: 4,
+  }, execution)
   const typeTool = definitions.find(definition => definition.name === 'browser_type')!
   await typeTool.execute({
     snapshot_id: 'snapshot-1',
@@ -387,6 +403,12 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     name: 'Search',
     text: 'private query',
     submit: true,
+  }, execution)
+  const selectTool = definitions.find(definition => definition.name === 'browser_select')!
+  await selectTool.execute({
+    snapshot_id: 'snapshot-2',
+    name: 'Country',
+    option: 'China',
   }, execution)
 
   assert.equal(calls[0]!.method, 'browser.navigate')
@@ -401,9 +423,30 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     method: 'browser.observe',
     params: { sessionId: 'session-browser', tabId: 'tab-1' },
   })
-  assert.equal(calls[2]!.method, 'browser.type')
-  assert.match(String(calls[2]!.params.actionId), /^[a-f0-9-]{36}$/i)
-  assert.equal(calls[2]!.params.snapshotId, 'snapshot-1')
+  assert.deepEqual(calls[2], {
+    method: 'browser.tabs',
+    params: { sessionId: 'session-browser' },
+  })
+  assert.equal(calls[3]!.method, 'browser.tab')
+  assert.match(String(calls[3]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[3]!.params, actionId: '<id>' }, {
+    actionId: '<id>',
+    sessionId: 'session-browser',
+    revision: 4,
+    action: 'new',
+  })
+  assert.equal(calls[4]!.method, 'browser.type')
+  assert.match(String(calls[4]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.equal(calls[4]!.params.snapshotId, 'snapshot-1')
+  assert.equal(calls[5]!.method, 'browser.select')
+  assert.match(String(calls[5]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[5]!.params, actionId: '<id>' }, {
+    actionId: '<id>',
+    sessionId: 'session-browser',
+    snapshotId: 'snapshot-2',
+    name: 'Country',
+    option: 'China',
+  })
   assert.deepEqual(typeTool.presentCall?.({
     snapshot_id: 'snapshot-1',
     role: 'textbox',
@@ -422,6 +465,11 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     text: 'private query',
     submit: true,
   })).includes('private query'), false)
+  assert.equal(JSON.stringify(selectTool.presentCall?.({
+    snapshot_id: 'snapshot-2',
+    name: 'Account',
+    option: 'private account',
+  })).includes('private account'), false)
 })
 
 test('commits Browser screenshots through the official attachment store for vision routes', async () => {

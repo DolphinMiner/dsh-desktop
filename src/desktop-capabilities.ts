@@ -13,9 +13,13 @@ import {
   BrowserNavigateParams,
   BrowserObservation,
   BrowserObserveParams,
+  BrowserSelectParams,
   BrowserScrollParams,
   BrowserScreenshotParams,
   BrowserState,
+  BrowserTabParams,
+  BrowserTabsParams,
+  BrowserTabsSnapshot,
   BrowserTypeParams,
   ComputerApplicationList,
   ComputerActParams,
@@ -79,8 +83,11 @@ export interface DesktopCapabilityDependencies {
     navigate(params: BrowserNavigateParams, signal: AbortSignal): Promise<BrowserObservation>
     observe(params: BrowserObserveParams, signal: AbortSignal): Promise<BrowserObservation>
     screenshot(params: BrowserScreenshotParams, signal: AbortSignal): Promise<BrowserFrame>
+    tabs(params: BrowserTabsParams, signal: AbortSignal): Promise<BrowserTabsSnapshot>
+    tab(params: BrowserTabParams, signal: AbortSignal): Promise<BrowserObservation>
     click(params: BrowserClickParams, signal: AbortSignal): Promise<BrowserObservation>
     type(params: BrowserTypeParams, signal: AbortSignal): Promise<BrowserObservation>
+    select(params: BrowserSelectParams, signal: AbortSignal): Promise<BrowserObservation>
     scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation>
   }
   git: {
@@ -162,10 +169,16 @@ export function createDesktopCapabilityHandlers(
       dependencies.browser?.observe(params, context.signal) ?? unsupportedBrowser(),
     'browser.screenshot': (params, context) =>
       dependencies.browser?.screenshot(params, context.signal) ?? unsupportedBrowser(),
+    'browser.tabs': (params, context) =>
+      dependencies.browser?.tabs(params, context.signal) ?? unsupportedBrowser(),
+    'browser.tab': (params, context) =>
+      dependencies.browser?.tab(params, context.signal) ?? unsupportedBrowser(),
     'browser.click': (params, context) =>
       dependencies.browser?.click(params, context.signal) ?? unsupportedBrowser(),
     'browser.type': (params, context) =>
       dependencies.browser?.type(params, context.signal) ?? unsupportedBrowser(),
+    'browser.select': (params, context) =>
+      dependencies.browser?.select(params, context.signal) ?? unsupportedBrowser(),
     'browser.scroll': (params, context) =>
       dependencies.browser?.scroll(params, context.signal) ?? unsupportedBrowser(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),

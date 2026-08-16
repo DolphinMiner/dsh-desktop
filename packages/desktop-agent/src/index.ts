@@ -51,6 +51,29 @@ const BROWSER_OUTPUT_SCHEMA = {
     },
   },
 } as const
+const BROWSER_TABS_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    version: { type: 'integer', enum: [1], required: true },
+    revision: { type: 'integer', required: true },
+    activeTabId: { type: 'string', required: true },
+    tabs: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          url: { type: 'string', required: true },
+          title: { type: 'string', required: true },
+          loading: { type: 'boolean', required: true },
+        },
+      },
+    },
+  },
+} as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
 const BROWSER_ACTION_TIMEOUT_MS = 45_000
 const GIT_READ_TIMEOUT_MS = 35_000
@@ -297,6 +320,59 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'browser_tabs',
+    description: 'List the open controlled-browser tabs and identify the active tab.',
+    parameters: {},
+    output: {
+      schema: BROWSER_TABS_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'List browser tabs', kind: 'read' }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(_args, exec) {
+      return ctx.desktopBridge.call('browser.tabs', {
+        sessionId: agentSessionId(exec),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_tab',
+    description: 'Create, activate, or close a controlled-browser tab from the latest tab list.',
+    parameters: {
+      action: { type: 'string', enum: ['new', 'activate', 'close'], required: true },
+      revision: { type: 'integer', required: true, description: 'Revision returned by browser_tabs.' },
+      tab_id: { type: 'string', description: 'Required for activate and close; omit for new.' },
+    },
+    output: {
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: args.action === 'new' ? 'New browser tab' :
+        args.action === 'activate' ? 'Switch browser tab' : 'Close browser tab',
+      kind: 'execute',
+    }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      if ((args.action === 'new') === (args.tab_id !== undefined)) {
+        throw new Error('browser_tab requires tab_id only for activate or close.')
+      }
+      const observation = await ctx.desktopBridge.call('browser.tab', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        revision: args.revision,
+        action: args.action,
+        ...(args.tab_id === undefined ? {} : { tabId: args.tab_id }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'browser_click',
     description: 'Click one uniquely named accessible element from the latest controlled-browser observation.',
     parameters: {
@@ -355,6 +431,39 @@ export function apply(ctx: Context): void {
         name: args.name,
         text: args.text,
         ...(args.submit === undefined ? {} : { submit: args.submit }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_select',
+    description: 'Select one option in a native page dropdown from the latest browser observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Snapshot ID returned by a browser tool.' },
+      name: { type: 'string', required: true, description: 'Accessible name of the dropdown.' },
+      option: { type: 'string', required: true, description: 'Exact accessible name of the option.' },
+      exact: { type: 'boolean', description: 'Require an exact dropdown-name match. Defaults to true.' },
+    },
+    output: {
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
+    },
+    presentCall: () => ({
+      card: 'generic',
+      title: 'Select browser option',
+      kind: 'execute',
+    }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const observation = await ctx.desktopBridge.call('browser.select', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        snapshotId: args.snapshot_id,
+        name: args.name,
+        option: args.option,
+        ...(args.exact === undefined ? {} : { exact: args.exact }),
       }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
       return browserToolValue(ctx, observation, exec)
     },

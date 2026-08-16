@@ -21,6 +21,7 @@ class FakeBrowserEngine implements BrowserEngine {
   clicks = 0
   pointerClicks: Array<{ x: number; y: number; button: 'left' | 'right' }> = []
   typed: string[] = []
+  selections: Array<{ name: string; option: string; exact: boolean }> = []
   scrolls = 0
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   keyboardBatches: BrowserUiKeyboardAction[][] = []
@@ -93,6 +94,11 @@ class FakeBrowserEngine implements BrowserEngine {
 
   type(_tabId: string, _role: string, _name: string, text: string): Promise<void> {
     this.typed.push(text)
+    return Promise.resolve()
+  }
+
+  select(_tabId: string, name: string, option: string, exact: boolean): Promise<void> {
+    this.selections.push({ name, option, exact })
     return Promise.resolve()
   }
 
@@ -314,6 +320,83 @@ test('returns only the latest session-bound browser screenshot as a defensive co
     assert.equal((error as { code?: string }).code, 'TARGET_CHANGED')
     return true
   })
+})
+
+test('uses one revisioned tab projection and snapshot-bound dropdown selection', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  const first = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  const selected = await runtime.controller.select({
+    actionId: 'select-1',
+    sessionId: 'session-1',
+    snapshotId: first.snapshotId,
+    name: 'Country',
+    option: 'China',
+  }, new AbortController().signal)
+  assert.deepEqual(runtime.engine.selections, [{ name: 'Country', option: 'China', exact: true }])
+  assert.notEqual(selected.snapshotId, first.snapshotId)
+
+  const initialTabs = await runtime.controller.tabs(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  const newTabInput = {
+    actionId: 'tab-new-1',
+    sessionId: 'session-1',
+    revision: initialTabs.revision,
+    action: 'new' as const,
+  }
+  const opened = await runtime.controller.tab(newTabInput, new AbortController().signal)
+  assert.equal(runtime.engine.tabs.length, 2)
+  assert.deepEqual(
+    await runtime.controller.tab(newTabInput, new AbortController().signal),
+    opened,
+  )
+  assert.equal(runtime.engine.tabs.length, 2)
+  await assert.rejects(runtime.controller.tab({
+    actionId: 'tab-stale',
+    sessionId: 'session-1',
+    revision: initialTabs.revision,
+    action: 'activate',
+    tabId: 'tab-1',
+  }, new AbortController().signal), error => {
+    assert.equal((error as { code?: string }).code, 'TARGET_CHANGED')
+    return true
+  })
+
+  const openedTabs = await runtime.controller.tabs(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  await runtime.controller.tab({
+    actionId: 'tab-activate-1',
+    sessionId: 'session-1',
+    revision: openedTabs.revision,
+    action: 'activate',
+    tabId: 'tab-1',
+  }, new AbortController().signal)
+  assert.equal(runtime.engine.activeTabId, 'tab-1')
+
+  const activatedTabs = await runtime.controller.tabs(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  await runtime.controller.tab({
+    actionId: 'tab-close-1',
+    sessionId: 'session-1',
+    revision: activatedTabs.revision,
+    action: 'close',
+    tabId: 'tab-2',
+  }, new AbortController().signal)
+  assert.deepEqual(runtime.engine.tabs, ['tab-1'])
 })
 
 test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {

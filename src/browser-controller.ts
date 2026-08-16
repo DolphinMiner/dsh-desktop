@@ -8,10 +8,14 @@ import type {
   BrowserNavigateParams,
   BrowserObservation,
   BrowserObserveParams,
+  BrowserSelectParams,
   BrowserScrollParams,
   BrowserScreenshotParams,
   BrowserSettings,
   BrowserState,
+  BrowserTabParams,
+  BrowserTabsParams,
+  BrowserTabsSnapshot,
   BrowserTypeParams,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
@@ -19,7 +23,10 @@ import type {
   BrowserUiScrollInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
-import { BROWSER_OBSERVATION_VERSION } from '@dolphinminer/dsh-desktop-protocol'
+import {
+  BROWSER_OBSERVATION_VERSION,
+  BROWSER_TABS_VERSION,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { BrowserStore, DEFAULT_BROWSER_SETTINGS } from './browser-store'
 import {
@@ -243,6 +250,48 @@ export class BrowserController {
     })
   }
 
+  tabs(_params: BrowserTabsParams, signal: AbortSignal): Promise<BrowserTabsSnapshot> {
+    return this.exclusive(async () => {
+      this.assertEnabled()
+      await this.ensureRunning(signal)
+      this.engineState = await this.engine.state()
+      this.publish()
+      const activeTabId = this.engineState.activeTabId
+      if (activeTabId === undefined) {
+        throw new ControlledBrowserError('NOT_FOUND', 'The controlled browser has no active tab.')
+      }
+      return {
+        version: BROWSER_TABS_VERSION,
+        revision: this.revision,
+        activeTabId,
+        tabs: this.engineState.tabs.map(tab => ({ ...tab })),
+      }
+    })
+  }
+
+  tab(params: BrowserTabParams, signal: AbortSignal): Promise<BrowserObservation> {
+    return this.exclusive(() => this.once(params.actionId, params, async () => {
+      this.assertEnabled()
+      await this.ensureRunning(signal)
+      if (params.revision !== this.revision) {
+        throw new ControlledBrowserError(
+          'TARGET_CHANGED',
+          'The browser tabs changed. List the current tabs and try again.',
+        )
+      }
+      if (params.action === 'new') await this.engine.newTab()
+      else if (params.action === 'activate') await this.engine.activate(params.tabId!)
+      else await this.engine.closeTab(params.tabId!)
+      return this.observeCurrent(
+        params.sessionId,
+        params.action === 'activate' ? params.tabId : undefined,
+        this.settings.screenshotPolicy !== 'never',
+        false,
+        signal,
+      )
+    }))
+  }
+
   click(params: BrowserClickParams, signal: AbortSignal): Promise<BrowserObservation> {
     return this.exclusive(() => this.once(params.actionId, params, async () => {
       const tabId = this.assertLatest(params.sessionId, params.snapshotId)
@@ -261,6 +310,20 @@ export class BrowserController {
     return this.exclusive(() => this.once(params.actionId, params, async () => {
       const tabId = this.assertLatest(params.sessionId, params.snapshotId)
       await this.engine.type(tabId, params.role, params.name, params.text, params.submit ?? false, signal)
+      return this.observeCurrent(
+        params.sessionId,
+        tabId,
+        this.settings.screenshotPolicy === 'always',
+        true,
+        signal,
+      )
+    }))
+  }
+
+  select(params: BrowserSelectParams, signal: AbortSignal): Promise<BrowserObservation> {
+    return this.exclusive(() => this.once(params.actionId, params, async () => {
+      const tabId = this.assertLatest(params.sessionId, params.snapshotId)
+      await this.engine.select(tabId, params.name, params.option, params.exact ?? true, signal)
       return this.observeCurrent(
         params.sessionId,
         tabId,

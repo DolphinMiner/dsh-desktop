@@ -8,9 +8,13 @@ import {
   parseBrowserHistory,
   parseBrowserNavigateParams,
   parseBrowserObservation,
+  parseBrowserSelectParams,
   parseBrowserScreenshotParams,
   parseBrowserSettings,
   parseBrowserState,
+  parseBrowserTabParams,
+  parseBrowserTabsParams,
+  parseBrowserTabsSnapshot,
   parseBrowserTypeParams,
   parseBrowserUiKeyboardInput,
   parseBrowserUiPointerInput,
@@ -138,6 +142,58 @@ test('binds browser screenshot reads to one agent session and observation', () =
   assert.deepEqual(parseBrowserScreenshotParams(input), input)
   assert.equal(parseBrowserScreenshotParams({ ...input, tabId: 'tab-1' }), undefined)
   assert.equal(parseBrowserScreenshotParams({ ...input, snapshotId: '' }), undefined)
+})
+
+test('validates revision-bound browser tab operations and bounded tab snapshots', () => {
+  const tabs = {
+    version: 1 as const,
+    revision: 7,
+    activeTabId: 'tab-1',
+    tabs: [
+      { id: 'tab-1', url: 'https://example.com/', title: 'Example', loading: false },
+      { id: 'tab-2', url: 'about:blank', title: '', loading: false },
+    ],
+  }
+  assert.deepEqual(parseBrowserTabsSnapshot(tabs), tabs)
+  assert.equal(parseBrowserTabsSnapshot({ ...tabs, activeTabId: 'missing' }), undefined)
+  assert.deepEqual(parseBrowserTabsParams({ sessionId: 'session-1' }), { sessionId: 'session-1' })
+  assert.equal(parseBrowserTabsParams({ sessionId: 'session-1', extra: true }), undefined)
+
+  const activate = {
+    actionId: 'tab-1',
+    sessionId: 'session-1',
+    revision: 7,
+    action: 'activate' as const,
+    tabId: 'tab-2',
+  }
+  assert.deepEqual(parseBrowserTabParams(activate), activate)
+  assert.equal(parseBrowserTabParams({ ...activate, tabId: undefined }), undefined)
+  assert.deepEqual(parseBrowserTabParams({
+    actionId: 'tab-new',
+    sessionId: 'session-1',
+    revision: 7,
+    action: 'new',
+  }), {
+    actionId: 'tab-new',
+    sessionId: 'session-1',
+    revision: 7,
+    action: 'new',
+  })
+  assert.equal(parseBrowserTabParams({ ...activate, action: 'new' }), undefined)
+})
+
+test('requires a latest browser snapshot for native dropdown selection', () => {
+  const input = {
+    actionId: 'select-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    name: 'Country',
+    option: 'China',
+    exact: true,
+  }
+  assert.deepEqual(parseBrowserSelectParams(input), input)
+  assert.equal(parseBrowserSelectParams({ ...input, option: '' }), undefined)
+  assert.equal(parseBrowserSelectParams({ ...input, snapshotId: '' }), undefined)
 })
 
 test('validates snapshot-bound renderer pointer and scroll intents', () => {

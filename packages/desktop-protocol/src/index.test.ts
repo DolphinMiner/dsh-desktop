@@ -105,6 +105,39 @@ test('round-trips a sensitive browser screenshot over the desktop protocol', () 
   assert.equal(parseCapabilityParams('browser.screenshot', { ...params, tabId: 'tab-1' }), undefined)
 })
 
+test('round-trips sensitive browser tab and select capabilities', () => {
+  const tabs = {
+    version: 1 as const,
+    revision: 8,
+    activeTabId: 'tab-1',
+    tabs: [{ id: 'tab-1', url: 'https://example.com/', title: 'Example', loading: false }],
+  }
+  assert.deepEqual(parseCapabilityParams('browser.tabs', { sessionId: 'session-1' }), {
+    sessionId: 'session-1',
+  })
+  assert.deepEqual(parseCapabilityResult('browser.tabs', tabs), tabs)
+  assert.equal(isSensitiveCapabilityMethod('browser.tabs'), true)
+
+  const tabAction = {
+    actionId: 'tab-action-1',
+    sessionId: 'session-1',
+    revision: tabs.revision,
+    action: 'new' as const,
+  }
+  assert.deepEqual(parseCapabilityParams('browser.tab', tabAction), tabAction)
+  assert.equal(isSensitiveCapabilityMethod('browser.tab'), true)
+
+  const select = {
+    actionId: 'select-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    name: 'Country',
+    option: 'China',
+  }
+  assert.deepEqual(parseCapabilityParams('browser.select', select), select)
+  assert.equal(isSensitiveCapabilityMethod('browser.select'), true)
+})
+
 test('validates desktop commands and session activity reports', () => {
   assert.deepEqual(parseRendererCommand({ type: 'session.open', sessionId: 'session-1' }), {
     type: 'session.open',

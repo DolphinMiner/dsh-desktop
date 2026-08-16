@@ -18,18 +18,26 @@ import {
   BrowserNavigateParams,
   BrowserObservation,
   BrowserObserveParams,
+  BrowserSelectParams,
   BrowserScrollParams,
   BrowserScreenshotParams,
   BrowserState,
+  BrowserTabParams,
+  BrowserTabsParams,
+  BrowserTabsSnapshot,
   BrowserTypeParams,
   parseBrowserClickParams,
   parseBrowserFrame,
   parseBrowserNavigateParams,
   parseBrowserObservation,
   parseBrowserObserveParams,
+  parseBrowserSelectParams,
   parseBrowserScrollParams,
   parseBrowserScreenshotParams,
   parseBrowserState,
+  parseBrowserTabParams,
+  parseBrowserTabsParams,
+  parseBrowserTabsSnapshot,
   parseBrowserTypeParams,
 } from './browser.js'
 import {
@@ -98,7 +106,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 23 as const
+export const DESKTOP_PROTOCOL_VERSION = 24 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -304,12 +312,24 @@ export interface DesktopCapabilityMap {
     params: BrowserScreenshotParams
     result: BrowserFrame
   }
+  'browser.tabs': {
+    params: BrowserTabsParams
+    result: BrowserTabsSnapshot
+  }
+  'browser.tab': {
+    params: BrowserTabParams
+    result: BrowserObservation
+  }
   'browser.click': {
     params: BrowserClickParams
     result: BrowserObservation
   }
   'browser.type': {
     params: BrowserTypeParams
+    result: BrowserObservation
+  }
+  'browser.select': {
+    params: BrowserSelectParams
     result: BrowserObservation
   }
   'browser.scroll': {
@@ -799,11 +819,20 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'browser.screenshot') {
     return parseBrowserScreenshotParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'browser.tabs') {
+    return parseBrowserTabsParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.tab') {
+    return parseBrowserTabParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'browser.click') {
     return parseBrowserClickParams(value) as DesktopCapabilityParams<M> | undefined
   }
   if (method === 'browser.type') {
     return parseBrowserTypeParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.select') {
+    return parseBrowserSelectParams(value) as DesktopCapabilityParams<M> | undefined
   }
   if (method === 'browser.scroll') {
     return parseBrowserScrollParams(value) as DesktopCapabilityParams<M> | undefined
@@ -905,12 +934,16 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'browser.list') {
     return parseBrowserState(value) as DesktopCapabilityResult<M> | undefined
   }
-  if (method === 'browser.navigate' || method === 'browser.observe' ||
-    method === 'browser.click' || method === 'browser.type' || method === 'browser.scroll') {
+  if (method === 'browser.navigate' || method === 'browser.observe' || method === 'browser.tab' ||
+    method === 'browser.click' || method === 'browser.type' || method === 'browser.select' ||
+    method === 'browser.scroll') {
     return parseBrowserObservation(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'browser.screenshot') {
     return parseBrowserFrame(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'browser.tabs') {
+    return parseBrowserTabsSnapshot(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'git.discover') {
     return parseGitRepositoryIdentity(value) as DesktopCapabilityResult<M> | undefined
@@ -1026,7 +1059,8 @@ export function createEvent<E extends DesktopEventName>(
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
     method === 'computer.act' || method === 'browser.navigate' || method === 'browser.observe' ||
-    method === 'browser.screenshot' || method === 'browser.click' || method === 'browser.type' ||
+    method === 'browser.screenshot' || method === 'browser.tabs' || method === 'browser.tab' ||
+    method === 'browser.click' || method === 'browser.type' || method === 'browser.select' ||
     method === 'browser.scroll' ||
     method === 'worktrees.provision' ||
     method === 'automations.claimNext' || method === 'automations.inspectOwned' ||

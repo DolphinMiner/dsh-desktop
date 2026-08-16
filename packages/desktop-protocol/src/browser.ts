@@ -1,4 +1,5 @@
 export const BROWSER_OBSERVATION_VERSION = 1 as const
+export const BROWSER_TABS_VERSION = 1 as const
 
 export type BrowserUrlTarget = 'system' | 'controlled'
 export type BrowserScreenshotPolicy = 'always' | 'on-demand' | 'never'
@@ -73,6 +74,13 @@ export interface BrowserObservation extends BrowserObservationSummary {
   screenshotCaptured: boolean
 }
 
+export interface BrowserTabsSnapshot {
+  version: typeof BROWSER_TABS_VERSION
+  revision: number
+  activeTabId: string
+  tabs: BrowserTabSummary[]
+}
+
 export interface BrowserNavigateParams {
   actionId: string
   sessionId: string
@@ -88,6 +96,20 @@ export interface BrowserObserveParams {
 export interface BrowserScreenshotParams {
   sessionId: string
   snapshotId: string
+}
+
+export interface BrowserTabsParams {
+  sessionId: string
+}
+
+export type BrowserTabAction = 'new' | 'activate' | 'close'
+
+export interface BrowserTabParams {
+  actionId: string
+  sessionId: string
+  revision: number
+  action: BrowserTabAction
+  tabId?: string
 }
 
 export interface BrowserClickParams {
@@ -107,6 +129,15 @@ export interface BrowserTypeParams {
   name: string
   text: string
   submit?: boolean
+}
+
+export interface BrowserSelectParams {
+  actionId: string
+  sessionId: string
+  snapshotId: string
+  name: string
+  option: string
+  exact?: boolean
 }
 
 export interface BrowserScrollParams {
@@ -354,6 +385,24 @@ export function parseBrowserObservation(value: unknown): BrowserObservation | un
   }
 }
 
+export function parseBrowserTabsSnapshot(value: unknown): BrowserTabsSnapshot | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['version', 'revision', 'activeTabId', 'tabs']) ||
+    value.version !== BROWSER_TABS_VERSION || !Number.isSafeInteger(value.revision) ||
+    Number(value.revision) < 0 || !isString(value.activeTabId, MAX_ID_LENGTH) ||
+    !Array.isArray(value.tabs) || value.tabs.length === 0 || value.tabs.length > MAX_TABS) return undefined
+  const tabs = value.tabs.map(parseTab)
+  if (tabs.some(tab => tab === undefined)) return undefined
+  const parsedTabs = tabs as BrowserTabSummary[]
+  if (new Set(parsedTabs.map(tab => tab.id)).size !== parsedTabs.length ||
+    !parsedTabs.some(tab => tab.id === value.activeTabId)) return undefined
+  return {
+    version: BROWSER_TABS_VERSION,
+    revision: Number(value.revision),
+    activeTabId: value.activeTabId,
+    tabs: parsedTabs,
+  }
+}
+
 function sessionActionAndSnapshot(value: Record<string, unknown>): value is Record<string, unknown> & {
   actionId: string
   sessionId: string
@@ -389,6 +438,40 @@ export function parseBrowserScreenshotParams(value: unknown): BrowserScreenshotP
   return { sessionId: value.sessionId, snapshotId: value.snapshotId }
 }
 
+export function parseBrowserTabsParams(value: unknown): BrowserTabsParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['sessionId']) ||
+    !isString(value.sessionId, MAX_ID_LENGTH)) return undefined
+  return { sessionId: value.sessionId }
+}
+
+export function parseBrowserTabParams(value: unknown): BrowserTabParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['actionId', 'sessionId', 'revision', 'action', 'tabId'],
+  ) || !isString(value.actionId, MAX_ID_LENGTH) || !isString(value.sessionId, MAX_ID_LENGTH) ||
+    !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 ||
+    (value.action !== 'new' && value.action !== 'activate' && value.action !== 'close')) {
+    return undefined
+  }
+  if (value.action === 'new') {
+    if (value.tabId !== undefined) return undefined
+    return {
+      actionId: value.actionId,
+      sessionId: value.sessionId,
+      revision: Number(value.revision),
+      action: 'new',
+    }
+  }
+  if (!isString(value.tabId, MAX_ID_LENGTH)) return undefined
+  return {
+    actionId: value.actionId,
+    sessionId: value.sessionId,
+    revision: Number(value.revision),
+    action: value.action,
+    tabId: value.tabId,
+  }
+}
+
 export function parseBrowserClickParams(value: unknown): BrowserClickParams | undefined {
   if (!isRecord(value) || !hasOnlyKeys(
     value,
@@ -421,6 +504,23 @@ export function parseBrowserTypeParams(value: unknown): BrowserTypeParams | unde
     name: value.name,
     text: value.text,
     ...(value.submit === undefined ? {} : { submit: value.submit }),
+  }
+}
+
+export function parseBrowserSelectParams(value: unknown): BrowserSelectParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['actionId', 'sessionId', 'snapshotId', 'name', 'option', 'exact'],
+  ) || !sessionActionAndSnapshot(value) || !isString(value.name, MAX_NAME_LENGTH) ||
+    !isString(value.option, MAX_NAME_LENGTH) ||
+    (value.exact !== undefined && typeof value.exact !== 'boolean')) return undefined
+  return {
+    actionId: value.actionId,
+    sessionId: value.sessionId,
+    snapshotId: value.snapshotId,
+    name: value.name,
+    option: value.option,
+    ...(value.exact === undefined ? {} : { exact: value.exact }),
   }
 }
 

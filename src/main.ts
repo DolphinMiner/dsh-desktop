@@ -1489,6 +1489,14 @@ app.whenReady().then(async () => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.screenshot(params)
       },
+      tabs: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.tabs(params, signal)
+      },
+      tab: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.tab(params, signal)
+      },
       click: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.click(params, signal)
@@ -1496,6 +1504,10 @@ app.whenReady().then(async () => {
       type: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.type(params, signal)
+      },
+      select: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.select(params, signal)
       },
       scroll: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
