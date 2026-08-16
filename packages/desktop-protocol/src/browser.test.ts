@@ -17,10 +17,12 @@ import {
   parseBrowserTabsSnapshot,
   parseBrowserTypeParams,
   parseBrowserUiKeyboardInput,
+  parseBrowserUiFindInput,
   parseBrowserUiOpenManagementInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseBrowserUiViewportInput,
+  parseBrowserUiZoomInput,
   parseControlledBrowserUrl,
   parseUpdateBrowserSettingsInput,
 } from './browser.js'
@@ -54,8 +56,22 @@ test('allows only fixed Browser management destinations', () => {
   assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'import' }), { page: 'import' })
   assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'passwords' }), { page: 'passwords' })
   assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'contacts' }), { page: 'contacts' })
+  assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'downloads' }), { page: 'downloads' })
+  assert.deepEqual(parseBrowserUiOpenManagementInput({ page: 'history' }), { page: 'history' })
   assert.equal(parseBrowserUiOpenManagementInput({ page: 'chrome://settings' }), undefined)
   assert.equal(parseBrowserUiOpenManagementInput({ page: 'passwords', url: 'chrome://settings' }), undefined)
+})
+
+test('browser UI find and zoom inputs are bounded', () => {
+  assert.deepEqual(parseBrowserUiFindInput({ query: 'Dolphin', forward: false }), {
+    query: 'Dolphin',
+    forward: false,
+  })
+  assert.equal(parseBrowserUiFindInput({ query: '' }), undefined)
+  assert.equal(parseBrowserUiFindInput({ query: 'Dolphin', forward: 'yes' }), undefined)
+  assert.deepEqual(parseBrowserUiZoomInput({ factor: 1.25 }), { factor: 1.25 })
+  assert.equal(parseBrowserUiZoomInput({ factor: 0.49 }), undefined)
+  assert.equal(parseBrowserUiZoomInput({ factor: Number.NaN }), undefined)
 })
 
 test('validates bounded browser state, frame, history, and observations', () => {
@@ -70,15 +86,27 @@ test('validates bounded browser state, frame, history, and observations', () => 
     revision: 3,
     settings,
     runtimeStatus: 'ready' as const,
-    tabs: [{ id: 'tab-1', url: summary.url, title: summary.title, loading: false }],
+    tabs: [{
+      id: 'tab-1',
+      url: summary.url,
+      title: summary.title,
+      loading: false,
+      faviconDataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    }],
     activeTabId: 'tab-1',
     canGoBack: false,
     canGoForward: true,
+    zoomFactor: 1.1,
     historyCount: 1,
     lastObservation: summary,
   }
   assert.deepEqual(parseBrowserState(state), state)
   assert.equal(parseBrowserState({ ...state, activeTabId: 'missing' }), undefined)
+  assert.equal(parseBrowserState({ ...state, zoomFactor: 2.1 }), undefined)
+  assert.equal(parseBrowserState({
+    ...state,
+    tabs: [{ ...state.tabs[0], faviconDataUrl: 'https://example.com/favicon.ico' }],
+  }), undefined)
 
   const observation = {
     version: BROWSER_OBSERVATION_VERSION,

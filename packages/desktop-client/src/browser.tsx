@@ -17,6 +17,8 @@ import {
   IconPanelLeftOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
+  IconSearchOutline16,
+  IconCheckOutline16,
   IconTrashOutline16,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -25,6 +27,7 @@ import type {
   BrowserHistoryEntry,
   BrowserManagementPage,
   BrowserState,
+  BrowserUiFindInput,
   BrowserUiKeyboardAction,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
@@ -33,6 +36,7 @@ import type {
   BrowserUiScrollInput,
   BrowserUiTabInput,
   BrowserUiViewportInput,
+  BrowserUiZoomInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -68,6 +72,10 @@ export interface DesktopBrowserBridge {
   back(): Promise<BrowserState>
   forward(): Promise<BrowserState>
   reload(): Promise<BrowserState>
+  find(input: BrowserUiFindInput): Promise<BrowserState>
+  zoom(input: BrowserUiZoomInput): Promise<BrowserState>
+  print(): Promise<boolean>
+  saveScreenshot(): Promise<boolean>
   refreshFrame(): Promise<BrowserState>
   resizeViewport(input: BrowserUiViewportInput): Promise<BrowserState>
   stop(): Promise<BrowserState>
@@ -194,6 +202,13 @@ const styles = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dsh-desktop-browser-favicon {
+  border-radius: 3px;
+  display: block;
+  height: 16px;
+  object-fit: contain;
+  width: 16px;
+}
 .dsh-desktop-browser-window-actions {
   align-items: center;
   display: flex;
@@ -229,6 +244,101 @@ const styles = `
   grid-template-columns: 28px 28px 28px minmax(120px, 1fr) 28px;
   padding: 8px 10px;
 }
+.dsh-desktop-browser-menu-anchor {
+  height: 28px;
+  position: relative;
+  width: 28px;
+}
+.dsh-desktop-browser-menu {
+  background: var(--dsw-alias-bg-elevated, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, #deded9);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+  color: var(--dsw-alias-label-primary, #17191c);
+  display: grid;
+  min-width: 258px;
+  padding: 5px;
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: 40;
+}
+.dsh-desktop-browser-menu-row,
+.dsh-desktop-browser-menu-zoom {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  display: grid;
+  font: inherit;
+  font-size: 13px;
+  min-height: 34px;
+  padding: 0 9px;
+  text-align: left;
+  width: 100%;
+}
+.dsh-desktop-browser-menu-row {
+  cursor: pointer;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.dsh-desktop-browser-menu-row:hover:not(:disabled),
+.dsh-desktop-browser-menu-row[data-open="true"] {
+  background: var(--dsw-alias-interactive-bg-hover, #f0f0ed);
+}
+.dsh-desktop-browser-menu-row:disabled {
+  color: var(--dsw-alias-label-tertiary, #74777d);
+  cursor: default;
+}
+.dsh-desktop-browser-menu-mark {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  width: 18px;
+}
+.dsh-desktop-browser-menu-divider {
+  background: var(--dsw-alias-border-l2, #deded9);
+  height: 1px;
+  margin: 4px 2px;
+}
+.dsh-desktop-browser-menu-zoom {
+  grid-template-columns: minmax(0, 1fr) 28px 54px 28px;
+  gap: 2px;
+}
+.dsh-desktop-browser-menu-zoom button {
+  align-items: center;
+  background: var(--dsw-alias-bg-overlay, #f2f2ef);
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  height: 26px;
+  justify-content: center;
+}
+.dsh-desktop-browser-menu-zoom button:disabled {
+  cursor: default;
+  opacity: .35;
+}
+.dsh-desktop-browser-menu-zoom-value {
+  text-align: center;
+}
+.dsh-desktop-browser-menu-submenu-anchor {
+  position: relative;
+}
+.dsh-desktop-browser-menu-submenu {
+  background: var(--dsw-alias-bg-elevated, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, #deded9);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+  display: grid;
+  min-width: 218px;
+  padding: 5px;
+  position: absolute;
+  right: calc(100% - 2px);
+  top: -5px;
+}
 .dsh-desktop-browser-address {
   background: transparent;
   border: 1px solid transparent;
@@ -256,6 +366,9 @@ const styles = `
   place-items: center;
   position: relative;
 }
+.dsh-desktop-browser-stage[data-device="true"] {
+  background: var(--dsw-alias-bg-subtle, #f5f5f2);
+}
 .dsh-desktop-browser-stage[data-busy="true"] {
   cursor: progress;
 }
@@ -266,7 +379,39 @@ const styles = `
 .dsh-desktop-browser-stage img {
   display: block;
   height: 100%;
+  inset: 0;
+  position: absolute;
   width: 100%;
+}
+.dsh-desktop-browser-stage[data-device="true"] img {
+  bottom: auto;
+  height: auto;
+  width: 100%;
+}
+.dsh-desktop-browser-find {
+  align-items: center;
+  background: var(--dsw-alias-bg-elevated, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, #deded9);
+  border-radius: 7px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .12);
+  display: grid;
+  gap: 3px;
+  grid-template-columns: 18px minmax(110px, 1fr) 28px 28px 28px;
+  padding: 5px 6px 5px 10px;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: min(360px, calc(100% - 16px));
+  z-index: 24;
+}
+.dsh-desktop-browser-find input {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+  outline: none;
 }
 .dsh-desktop-browser-empty {
   color: var(--dsw-alias-label-tertiary, #74777d);
@@ -308,7 +453,9 @@ const styles = `
 function browserManagementTitle(page: BrowserManagementPage, t: DesktopTranslate): string {
   if (page === 'import') return t('Import Browser Data')
   if (page === 'passwords') return t('Password Manager')
-  return t('Contact Information')
+  if (page === 'contacts') return t('Contact Information')
+  if (page === 'downloads') return t('Downloads')
+  return t('History')
 }
 
 function browserStatus(state: BrowserState | undefined, t: DesktopTranslate): string {
@@ -636,9 +783,20 @@ export function BrowserView({
   const [address, setAddress] = useState('')
   const [addressFocused, setAddressFocused] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [controlPending, setControlPending] = useState(0)
   const [error, setError] = useState<string>()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [passwordsMenuOpen, setPasswordsMenuOpen] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [zoom, setZoom] = useState(1)
+  const [deviceMode, setDeviceMode] = useState(false)
+  const [clearOpen, setClearOpen] = useState(false)
   const busyRef = useRef(false)
+  const addressFocusedRef = useRef(false)
   const stageRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const findInputRef = useRef<HTMLInputElement>(null)
   const viewportRef = useRef('')
   const interactionRef = useRef<{ snapshotId: string; tabId: string }>()
   const keyboardQueueRef = useRef<BrowserUiKeyboardAction[]>([])
@@ -662,7 +820,7 @@ export function BrowserView({
     const offChanged = bridge.onChanged(next => {
       if (!active) return
       setState(next)
-      setAddress(activeBrowserAddress(next))
+      if (!addressFocusedRef.current) setAddress(activeBrowserAddress(next))
       interactionRef.current = next.lastObservation === undefined
         ? undefined
         : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
@@ -710,6 +868,35 @@ export function BrowserView({
   }, [])
 
   useEffect(() => {
+    if (!menuOpen) return
+    const closeMenu = (event: MouseEvent): void => {
+      if (menuRef.current?.contains(event.target as Node) !== true) {
+        setMenuOpen(false)
+        setPasswordsMenuOpen(false)
+      }
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      setMenuOpen(false)
+      setPasswordsMenuOpen(false)
+    }
+    document.addEventListener('mousedown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [menuOpen])
+
+  useEffect(() => {
+    if (findOpen) findInputRef.current?.focus()
+  }, [findOpen])
+
+  useEffect(() => {
+    if (state?.zoomFactor !== undefined) setZoom(state.zoomFactor)
+  }, [state?.zoomFactor])
+
+  useEffect(() => {
     const stage = stageRef.current
     if (bridge === undefined || stage === null || state?.settings.enabled !== true) return
     let active = true
@@ -735,8 +922,8 @@ export function BrowserView({
     }
     const queue = (): void => {
       const bounds = stage.getBoundingClientRect()
-      const pixelWidth = Math.floor(bounds.width)
-      const pixelHeight = Math.floor(bounds.height)
+      const pixelWidth = deviceMode ? 390 : Math.floor(bounds.width)
+      const pixelHeight = deviceMode ? 844 : Math.floor(bounds.height)
       if (pixelWidth < 240 || pixelHeight < 240) return
       pending = { pixelWidth: Math.min(2_560, pixelWidth), pixelHeight: Math.min(2_560, pixelHeight) }
       if (timer !== undefined) clearTimeout(timer)
@@ -750,7 +937,15 @@ export function BrowserView({
       observer.disconnect()
       if (timer !== undefined) clearTimeout(timer)
     }
-  }, [bridge, state?.settings.enabled, t])
+  }, [bridge, deviceMode, state?.settings.enabled, t])
+
+  const applyState = (next: BrowserState): void => {
+    setState(next)
+    if (!addressFocusedRef.current) setAddress(activeBrowserAddress(next))
+    interactionRef.current = next.lastObservation === undefined
+      ? undefined
+      : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
+  }
 
   const run = (operation: () => Promise<BrowserState>): void => {
     if (busyRef.current) return
@@ -758,11 +953,7 @@ export function BrowserView({
     setBusy(true)
     setError(undefined)
     void operation().then(next => {
-      setState(next)
-      setAddress(activeBrowserAddress(next))
-      interactionRef.current = next.lastObservation === undefined
-        ? undefined
-        : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
+      applyState(next)
     }).catch(cause => {
       setError(cause instanceof Error ? cause.message : t('The browser operation failed.'))
     }).finally(() => {
@@ -771,30 +962,56 @@ export function BrowserView({
     })
   }
 
+  const runControl = (
+    operation: () => Promise<BrowserState>,
+    onSuccess?: () => void,
+  ): void => {
+    setControlPending(value => value + 1)
+    setError(undefined)
+    void operation().then(next => {
+      applyState(next)
+      onSuccess?.()
+    }).catch(cause => {
+      setError(cause instanceof Error ? cause.message : t('The browser operation failed.'))
+    }).finally(() => setControlPending(value => Math.max(0, value - 1)))
+  }
+
+  const runUtility = (operation: () => Promise<unknown>): void => {
+    setControlPending(value => value + 1)
+    setError(undefined)
+    void operation().catch(cause => {
+      setError(cause instanceof Error ? cause.message : t('The browser operation failed.'))
+    }).finally(() => setControlPending(value => Math.max(0, value - 1)))
+  }
+
   const navigate = (event: FormEvent): void => {
     event.preventDefault()
     const url = normalizeBrowserAddress(address)
     if (bridge === undefined || url === '') return
     setAddress(url)
-    run(() => bridge.navigate({ url }))
+    const input = event.currentTarget.querySelector('input')
+    if (input instanceof HTMLInputElement) input.blur()
+    runControl(() => bridge.navigate({ url }))
   }
 
   const tabs = state?.tabs ?? []
   const activeTab = tabs.find(tab => tab.id === state?.activeTabId)
   const blankTab = activeTab === undefined || activeTab.url === 'about:blank'
   const showFrame = frameUrl !== undefined && frame?.tabId === activeTab?.id && !blankTab
-  const disabled = bridge === undefined || busy || state?.settings.enabled !== true
-  const interactive = bridge !== undefined && showFrame && state?.settings.enabled === true
+  const disabled = bridge === undefined || state?.settings.enabled !== true
+  const interactive = bridge !== undefined && showFrame && state?.settings.enabled === true && !busy
+  const displayBusy = busy || controlPending > 0
 
   const pointerInput = (
     event: ReactMouseEvent<HTMLDivElement>,
     button: 'left' | 'right',
   ): void => {
-    if (bridge === undefined || frame === undefined || disabled) return
+    if (bridge === undefined || frame === undefined || disabled || busyRef.current) return
+    const content = event.currentTarget.querySelector('img')
     const point = normalizedBrowserPoint(
       event.clientX,
       event.clientY,
-      event.currentTarget.getBoundingClientRect(),
+      content?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect(),
       frame,
     )
     if (point === undefined) return
@@ -846,10 +1063,11 @@ export function BrowserView({
   const scrollInput = (event: ReactWheelEvent<HTMLDivElement>): void => {
     if (bridge === undefined || frame === undefined || !interactive ||
       (busyRef.current && !scrollRunningRef.current)) return
+    const content = event.currentTarget.querySelector('img')
     const point = normalizedBrowserPoint(
       event.clientX,
       event.clientY,
-      event.currentTarget.getBoundingClientRect(),
+      content?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect(),
       frame,
     )
     if (point === undefined || (event.deltaX === 0 && event.deltaY === 0)) return
@@ -934,6 +1152,36 @@ export function BrowserView({
     }
   }
 
+  const openManagement = (page: BrowserManagementPage): void => {
+    setMenuOpen(false)
+    setPasswordsMenuOpen(false)
+    if (bridge !== undefined) runControl(() => bridge.openManagement({ page }))
+  }
+
+  const changeZoom = (next: number): void => {
+    if (bridge === undefined) return
+    const factor = Math.max(0.5, Math.min(2, Math.round(next * 10) / 10))
+    setZoom(factor)
+    runControl(() => bridge.zoom({ factor }))
+  }
+
+  const find = (forward: boolean): void => {
+    const query = findQuery.trim()
+    if (bridge === undefined || query === '') return
+    runControl(() => bridge.find({ query, forward }))
+  }
+
+  const closeFind = (): void => {
+    setFindOpen(false)
+    setFindQuery('')
+    stageRef.current?.focus()
+  }
+
+  const clearData = (): void => {
+    if (bridge === undefined) return
+    runControl(() => bridge.clearData(), () => setClearOpen(false))
+  }
+
   return (
     <section className="dsh-desktop-browser-view" aria-label={t('Browser')}>
       <style>{styles}</style>
@@ -948,9 +1196,13 @@ export function BrowserView({
                 aria-selected={tab.id === state?.activeTabId}
                 title={tab.title || tab.url || t('New tab')}
                 disabled={disabled}
-                onClick={() => { if (bridge !== undefined) run(() => bridge.activateTab({ tabId: tab.id })) }}
+                onClick={() => { if (bridge !== undefined) runControl(() => bridge.activateTab({ tabId: tab.id })) }}
               >
-                <IconGlobeOutline14 size={16} />
+                {tab.faviconDataUrl === undefined ? (
+                  <IconGlobeOutline14 size={16} />
+                ) : (
+                  <img className="dsh-desktop-browser-favicon" src={tab.faviconDataUrl} alt="" />
+                )}
                 <span>{tab.title || (tab.url === 'about:blank' ? t('New tab') : tab.url)}</span>
               </button>
               <button
@@ -959,7 +1211,11 @@ export function BrowserView({
                 title={t('Close tab')}
                 aria-label={t('Close {name}', { name: tab.title || t('tab') })}
                 disabled={disabled}
-                onClick={() => { if (bridge !== undefined) run(() => bridge.closeTab({ tabId: tab.id })) }}
+                onMouseDown={event => event.stopPropagation()}
+                onClick={event => {
+                  event.stopPropagation()
+                  if (bridge !== undefined) runControl(() => bridge.closeTab({ tabId: tab.id }))
+                }}
               >
                 <IconCloseOutline16 />
               </button>
@@ -971,7 +1227,7 @@ export function BrowserView({
             title={t('New tab')}
             aria-label={t('New browser tab')}
             disabled={disabled}
-            onClick={() => { if (bridge !== undefined) run(() => bridge.newTab()) }}
+            onClick={() => { if (bridge !== undefined) runControl(() => bridge.newTab()) }}
           >
             <IconPlusOutline16 />
           </button>
@@ -997,7 +1253,7 @@ export function BrowserView({
           title={t('Back')}
           aria-label={t('Go back')}
           disabled={disabled || state?.canGoBack !== true}
-          onClick={() => { if (bridge !== undefined) run(() => bridge.back()) }}
+          onClick={() => { if (bridge !== undefined) runControl(() => bridge.back()) }}
         >
           <IconChevronLeftOutline14 />
         </button>
@@ -1007,7 +1263,7 @@ export function BrowserView({
           title={t('Forward')}
           aria-label={t('Go forward')}
           disabled={disabled || state?.canGoForward !== true}
-          onClick={() => { if (bridge !== undefined) run(() => bridge.forward()) }}
+          onClick={() => { if (bridge !== undefined) runControl(() => bridge.forward()) }}
         >
           <IconChevronRightOutline14 />
         </button>
@@ -1017,7 +1273,7 @@ export function BrowserView({
           title={t('Reload')}
           aria-label={t('Reload page')}
           disabled={disabled || state?.activeTabId === undefined}
-          onClick={() => { if (bridge !== undefined) run(() => bridge.reload()) }}
+          onClick={() => { if (bridge !== undefined) runControl(() => bridge.reload()) }}
         >
           <IconRefreshOutline16 />
         </button>
@@ -1028,34 +1284,212 @@ export function BrowserView({
           value={addressFocused ? address : browserAddressLabel(address)}
           disabled={disabled}
           onChange={event => setAddress(event.currentTarget.value)}
-          onFocus={() => setAddressFocused(true)}
-          onBlur={() => setAddressFocused(false)}
+          onFocus={() => {
+            addressFocusedRef.current = true
+            setAddressFocused(true)
+          }}
+          onBlur={() => {
+            addressFocusedRef.current = false
+            setAddressFocused(false)
+            if (state !== undefined) setAddress(activeBrowserAddress(state))
+          }}
         />
-        <button
-          type="button"
-          className="dsh-desktop-browser-icon-button"
-          title={t('Browser Settings')}
-          aria-label={t('Browser Settings')}
-          disabled={onOpenSettings === undefined}
-          onClick={onOpenSettings}
-        >
-          <IconEllipsisOutline16 />
-        </button>
+        <div className="dsh-desktop-browser-menu-anchor" ref={menuRef}>
+          <button
+            type="button"
+            className="dsh-desktop-browser-icon-button"
+            title={t('Customize and control Browser')}
+            aria-label={t('Customize and control Browser')}
+            aria-expanded={menuOpen}
+            disabled={disabled}
+            onClick={() => {
+              setMenuOpen(value => !value)
+              setPasswordsMenuOpen(false)
+            }}
+          >
+            <IconEllipsisOutline16 />
+          </button>
+          {menuOpen && (
+            <div className="dsh-desktop-browser-menu" role="menu" aria-label={t('Browser menu')}>
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitem"
+                disabled={blankTab}
+                onClick={() => {
+                  setMenuOpen(false)
+                  setFindOpen(true)
+                }}
+              >
+                <span>{t('Find in page')}</span>
+                <span>{navigator.platform.includes('Mac') ? '⌘F' : 'Ctrl+F'}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitem"
+                disabled={blankTab}
+                onClick={() => {
+                  setMenuOpen(false)
+                  if (bridge !== undefined) runUtility(() => bridge.print())
+                }}
+              >
+                <span>{t('Print')}</span>
+                <span>{navigator.platform.includes('Mac') ? '⌘P' : 'Ctrl+P'}</span>
+              </button>
+              <div className="dsh-desktop-browser-menu-divider" />
+              <div className="dsh-desktop-browser-menu-zoom">
+                <span>{t('Zoom')}</span>
+                <button type="button" aria-label={t('Zoom out')} disabled={zoom <= 0.5} onClick={() => changeZoom(zoom - 0.1)}>−</button>
+                <button type="button" className="dsh-desktop-browser-menu-zoom-value" aria-label={t('Reset zoom')} onClick={() => changeZoom(1)}>
+                  {String(Math.round(zoom * 100))}%
+                </button>
+                <button type="button" aria-label={t('Zoom in')} disabled={zoom >= 2} onClick={() => changeZoom(zoom + 0.1)}>+</button>
+              </div>
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitemcheckbox"
+                aria-checked={deviceMode}
+                onClick={() => {
+                  setDeviceMode(value => !value)
+                  setMenuOpen(false)
+                }}
+              >
+                <span>{t('Show device toolbar')}</span>
+                <span className="dsh-desktop-browser-menu-mark">{deviceMode && <IconCheckOutline16 />}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitem"
+                disabled={blankTab}
+                onClick={() => {
+                  setMenuOpen(false)
+                  if (bridge !== undefined) runUtility(() => bridge.saveScreenshot())
+                }}
+              >
+                <span>{t('Capture screenshot')}</span>
+              </button>
+              <div className="dsh-desktop-browser-menu-divider" />
+              <button type="button" className="dsh-desktop-browser-menu-row" role="menuitem" onClick={() => openManagement('import')}>
+                <span>{t('Import cookies and passwords...')}</span>
+              </button>
+              <div
+                className="dsh-desktop-browser-menu-submenu-anchor"
+                onMouseEnter={() => setPasswordsMenuOpen(true)}
+                onMouseLeave={() => setPasswordsMenuOpen(false)}
+              >
+                <button
+                  type="button"
+                  className="dsh-desktop-browser-menu-row"
+                  data-open={passwordsMenuOpen}
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={passwordsMenuOpen}
+                  onClick={() => setPasswordsMenuOpen(value => !value)}
+                >
+                  <span>{t('Passwords and autofill')}</span>
+                  <IconChevronRightOutline14 />
+                </button>
+                {passwordsMenuOpen && (
+                  <div className="dsh-desktop-browser-menu-submenu" role="menu">
+                    <button type="button" className="dsh-desktop-browser-menu-row" role="menuitem" onClick={() => openManagement('passwords')}>
+                      <span>{t('Password Manager')}</span>
+                    </button>
+                    <button type="button" className="dsh-desktop-browser-menu-row" role="menuitem" onClick={() => openManagement('contacts')}>
+                      <span>{t('Contact Information')}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <button type="button" className="dsh-desktop-browser-menu-row" role="menuitem" onClick={() => openManagement('downloads')}>
+                <span>{t('Downloads')}</span>
+              </button>
+              <button type="button" className="dsh-desktop-browser-menu-row" role="menuitem" onClick={() => openManagement('history')}>
+                <span>{t('History')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false)
+                  setClearOpen(true)
+                }}
+              >
+                <span>{t('Clear browsing data')}</span>
+              </button>
+              <div className="dsh-desktop-browser-menu-divider" />
+              <button
+                type="button"
+                className="dsh-desktop-browser-menu-row"
+                role="menuitem"
+                disabled={onOpenSettings === undefined}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenSettings?.()
+                }}
+              >
+                <span>{t('Browser Settings')}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </form>
       <div
         ref={stageRef}
         className="dsh-desktop-browser-stage"
-        data-busy={busy}
+        data-busy={displayBusy}
+        data-device={deviceMode}
         data-interactive={interactive}
         tabIndex={interactive ? 0 : -1}
         role="application"
         aria-label={t('Controlled browser page')}
-        aria-busy={busy}
+        aria-busy={displayBusy}
         onClick={event => pointerInput(event, 'left')}
         onContextMenu={event => pointerInput(event, 'right')}
         onKeyDown={keyboardInput}
         onWheel={scrollInput}
       >
+        {findOpen && (
+          <div
+            className="dsh-desktop-browser-find"
+            role="search"
+            onClick={event => event.stopPropagation()}
+            onContextMenu={event => event.stopPropagation()}
+            onKeyDown={event => event.stopPropagation()}
+            onMouseDown={event => event.stopPropagation()}
+            onWheel={event => event.stopPropagation()}
+          >
+            <IconSearchOutline16 />
+            <input
+              ref={findInputRef}
+              aria-label={t('Find in page')}
+              placeholder={t('Find in page')}
+              value={findQuery}
+              onChange={event => setFindQuery(event.currentTarget.value)}
+              onKeyDown={event => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeFind()
+                } else if (event.key === 'Enter') {
+                  event.preventDefault()
+                  find(!event.shiftKey)
+                }
+              }}
+            />
+            <button type="button" className="dsh-desktop-browser-icon-button" title={t('Previous match')} aria-label={t('Previous match')} onClick={() => find(false)}>
+              <span aria-hidden="true">↑</span>
+            </button>
+            <button type="button" className="dsh-desktop-browser-icon-button" title={t('Next match')} aria-label={t('Next match')} onClick={() => find(true)}>
+              <span aria-hidden="true">↓</span>
+            </button>
+            <button type="button" className="dsh-desktop-browser-icon-button" title={t('Close find in page')} aria-label={t('Close find in page')} onClick={closeFind}>
+              <IconCloseOutline16 />
+            </button>
+          </div>
+        )}
         {showFrame ? (
           <img src={frameUrl} alt={state?.lastObservation?.title || t('Controlled browser page')} draggable={false} />
         ) : (
@@ -1075,6 +1509,27 @@ export function BrowserView({
         )}
         {error !== undefined && <div className="dsh-desktop-browser-error" role="alert">{error}</div>}
       </div>
+      <Modal
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        title={t('Clear Browsing Data')}
+        closeLabel={t('Close clear browsing data confirmation')}
+        footer={(
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <Button variant="outline" disabled={controlPending > 0} onClick={() => setClearOpen(false)}>{t('Cancel')}</Button>
+            <Button variant="primary" icon={<IconTrashOutline16 />} disabled={controlPending > 0} onClick={clearData}>
+              {t('Clear Data')}
+            </Button>
+          </div>
+        )}
+      >
+        <div className="dsh-desktop-browser-confirm">
+          <span>{t('Cookies, site storage, permissions, cache, downloads, and browsing history will be removed.')}</span>
+          {state?.settings.storageMode === 'persistent' && (
+            <span>{t('You will be signed out of websites in the persistent browser session.')}</span>
+          )}
+        </div>
+      </Modal>
     </section>
   )
 }

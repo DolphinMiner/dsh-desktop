@@ -14,6 +14,9 @@ const MAX_TABS = 32
 const MAX_ARIA_LENGTH = 60_000
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 }
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+const MAX_PRINT_BYTES = 50 * 1024 * 1024
+const MAX_FAVICON_BYTES = 256 * 1024
+const FAVICON_TIMEOUT_MS = 2_000
 
 type BrowserRole = Parameters<Page['getByRole']>[0]
 
@@ -39,6 +42,7 @@ export interface BrowserEngineState {
   activeTabId?: string
   canGoBack: boolean
   canGoForward: boolean
+  zoomFactor?: number
 }
 
 export interface BrowserEngineObservation {
@@ -112,6 +116,9 @@ export interface BrowserEngine {
   goBack(signal: AbortSignal): Promise<void>
   goForward(signal: AbortSignal): Promise<void>
   reload(signal: AbortSignal): Promise<void>
+  find(query: string, forward: boolean, signal: AbortSignal): Promise<boolean>
+  setZoom(factor: number): Promise<void>
+  printToPdf(signal: AbortSignal): Promise<Buffer>
 }
 
 interface NavigationState {
@@ -136,6 +143,8 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
   private readonly registeredPages = new WeakSet<Page>()
   private readonly navigation = new Map<string, NavigationState>()
   private readonly loading = new Set<string>()
+  private readonly favicons = new WeakMap<Page, { documentUrl: string; dataUrl?: string }>()
+  private readonly zoomFactors = new WeakMap<Page, number>()
   private viewport = DEFAULT_VIEWPORT
 
   async start(options: PlaywrightBrowserLaunchOptions, signal: AbortSignal): Promise<void> {
@@ -201,11 +210,13 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     const pages = context.pages().slice(0, MAX_TABS)
     const tabs = await Promise.all(pages.map(async page => {
       const id = this.pageId(page)
+      const faviconDataUrl = await this.faviconFor(page)
       return {
         id,
         url: page.url(),
         title: await page.title().catch(() => ''),
         loading: this.loading.has(id),
+        ...(faviconDataUrl === undefined ? {} : { faviconDataUrl }),
       }
     }))
     if (this.activePage === undefined || this.activePage.isClosed()) this.activePage = pages[0]
@@ -216,6 +227,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       ...(activeTabId === undefined ? {} : { activeTabId }),
       canGoBack: navigation !== undefined && navigation.index > 0,
       canGoForward: navigation !== undefined && navigation.index < navigation.urls.length - 1,
+      ...(this.activePage === undefined ? {} : { zoomFactor: this.zoomFactors.get(this.activePage) ?? 1 }),
     }
   }
 
@@ -544,6 +556,46 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     throwIfAborted(signal)
   }
 
+  async find(query: string, forward: boolean, signal: AbortSignal): Promise<boolean> {
+    throwIfAborted(signal)
+    const page = this.page()
+    const found = await page.evaluate(({ query, forward }) => {
+      const find = (window as Window & {
+        find?: (
+          text: string,
+          caseSensitive?: boolean,
+          backwards?: boolean,
+          wrapAround?: boolean,
+          wholeWord?: boolean,
+          searchInFrames?: boolean,
+          showDialog?: boolean,
+        ) => boolean
+      }).find
+      return find?.(query, false, !forward, true, false, true, false) ?? false
+    }, { query, forward })
+    throwIfAborted(signal)
+    return found
+  }
+
+  async setZoom(factor: number): Promise<void> {
+    const page = this.page()
+    this.zoomFactors.set(page, factor)
+    await this.applyZoom(page)
+  }
+
+  async printToPdf(signal: AbortSignal): Promise<Buffer> {
+    throwIfAborted(signal)
+    const data = await this.page().pdf({
+      format: 'A4',
+      printBackground: true,
+    })
+    if (data.byteLength > MAX_PRINT_BYTES) {
+      throw new ControlledBrowserError('BAD_MESSAGE', 'Printed pages are limited to 50 MB.')
+    }
+    throwIfAborted(signal)
+    return data
+  }
+
   private requireContext(): BrowserContext {
     if (this.context === undefined) {
       throw new ControlledBrowserError('CONFLICT', 'The controlled browser is not running.')
@@ -577,7 +629,15 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     if (activate) this.activePage = page
     if (this.registeredPages.has(page)) return
     this.registeredPages.add(page)
+    this.zoomFactors.set(page, 1)
     if (!this.navigation.has(id)) this.navigation.set(id, { urls: [page.url()], index: 0 })
+    page.on('framenavigated', frame => {
+      if (frame !== page.mainFrame()) return
+      this.favicons.delete(page)
+    })
+    page.on('domcontentloaded', () => {
+      void this.applyZoom(page).catch(() => undefined)
+    })
     page.once('close', () => {
       this.navigation.delete(id)
       this.loading.delete(id)
@@ -601,6 +661,56 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     current.urls.push(url)
     current.index = current.urls.length - 1
     this.navigation.set(id, current)
+  }
+
+  private async faviconFor(page: Page): Promise<string | undefined> {
+    const documentUrl = page.url()
+    if (!documentUrl.startsWith('http://') && !documentUrl.startsWith('https://')) return undefined
+    const cached = this.favicons.get(page)
+    if (cached?.documentUrl === documentUrl) return cached.dataUrl
+
+    const source = await page.evaluate(() => {
+      const candidates = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel]'))
+        .filter(link => link.rel.toLowerCase().split(/\s+/).includes('icon') && link.href !== '')
+      if (candidates.length > 0) return candidates.at(-1)?.href
+      try {
+        return new URL('/favicon.ico', window.location.href).href
+      } catch {
+        return undefined
+      }
+    }).catch(() => undefined)
+
+    let dataUrl: string | undefined
+    if (source?.startsWith('data:image/') === true && source.length <= MAX_FAVICON_BYTES * 2) {
+      dataUrl = /^data:image\/[a-z0-9.+-]+;base64,[a-z\d+/]+=*$/i.test(source) ? source : undefined
+    } else if (source?.startsWith('http://') === true || source?.startsWith('https://') === true) {
+      dataUrl = await this.fetchFavicon(source)
+    }
+    this.favicons.set(page, { documentUrl, ...(dataUrl === undefined ? {} : { dataUrl }) })
+    return dataUrl
+  }
+
+  private async fetchFavicon(url: string): Promise<string | undefined> {
+    const response = await this.requireContext().request.get(url, {
+      failOnStatusCode: false,
+      timeout: FAVICON_TIMEOUT_MS,
+    }).catch(() => undefined)
+    if (response === undefined || !response.ok()) return undefined
+    const contentType = response.headers()['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType === undefined || !contentType.startsWith('image/')) return undefined
+    const declaredBytes = Number(response.headers()['content-length'])
+    if (Number.isFinite(declaredBytes) && declaredBytes > MAX_FAVICON_BYTES) return undefined
+    const data = await response.body().catch(() => undefined)
+    if (data === undefined || data.byteLength === 0 || data.byteLength > MAX_FAVICON_BYTES) return undefined
+    return `data:${contentType};base64,${data.toString('base64')}`
+  }
+
+  private async applyZoom(page: Page): Promise<void> {
+    if (page.isClosed()) return
+    const factor = this.zoomFactors.get(page) ?? 1
+    await page.evaluate(value => {
+      document.documentElement.style.zoom = value === 1 ? '' : String(value)
+    }, factor)
   }
 
   private async requireOne(countPromise: Promise<number>, role: string, name: string): Promise<void> {

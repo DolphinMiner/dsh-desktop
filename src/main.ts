@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -24,12 +25,14 @@ import {
   parseBeginOAuthInput,
   parseControlledBrowserUrl,
   parseBrowserUiKeyboardInput,
+  parseBrowserUiFindInput,
   parseBrowserUiNavigateInput,
   parseBrowserUiOpenManagementInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseBrowserUiTabInput,
   parseBrowserUiViewportInput,
+  parseBrowserUiZoomInput,
   parseDesktopFileOpenInput,
   parseDesktopFilesListInput,
   parseDesktopTerminalStartInput,
@@ -776,6 +779,44 @@ function installIpcHandlers(
   ipcMain.handle('desktop:browser:reload', async event => {
     assertTrustedSender(event)
     return browser.reload()
+  })
+  ipcMain.handle('desktop:browser:find', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.findFromUi(validInput(parseBrowserUiFindInput(value)))
+  })
+  ipcMain.handle('desktop:browser:zoom', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.zoomFromUi(validInput(parseBrowserUiZoomInput(value)))
+  })
+  ipcMain.handle('desktop:browser:print', async event => {
+    assertTrustedSender(event)
+    const pdf = await browser.printForUi()
+    const options: Electron.SaveDialogOptions = {
+      title: 'Print Page',
+      defaultPath: join(app.getPath('downloads'), 'browser-page.pdf'),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    }
+    const selected = mainWindow === undefined || mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(options)
+      : await dialog.showSaveDialog(mainWindow, options)
+    if (selected.canceled || selected.filePath === undefined) return false
+    await writeFile(selected.filePath, pdf)
+    return true
+  })
+  ipcMain.handle('desktop:browser:save-screenshot', async event => {
+    assertTrustedSender(event)
+    const frame = await browser.captureForUi()
+    const options: Electron.SaveDialogOptions = {
+      title: 'Capture Screenshot',
+      defaultPath: join(app.getPath('downloads'), 'browser-screenshot.jpg'),
+      filters: [{ name: 'JPEG image', extensions: ['jpg', 'jpeg'] }],
+    }
+    const selected = mainWindow === undefined || mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(options)
+      : await dialog.showSaveDialog(mainWindow, options)
+    if (selected.canceled || selected.filePath === undefined) return false
+    await writeFile(selected.filePath, frame.data)
+    return true
   })
   ipcMain.handle('desktop:browser:refresh-frame', async event => {
     assertTrustedSender(event)

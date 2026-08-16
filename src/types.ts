@@ -67,6 +67,10 @@ export interface DesktopBridge {
     back(): Promise<BrowserState>
     forward(): Promise<BrowserState>
     reload(): Promise<BrowserState>
+    find(input: BrowserUiFindInput): Promise<BrowserState>
+    zoom(input: BrowserUiZoomInput): Promise<BrowserState>
+    print(): Promise<boolean>
+    saveScreenshot(): Promise<boolean>
     refreshFrame(): Promise<BrowserState>
     resizeViewport(input: BrowserUiViewportInput): Promise<BrowserState>
     stop(): Promise<BrowserState>
@@ -146,6 +150,7 @@ import type {
   BrowserFrame,
   BrowserHistoryEntry,
   BrowserState,
+  BrowserUiFindInput,
   BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
   BrowserUiOpenManagementInput,
@@ -153,6 +158,7 @@ import type {
   BrowserUiScrollInput,
   BrowserUiTabInput,
   BrowserUiViewportInput,
+  BrowserUiZoomInput,
   DesktopFileListing,
   DesktopFileOpenInput,
   DesktopFilesListInput,

@@ -21,11 +21,13 @@ import type {
   BrowserTypeParams,
   BrowserUploadParams,
   BrowserUiKeyboardInput,
+  BrowserUiFindInput,
   BrowserUiNavigateInput,
   BrowserUiOpenManagementInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
   BrowserUiViewportInput,
+  BrowserUiZoomInput,
   UpdateBrowserSettingsInput,
 } from '@dolphinminer/dsh-desktop-protocol'
 import {
@@ -51,6 +53,8 @@ const BROWSER_MANAGEMENT_URLS = {
   import: 'chrome://settings/importData',
   passwords: 'chrome://password-manager/passwords',
   contacts: 'chrome://settings/contactInfo',
+  downloads: 'chrome://downloads',
+  history: 'chrome://history',
 } as const
 
 interface BrowserControllerOptions {
@@ -118,6 +122,10 @@ function controlledBrowserDisabled(): never {
   throw new ControlledBrowserError('PERMISSION_DENIED', 'Enable Browser in Settings before using it.')
 }
 
+function sameBrowserManagementUrl(actual: string, expected: string): boolean {
+  return actual === expected || actual === `${expected}/`
+}
+
 export function isLocalBrowserUrl(value: string): boolean {
   try {
     const hostname = new URL(value).hostname.toLowerCase()
@@ -164,6 +172,7 @@ export class BrowserController {
       ...(this.engineState.activeTabId === undefined ? {} : { activeTabId: this.engineState.activeTabId }),
       canGoBack: this.engineState.canGoBack,
       canGoForward: this.engineState.canGoForward,
+      ...(this.engineState.zoomFactor === undefined ? {} : { zoomFactor: this.engineState.zoomFactor }),
       historyCount: this.history.length,
       ...(this.latest === undefined ? {} : {
         lastObservation: {
@@ -297,7 +306,12 @@ export class BrowserController {
         version: BROWSER_TABS_VERSION,
         revision: this.revision,
         activeTabId,
-        tabs: this.engineState.tabs.map(tab => ({ ...tab })),
+        tabs: this.engineState.tabs.map(tab => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          loading: tab.loading,
+        })),
       }
     })
   }
@@ -463,7 +477,7 @@ export class BrowserController {
     return this.uiOperation(async signal => {
       const url = BROWSER_MANAGEMENT_URLS[input.page]
       const current = await this.engine.state()
-      const existing = current.tabs.find(tab => tab.url === url)
+      const existing = current.tabs.find(tab => sameBrowserManagementUrl(tab.url, url))
       if (existing === undefined) await this.engine.navigate(url, true, signal)
       else await this.engine.activate(existing.id)
       await this.observeCurrent(undefined, existing?.id, true, false, signal)
@@ -501,6 +515,42 @@ export class BrowserController {
 
   reload(): Promise<BrowserState> {
     return this.navigateHistory(signal => this.engine.reload(signal))
+  }
+
+  findFromUi(input: BrowserUiFindInput): Promise<BrowserState> {
+    return this.uiOperation(async signal => {
+      await this.engine.find(input.query, input.forward ?? true, signal)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
+    })
+  }
+
+  zoomFromUi(input: BrowserUiZoomInput): Promise<BrowserState> {
+    return this.uiOperation(async signal => {
+      await this.engine.setZoom(input.factor)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
+    })
+  }
+
+  captureForUi(): Promise<BrowserFrame> {
+    return this.exclusive(async () => {
+      this.assertEnabled()
+      const signal = new AbortController().signal
+      await this.ensureRunning(signal)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
+      if (this.latestFrame === undefined) {
+        throw new ControlledBrowserError('NOT_FOUND', 'The current browser page has no screenshot.')
+      }
+      return cloneFrame(this.latestFrame)
+    })
+  }
+
+  printForUi(): Promise<Buffer> {
+    return this.exclusive(async () => {
+      this.assertEnabled()
+      const signal = new AbortController().signal
+      await this.ensureRunning(signal)
+      return this.engine.printToPdf(signal)
+    })
   }
 
   refreshFrame(): Promise<BrowserState> {

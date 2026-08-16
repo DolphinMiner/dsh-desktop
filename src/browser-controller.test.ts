@@ -31,7 +31,11 @@ class FakeBrowserEngine implements BrowserEngine {
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
   keyboardBatches: BrowserUiKeyboardAction[][] = []
   viewports: Array<{ pixelWidth: number; pixelHeight: number }> = []
+  finds: Array<{ query: string; forward: boolean }> = []
+  zooms: number[] = []
+  prints = 0
   viewport = { pixelWidth: 1280, pixelHeight: 800 }
+  zoomFactor = 1
   captures: boolean[] = []
   url = 'about:blank'
   title = ''
@@ -50,10 +54,17 @@ class FakeBrowserEngine implements BrowserEngine {
 
   state(): Promise<BrowserEngineState> {
     return Promise.resolve({
-      tabs: this.tabs.map(id => ({ id, url: id === this.activeTabId ? this.url : 'about:blank', title: '', loading: false })),
+      tabs: this.tabs.map(id => ({
+        id,
+        url: id === this.activeTabId ? this.url : 'about:blank',
+        title: '',
+        loading: false,
+        faviconDataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      })),
       activeTabId: this.activeTabId,
       canGoBack: this.url !== 'about:blank',
       canGoForward: false,
+      zoomFactor: this.zoomFactor,
     })
   }
 
@@ -191,6 +202,22 @@ class FakeBrowserEngine implements BrowserEngine {
 
   reload(): Promise<void> {
     return Promise.resolve()
+  }
+
+  find(query: string, forward: boolean): Promise<boolean> {
+    this.finds.push({ query, forward })
+    return Promise.resolve(true)
+  }
+
+  setZoom(factor: number): Promise<void> {
+    this.zooms.push(factor)
+    this.zoomFactor = factor
+    return Promise.resolve()
+  }
+
+  printToPdf(): Promise<Buffer> {
+    this.prints += 1
+    return Promise.resolve(Buffer.from('%PDF-1.4'))
   }
 }
 
@@ -332,6 +359,37 @@ test('opens only fixed management pages in the same managed browser', async t =>
   assert.equal(passwords.lastObservation?.url, 'chrome://password-manager/passwords')
   const contacts = await runtime.controller.openManagement({ page: 'contacts' })
   assert.equal(contacts.lastObservation?.url, 'chrome://settings/contactInfo')
+  const downloads = await runtime.controller.openManagement({ page: 'downloads' })
+  assert.equal(downloads.lastObservation?.url, 'chrome://downloads')
+  const history = await runtime.controller.openManagement({ page: 'history' })
+  assert.equal(history.lastObservation?.url, 'chrome://history')
+  const tabCount = runtime.engine.tabs.length
+  runtime.engine.url = 'chrome://history/'
+  await runtime.controller.openManagement({ page: 'history' })
+  assert.equal(runtime.engine.tabs.length, tabCount)
+})
+
+test('runs browser menu commands through the Main-owned page', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  await runtime.controller.navigateFromUi({ url: 'https://example.com/' })
+
+  await runtime.controller.findFromUi({ query: 'Example', forward: false })
+  await runtime.controller.zoomFromUi({ factor: 1.25 })
+  const frame = await runtime.controller.captureForUi()
+  const pdf = await runtime.controller.printForUi()
+
+  assert.deepEqual(runtime.engine.finds, [{ query: 'Example', forward: false }])
+  assert.deepEqual(runtime.engine.zooms, [1.25])
+  assert.equal((await runtime.controller.zoomFromUi({ factor: 1.5 })).zoomFactor, 1.5)
+  assert.equal(frame.pixelWidth, 1280)
+  assert.equal(pdf.toString(), '%PDF-1.4')
+  assert.equal(runtime.engine.prints, 1)
 })
 
 test('keeps the renderer preview independent from the Agent screenshot policy', async t => {
@@ -422,6 +480,8 @@ test('uses one revisioned tab projection and snapshot-bound dropdown selection',
     { sessionId: 'session-1' },
     new AbortController().signal,
   )
+  assert.equal(runtime.controller.snapshot().tabs[0]?.faviconDataUrl?.startsWith('data:image/'), true)
+  assert.equal('faviconDataUrl' in initialTabs.tabs[0]!, false)
   const newTabInput = {
     actionId: 'tab-new-1',
     sessionId: 'session-1',

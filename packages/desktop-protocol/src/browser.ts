@@ -27,6 +27,7 @@ export interface BrowserTabSummary {
   url: string
   title: string
   loading: boolean
+  faviconDataUrl?: string
 }
 
 export interface BrowserHistoryEntry {
@@ -52,6 +53,7 @@ export interface BrowserState {
   activeTabId?: string
   canGoBack: boolean
   canGoForward: boolean
+  zoomFactor?: number
   historyCount: number
   lastObservation?: BrowserObservationSummary
   statusMessage?: string
@@ -184,10 +186,19 @@ export interface BrowserUiNavigateInput {
   newTab?: boolean
 }
 
-export type BrowserManagementPage = 'import' | 'passwords' | 'contacts'
+export type BrowserManagementPage = 'import' | 'passwords' | 'contacts' | 'downloads' | 'history'
 
 export interface BrowserUiOpenManagementInput {
   page: BrowserManagementPage
+}
+
+export interface BrowserUiFindInput {
+  query: string
+  forward?: boolean
+}
+
+export interface BrowserUiZoomInput {
+  factor: number
 }
 
 export interface BrowserUiTabInput {
@@ -245,6 +256,8 @@ const MAX_UI_KEYBOARD_ACTIONS = 64
 const MAX_UPLOAD_FILES = 8
 const MAX_PATH_LENGTH = 4_096
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+const MAX_FAVICON_DATA_URL_LENGTH = 384 * 1024
+const MAX_FIND_QUERY_LENGTH = 1_000
 
 const BROWSER_PRESS_KEYS = new Set([
   'Backspace',
@@ -341,10 +354,20 @@ export function parseUpdateBrowserSettingsInput(value: unknown): UpdateBrowserSe
 }
 
 function parseTab(value: unknown): BrowserTabSummary | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'url', 'title', 'loading']) ||
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'url', 'title', 'loading', 'faviconDataUrl']) ||
     !isString(value.id, MAX_ID_LENGTH) || !isString(value.url, MAX_URL_LENGTH, true) ||
-    !isString(value.title, MAX_TITLE_LENGTH, true) || typeof value.loading !== 'boolean') return undefined
-  return { id: value.id, url: value.url, title: value.title, loading: value.loading }
+    !isString(value.title, MAX_TITLE_LENGTH, true) || typeof value.loading !== 'boolean' ||
+    (value.faviconDataUrl !== undefined && (
+      !isString(value.faviconDataUrl, MAX_FAVICON_DATA_URL_LENGTH) ||
+      !/^data:image\/[a-z0-9.+-]+;base64,[a-z\d+/]+=*$/i.test(value.faviconDataUrl)
+    ))) return undefined
+  return {
+    id: value.id,
+    url: value.url,
+    title: value.title,
+    loading: value.loading,
+    ...(value.faviconDataUrl === undefined ? {} : { faviconDataUrl: value.faviconDataUrl }),
+  }
 }
 
 function parseObservationSummary(value: unknown): BrowserObservationSummary | undefined {
@@ -368,6 +391,10 @@ export function parseBrowserState(value: unknown): BrowserState | undefined {
       value.runtimeStatus !== 'ready' && value.runtimeStatus !== 'error') ||
     !Array.isArray(value.tabs) || value.tabs.length > MAX_TABS ||
     typeof value.canGoBack !== 'boolean' || typeof value.canGoForward !== 'boolean' ||
+    (value.zoomFactor !== undefined && (
+      typeof value.zoomFactor !== 'number' || !Number.isFinite(value.zoomFactor) ||
+      value.zoomFactor < 0.5 || value.zoomFactor > 2
+    )) ||
     !Number.isSafeInteger(value.historyCount) || Number(value.historyCount) < 0 ||
     (value.activeTabId !== undefined && !isString(value.activeTabId, MAX_ID_LENGTH)) ||
     (value.statusMessage !== undefined && !isString(value.statusMessage, MAX_STATUS_LENGTH))) return undefined
@@ -389,6 +416,7 @@ export function parseBrowserState(value: unknown): BrowserState | undefined {
     ...(value.activeTabId === undefined ? {} : { activeTabId: value.activeTabId }),
     canGoBack: value.canGoBack,
     canGoForward: value.canGoForward,
+    ...(value.zoomFactor === undefined ? {} : { zoomFactor: value.zoomFactor }),
     historyCount: Number(value.historyCount),
     ...(lastObservation === undefined ? {} : { lastObservation }),
     ...(value.statusMessage === undefined ? {} : { statusMessage: value.statusMessage }),
@@ -659,8 +687,26 @@ export function parseBrowserUiNavigateInput(value: unknown): BrowserUiNavigateIn
 
 export function parseBrowserUiOpenManagementInput(value: unknown): BrowserUiOpenManagementInput | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, ['page']) ||
-    (value.page !== 'import' && value.page !== 'passwords' && value.page !== 'contacts')) return undefined
+    (value.page !== 'import' && value.page !== 'passwords' && value.page !== 'contacts' &&
+      value.page !== 'downloads' && value.page !== 'history')) return undefined
   return { page: value.page }
+}
+
+export function parseBrowserUiFindInput(value: unknown): BrowserUiFindInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['query', 'forward']) ||
+    !isString(value.query, MAX_FIND_QUERY_LENGTH) ||
+    (value.forward !== undefined && typeof value.forward !== 'boolean')) return undefined
+  return {
+    query: value.query,
+    ...(value.forward === undefined ? {} : { forward: value.forward }),
+  }
+}
+
+export function parseBrowserUiZoomInput(value: unknown): BrowserUiZoomInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['factor']) ||
+    typeof value.factor !== 'number' || !Number.isFinite(value.factor) ||
+    value.factor < 0.5 || value.factor > 2) return undefined
+  return { factor: value.factor }
 }
 
 export function parseBrowserUiTabInput(value: unknown): BrowserUiTabInput | undefined {
