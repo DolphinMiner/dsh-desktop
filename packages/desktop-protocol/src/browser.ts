@@ -138,6 +138,18 @@ export interface BrowserUiScrollInput {
   deltaY: number
 }
 
+export type BrowserUiKeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift'
+
+export type BrowserUiKeyboardAction =
+  | { kind: 'text'; text: string }
+  | { kind: 'press'; key: string; modifiers?: BrowserUiKeyModifier[] }
+
+export interface BrowserUiKeyboardInput {
+  snapshotId: string
+  tabId: string
+  actions: BrowserUiKeyboardAction[]
+}
+
 const MAX_ID_LENGTH = 256
 const MAX_URL_LENGTH = 4_096
 const MAX_TITLE_LENGTH = 512
@@ -151,6 +163,27 @@ const MAX_TABS = 32
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_IMAGE_EDGE = 8_192
 const MAX_SCROLL_DELTA = 20_000
+const MAX_UI_KEYBOARD_ACTIONS = 64
+
+const BROWSER_PRESS_KEYS = new Set([
+  'Backspace',
+  'Delete',
+  'End',
+  'Enter',
+  'Escape',
+  'Home',
+  'Insert',
+  'PageDown',
+  'PageUp',
+  'Tab',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
+])
+
+const BROWSER_KEY_MODIFIERS = new Set<BrowserUiKeyModifier>(['Alt', 'Control', 'Meta', 'Shift'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -452,6 +485,45 @@ export function parseBrowserUiScrollInput(value: unknown): BrowserUiScrollInput 
     normalizedY: value.normalizedY,
     deltaX: value.deltaX,
     deltaY: value.deltaY,
+  }
+}
+
+function parseBrowserUiKeyboardAction(value: unknown): BrowserUiKeyboardAction | undefined {
+  if (!isRecord(value) || typeof value.kind !== 'string') return undefined
+  if (value.kind === 'text') {
+    if (!hasOnlyKeys(value, ['kind', 'text']) || !isString(value.text, MAX_TEXT_LENGTH)) return undefined
+    return { kind: 'text', text: value.text }
+  }
+  if (value.kind !== 'press' || !hasOnlyKeys(value, ['kind', 'key', 'modifiers']) ||
+    !isString(value.key, 32) ||
+    (!BROWSER_PRESS_KEYS.has(value.key) && !/^[\x20-\x7e]$/.test(value.key))) return undefined
+  if (value.modifiers === undefined) return { kind: 'press', key: value.key }
+  if (!Array.isArray(value.modifiers) || value.modifiers.length > 4 ||
+    !value.modifiers.every(modifier => BROWSER_KEY_MODIFIERS.has(modifier as BrowserUiKeyModifier)) ||
+    new Set(value.modifiers).size !== value.modifiers.length) return undefined
+  return {
+    kind: 'press',
+    key: value.key,
+    modifiers: value.modifiers as BrowserUiKeyModifier[],
+  }
+}
+
+export function parseBrowserUiKeyboardInput(value: unknown): BrowserUiKeyboardInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['snapshotId', 'tabId', 'actions']) ||
+    !isString(value.snapshotId, MAX_ID_LENGTH) || !isString(value.tabId, MAX_ID_LENGTH) ||
+    !Array.isArray(value.actions) || value.actions.length === 0 ||
+    value.actions.length > MAX_UI_KEYBOARD_ACTIONS) return undefined
+  const actions = value.actions.map(parseBrowserUiKeyboardAction)
+  if (actions.some(action => action === undefined)) return undefined
+  const typedCharacters = actions.reduce(
+    (total, action) => total + (action?.kind === 'text' ? action.text.length : 0),
+    0,
+  )
+  if (typedCharacters > MAX_TEXT_LENGTH) return undefined
+  return {
+    snapshotId: value.snapshotId,
+    tabId: value.tabId,
+    actions: actions as BrowserUiKeyboardAction[],
   }
 }
 

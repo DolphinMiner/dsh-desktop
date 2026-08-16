@@ -12,6 +12,7 @@ import type {
   BrowserSettings,
   BrowserState,
   BrowserTypeParams,
+  BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
@@ -336,6 +337,12 @@ export class BrowserController {
         signal,
       )
     }, false)
+  }
+
+  keyboardFromUi(input: BrowserUiKeyboardInput): Promise<BrowserState> {
+    return this.uiSnapshotOperation(input, async (tabId, signal) => {
+      await this.engine.keyboard(tabId, input.actions, signal)
+    }, true)
   }
 
   shouldOpenControlled(url: string): boolean {

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import type { BrowserFrame } from '@dolphinminer/dsh-desktop-protocol'
+import type { BrowserFrame, BrowserUiKeyboardAction } from '@dolphinminer/dsh-desktop-protocol'
 
 import { BrowserController, isLocalBrowserUrl } from './browser-controller'
 import { BrowserStore } from './browser-store'
@@ -23,6 +23,7 @@ class FakeBrowserEngine implements BrowserEngine {
   typed: string[] = []
   scrolls = 0
   pointerScrolls: Array<{ x: number; y: number; deltaX: number; deltaY: number }> = []
+  keyboardBatches: BrowserUiKeyboardAction[][] = []
   captures: boolean[] = []
   url = 'about:blank'
   title = ''
@@ -108,6 +109,12 @@ class FakeBrowserEngine implements BrowserEngine {
     deltaY: number,
   ): Promise<void> {
     this.pointerScrolls.push({ x: normalizedX, y: normalizedY, deltaX, deltaY })
+    return Promise.resolve()
+  }
+
+  keyboard(_tabId: string, actions: BrowserUiKeyboardAction[]): Promise<void> {
+    this.keyboardBatches.push(actions)
+    this.title = 'Keyboard input'
     return Promise.resolve()
   }
 
@@ -311,6 +318,39 @@ test('binds direct pointer and scroll intents to the rendered browser snapshot',
     deltaY: 320,
   })
   assert.deepEqual(runtime.engine.pointerScrolls, [{ x: 0.5, y: 0.5, deltaX: 0, deltaY: 320 }])
+})
+
+test('serializes direct keyboard batches against the latest rendered browser snapshot', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true })
+  await runtime.controller.navigateFromUi({ url: 'https://example.com/' })
+  const first = runtime.controller.snapshot().lastObservation!
+  const actions: BrowserUiKeyboardAction[] = [
+    { kind: 'text', text: 'hello' },
+    { kind: 'press', key: 'Enter' },
+  ]
+
+  const typed = await runtime.controller.keyboardFromUi({
+    snapshotId: first.snapshotId,
+    tabId: first.tabId,
+    actions,
+  })
+  assert.deepEqual(runtime.engine.keyboardBatches, [actions])
+  assert.notEqual(typed.lastObservation?.snapshotId, first.snapshotId)
+
+  await assert.rejects(runtime.controller.keyboardFromUi({
+    snapshotId: first.snapshotId,
+    tabId: first.tabId,
+    actions: [{ kind: 'press', key: 'Tab' }],
+  }), error => {
+    assert.equal((error as { code?: string }).code, 'TARGET_CHANGED')
+    return true
+  })
 })
 
 test('classifies only local development hosts as local browser URLs', () => {

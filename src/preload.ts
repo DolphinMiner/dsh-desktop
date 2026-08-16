@@ -64,6 +64,7 @@ const bridge: DesktopBridge = {
     activateTab: input => ipcRenderer.invoke('desktop:browser:activate-tab', input),
     pointer: input => ipcRenderer.invoke('desktop:browser:pointer', input),
     scrollAt: input => ipcRenderer.invoke('desktop:browser:scroll-at', input),
+    keyboard: input => ipcRenderer.invoke('desktop:browser:keyboard', input),
     newTab: () => ipcRenderer.invoke('desktop:browser:new-tab'),
     closeTab: input => ipcRenderer.invoke('desktop:browser:close-tab', input),
     back: () => ipcRenderer.invoke('desktop:browser:back'),

@@ -1,4 +1,9 @@
-import type { FormEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react'
+import type {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -18,6 +23,8 @@ import type {
   BrowserFrame,
   BrowserHistoryEntry,
   BrowserState,
+  BrowserUiKeyboardAction,
+  BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,
@@ -36,6 +43,7 @@ import {
 } from './settings-ui.js'
 import {
   activeBrowserAddress,
+  browserKeyboardAction,
   normalizeBrowserAddress,
   normalizedBrowserPoint,
 } from './browser-view-model.js'
@@ -47,6 +55,7 @@ export interface DesktopBrowserBridge {
   activateTab(input: BrowserUiTabInput): Promise<BrowserState>
   pointer(input: BrowserUiPointerInput): Promise<BrowserState>
   scrollAt(input: BrowserUiScrollInput): Promise<BrowserState>
+  keyboard(input: BrowserUiKeyboardInput): Promise<BrowserState>
   newTab(): Promise<BrowserState>
   closeTab(input: BrowserUiTabInput): Promise<BrowserState>
   back(): Promise<BrowserState>
@@ -501,6 +510,18 @@ export function BrowserView({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const busyRef = useRef(false)
+  const interactionRef = useRef<{ snapshotId: string; tabId: string }>()
+  const keyboardQueueRef = useRef<BrowserUiKeyboardAction[]>([])
+  const keyboardRunningRef = useRef(false)
+  const keyboardTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const pendingScrollRef = useRef<{
+    normalizedX: number
+    normalizedY: number
+    deltaX: number
+    deltaY: number
+  }>()
+  const scrollRunningRef = useRef(false)
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
     if (bridge === undefined) {
@@ -512,14 +533,24 @@ export function BrowserView({
       if (!active) return
       setState(next)
       setAddress(activeBrowserAddress(next))
+      interactionRef.current = next.lastObservation === undefined
+        ? undefined
+        : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
     })
     const offFrame = bridge.onFrame(next => {
-      if (active) setFrame(next)
+      if (!active) return
+      interactionRef.current = next === undefined
+        ? undefined
+        : { snapshotId: next.snapshotId, tabId: next.tabId }
+      setFrame(next)
     })
     void bridge.getState().then(async next => {
       if (!active) return
       setState(next)
       setAddress(activeBrowserAddress(next))
+      interactionRef.current = next.lastObservation === undefined
+        ? undefined
+        : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
       if (next.settings.enabled && next.runtimeStatus === 'ready') await bridge.refreshFrame()
     }).catch(cause => {
       if (active) setError(cause instanceof Error ? cause.message : 'Browser is unavailable.')
@@ -541,12 +572,25 @@ export function BrowserView({
     if (frameUrl !== undefined) URL.revokeObjectURL(frameUrl)
   }, [frameUrl])
 
+  useEffect(() => () => {
+    if (keyboardTimerRef.current !== undefined) clearTimeout(keyboardTimerRef.current)
+    if (scrollTimerRef.current !== undefined) clearTimeout(scrollTimerRef.current)
+    keyboardQueueRef.current = []
+    pendingScrollRef.current = undefined
+  }, [])
+
   const run = (operation: () => Promise<BrowserState>): void => {
     if (busyRef.current) return
     busyRef.current = true
     setBusy(true)
     setError(undefined)
-    void operation().then(setState).catch(cause => {
+    void operation().then(next => {
+      setState(next)
+      setAddress(activeBrowserAddress(next))
+      interactionRef.current = next.lastObservation === undefined
+        ? undefined
+        : { snapshotId: next.lastObservation.snapshotId, tabId: next.lastObservation.tabId }
+    }).catch(cause => {
       setError(cause instanceof Error ? cause.message : 'The browser operation failed.')
     }).finally(() => {
       busyRef.current = false
@@ -564,6 +608,7 @@ export function BrowserView({
 
   const tabs = state?.tabs ?? []
   const disabled = bridge === undefined || busy || state?.settings.enabled !== true
+  const interactive = bridge !== undefined && frameUrl !== undefined && state?.settings.enabled === true
 
   const pointerInput = (
     event: ReactMouseEvent<HTMLDivElement>,
@@ -587,8 +632,44 @@ export function BrowserView({
     }))
   }
 
+  const flushScroll = (): void => {
+    scrollTimerRef.current = undefined
+    if (scrollRunningRef.current || pendingScrollRef.current === undefined) return
+    if (busyRef.current) {
+      scrollTimerRef.current = setTimeout(flushScroll, 24)
+      return
+    }
+    const input = pendingScrollRef.current
+    const identity = interactionRef.current
+    pendingScrollRef.current = undefined
+    if ((input.deltaX === 0 && input.deltaY === 0) || bridge === undefined ||
+      identity === undefined || state?.settings.enabled !== true) return
+    scrollRunningRef.current = true
+    busyRef.current = true
+    setBusy(true)
+    setError(undefined)
+    void bridge.scrollAt({ ...identity, ...input }).then(next => {
+      const observation = next.lastObservation
+      if (observation === undefined) throw new Error('The controlled browser stopped before scrolling completed.')
+      interactionRef.current = { snapshotId: observation.snapshotId, tabId: observation.tabId }
+      setState(next)
+      setAddress(activeBrowserAddress(next))
+    }).catch(cause => {
+      pendingScrollRef.current = undefined
+      setError(cause instanceof Error ? cause.message : 'The browser scroll operation failed.')
+    }).finally(() => {
+      scrollRunningRef.current = false
+      busyRef.current = false
+      setBusy(false)
+      if (pendingScrollRef.current !== undefined && scrollTimerRef.current === undefined) {
+        scrollTimerRef.current = setTimeout(flushScroll, 0)
+      }
+    })
+  }
+
   const scrollInput = (event: ReactWheelEvent<HTMLDivElement>): void => {
-    if (bridge === undefined || frame === undefined || disabled) return
+    if (bridge === undefined || frame === undefined || !interactive ||
+      (busyRef.current && !scrollRunningRef.current)) return
     const point = normalizedBrowserPoint(
       event.clientX,
       event.clientY,
@@ -597,13 +678,84 @@ export function BrowserView({
     )
     if (point === undefined || (event.deltaX === 0 && event.deltaY === 0)) return
     event.preventDefault()
-    run(() => bridge.scrollAt({
-      snapshotId: frame.snapshotId,
-      tabId: frame.tabId,
+    const pending = pendingScrollRef.current
+    const deltaScale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.pixelHeight : 1
+    pendingScrollRef.current = {
       ...point,
-      deltaX: event.deltaX,
-      deltaY: event.deltaY,
-    }))
+      deltaX: Math.max(-20_000, Math.min(20_000, (pending?.deltaX ?? 0) + event.deltaX * deltaScale)),
+      deltaY: Math.max(-20_000, Math.min(20_000, (pending?.deltaY ?? 0) + event.deltaY * deltaScale)),
+    }
+    if (scrollTimerRef.current === undefined && !scrollRunningRef.current) {
+      scrollTimerRef.current = setTimeout(flushScroll, 24)
+    }
+  }
+
+  const flushKeyboard = (): void => {
+    keyboardTimerRef.current = undefined
+    if (keyboardRunningRef.current || keyboardQueueRef.current.length === 0) return
+    if (busyRef.current) {
+      keyboardTimerRef.current = setTimeout(flushKeyboard, 24)
+      return
+    }
+    const initialIdentity = interactionRef.current
+    if (bridge === undefined || initialIdentity === undefined || state?.settings.enabled !== true) {
+      keyboardQueueRef.current = []
+      return
+    }
+    keyboardRunningRef.current = true
+    busyRef.current = true
+    setBusy(true)
+    setError(undefined)
+    void (async () => {
+      let identity = initialIdentity
+      while (keyboardQueueRef.current.length > 0) {
+        const actions = keyboardQueueRef.current.splice(0, 64)
+        const next = await bridge.keyboard({ ...identity, actions })
+        const observation = next.lastObservation
+        if (observation === undefined) throw new Error('The controlled browser stopped before keyboard input completed.')
+        identity = { snapshotId: observation.snapshotId, tabId: observation.tabId }
+        interactionRef.current = identity
+        setState(next)
+        setAddress(activeBrowserAddress(next))
+      }
+    })().catch(cause => {
+      keyboardQueueRef.current = []
+      setError(cause instanceof Error ? cause.message : 'The browser keyboard operation failed.')
+    }).finally(() => {
+      keyboardRunningRef.current = false
+      busyRef.current = false
+      setBusy(false)
+      if (keyboardQueueRef.current.length > 0 && keyboardTimerRef.current === undefined) {
+        keyboardTimerRef.current = setTimeout(flushKeyboard, 0)
+      }
+    })
+  }
+
+  const keyboardInput = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (!interactive) return
+    const action = browserKeyboardAction({
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+    })
+    if (action === undefined) return
+    event.preventDefault()
+    const last = keyboardQueueRef.current.at(-1)
+    if (action.kind === 'text' && last?.kind === 'text' && last.text.length + action.text.length <= 8_192) {
+      last.text += action.text
+      return
+    }
+    if (keyboardQueueRef.current.length >= 256) {
+      setError('Browser input is still catching up. Pause briefly before typing more.')
+      return
+    }
+    keyboardQueueRef.current.push(action)
+    if (keyboardTimerRef.current === undefined && !keyboardRunningRef.current) {
+      keyboardTimerRef.current = setTimeout(flushKeyboard, 24)
+    }
   }
 
   return (
@@ -699,12 +851,14 @@ export function BrowserView({
       <div
         className="dsh-desktop-browser-stage"
         data-busy={busy}
-        data-interactive={frameUrl !== undefined && !disabled}
-        tabIndex={frameUrl === undefined || disabled ? -1 : 0}
+        data-interactive={interactive}
+        tabIndex={interactive ? 0 : -1}
         role="application"
         aria-label="Controlled browser page"
+        aria-busy={busy}
         onClick={event => pointerInput(event, 'left')}
         onContextMenu={event => pointerInput(event, 'right')}
+        onKeyDown={keyboardInput}
         onWheel={scrollInput}
       >
         {frameUrl !== undefined ? (

@@ -5,6 +5,7 @@ import type { Browser, BrowserContext, Page } from 'playwright-core'
 import type {
   BrowserStorageMode,
   BrowserTabSummary,
+  BrowserUiKeyboardAction,
   DesktopProtocolError,
 } from '@dolphinminer/dsh-desktop-protocol'
 
@@ -75,6 +76,7 @@ export interface BrowserEngine {
     deltaY: number,
     signal: AbortSignal,
   ): Promise<void>
+  keyboard(tabId: string, actions: BrowserUiKeyboardAction[], signal: AbortSignal): Promise<void>
   activate(tabId: string): Promise<void>
   newTab(): Promise<void>
   closeTab(tabId: string): Promise<void>
@@ -320,6 +322,31 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     await page.mouse.move(normalizedX * viewport.width, normalizedY * viewport.height)
     await page.mouse.wheel(deltaX, deltaY)
     await page.waitForTimeout(120)
+    throwIfAborted(signal)
+  }
+
+  async keyboard(
+    tabId: string,
+    actions: BrowserUiKeyboardAction[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal)
+    const page = this.page(tabId)
+    for (const action of actions) {
+      throwIfAborted(signal)
+      if (action.kind === 'text') {
+        await page.keyboard.insertText(action.text)
+        continue
+      }
+      const modifiers = action.modifiers ?? []
+      for (const modifier of modifiers) await page.keyboard.down(modifier)
+      try {
+        await page.keyboard.press(action.key)
+      } finally {
+        for (const modifier of modifiers.slice().reverse()) await page.keyboard.up(modifier)
+      }
+    }
+    await settlePage(page)
     throwIfAborted(signal)
   }
 

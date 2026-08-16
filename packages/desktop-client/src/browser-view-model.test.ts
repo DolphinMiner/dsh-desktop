@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   activeBrowserAddress,
+  browserKeyboardAction,
   normalizeBrowserAddress,
   normalizedBrowserPoint,
 } from './browser-view-model.js'
@@ -37,4 +38,18 @@ test('maps pointer coordinates through a contained browser frame', () => {
     normalizedX: 1,
     normalizedY: 1,
   })
+})
+
+test('maps direct browser keyboard events to text and bounded key presses', () => {
+  const base = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false }
+  assert.deepEqual(browserKeyboardAction({ ...base, key: 'a' }), { kind: 'text', text: 'a' })
+  assert.deepEqual(browserKeyboardAction({ ...base, key: 'A', shiftKey: true }), { kind: 'text', text: 'A' })
+  assert.deepEqual(browserKeyboardAction({ ...base, key: 'Enter' }), { kind: 'press', key: 'Enter' })
+  assert.deepEqual(browserKeyboardAction({ ...base, key: 'A', metaKey: true, shiftKey: true }), {
+    kind: 'press',
+    key: 'a',
+    modifiers: ['Meta', 'Shift'],
+  })
+  assert.equal(browserKeyboardAction({ ...base, key: 'Shift', shiftKey: true }), undefined)
+  assert.equal(browserKeyboardAction({ ...base, key: 'Process', isComposing: true }), undefined)
 })

@@ -11,6 +11,7 @@ import {
   parseBrowserSettings,
   parseBrowserState,
   parseBrowserTypeParams,
+  parseBrowserUiKeyboardInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
   parseControlledBrowserUrl,
@@ -153,4 +154,27 @@ test('validates snapshot-bound renderer pointer and scroll intents', () => {
   }
   assert.deepEqual(parseBrowserUiScrollInput(scroll), scroll)
   assert.equal(parseBrowserUiScrollInput({ ...scroll, deltaY: 0 }), undefined)
+})
+
+test('validates bounded snapshot-bound renderer keyboard batches', () => {
+  const input = {
+    snapshotId: 'snapshot-1',
+    tabId: 'tab-1',
+    actions: [
+      { kind: 'text' as const, text: 'hello' },
+      { kind: 'press' as const, key: 'Enter' },
+      { kind: 'press' as const, key: 'a', modifiers: ['Meta' as const] },
+    ],
+  }
+  assert.deepEqual(parseBrowserUiKeyboardInput(input), input)
+  assert.equal(parseBrowserUiKeyboardInput({ ...input, actions: [] }), undefined)
+  assert.equal(parseBrowserUiKeyboardInput({ ...input, actions: [{ kind: 'press', key: 'Shift' }] }), undefined)
+  assert.equal(parseBrowserUiKeyboardInput({
+    ...input,
+    actions: [{ kind: 'press', key: 'a', modifiers: ['Meta', 'Meta'] }],
+  }), undefined)
+  assert.equal(parseBrowserUiKeyboardInput({
+    ...input,
+    actions: Array.from({ length: 65 }, () => ({ kind: 'press', key: 'Enter' })),
+  }), undefined)
 })

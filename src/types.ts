@@ -41,6 +41,7 @@ export interface DesktopBridge {
     activateTab(input: BrowserUiTabInput): Promise<BrowserState>
     pointer(input: BrowserUiPointerInput): Promise<BrowserState>
     scrollAt(input: BrowserUiScrollInput): Promise<BrowserState>
+    keyboard(input: BrowserUiKeyboardInput): Promise<BrowserState>
     newTab(): Promise<BrowserState>
     closeTab(input: BrowserUiTabInput): Promise<BrowserState>
     back(): Promise<BrowserState>
@@ -124,6 +125,7 @@ import type {
   BrowserFrame,
   BrowserHistoryEntry,
   BrowserState,
+  BrowserUiKeyboardInput,
   BrowserUiNavigateInput,
   BrowserUiPointerInput,
   BrowserUiScrollInput,

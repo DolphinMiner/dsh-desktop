@@ -23,6 +23,7 @@ import {
   parseAddGitReviewCommentInput,
   parseBeginOAuthInput,
   parseControlledBrowserUrl,
+  parseBrowserUiKeyboardInput,
   parseBrowserUiNavigateInput,
   parseBrowserUiPointerInput,
   parseBrowserUiScrollInput,
@@ -638,6 +639,10 @@ function installIpcHandlers(
   ipcMain.handle('desktop:browser:scroll-at', async (event, value: unknown) => {
     assertTrustedSender(event)
     return browser.scrollFromUi(validInput(parseBrowserUiScrollInput(value)))
+  })
+  ipcMain.handle('desktop:browser:keyboard', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.keyboardFromUi(validInput(parseBrowserUiKeyboardInput(value)))
   })
   ipcMain.handle('desktop:browser:new-tab', async event => {
     assertTrustedSender(event)

@@ -1,4 +1,8 @@
-import type { BrowserState } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  BrowserState,
+  BrowserUiKeyboardAction,
+  BrowserUiKeyModifier,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 export function activeBrowserAddress(
   state: Pick<BrowserState, 'tabs' | 'activeTabId'>,
@@ -31,5 +35,58 @@ export function normalizedBrowserPoint(
   return {
     normalizedX: Math.min(1, Math.max(0, x / width)),
     normalizedY: Math.min(1, Math.max(0, y / height)),
+  }
+}
+
+export interface BrowserKeyboardEventLike {
+  key: string
+  altKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+  isComposing: boolean
+}
+
+const SPECIAL_BROWSER_KEYS = new Set([
+  'Backspace',
+  'Delete',
+  'End',
+  'Enter',
+  'Escape',
+  'Home',
+  'Insert',
+  'PageDown',
+  'PageUp',
+  'Tab',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
+])
+
+export function browserKeyboardAction(
+  event: BrowserKeyboardEventLike,
+): BrowserUiKeyboardAction | undefined {
+  if (event.isComposing || event.key === 'Dead' || event.key === 'Process' || event.key === 'Unidentified') {
+    return undefined
+  }
+  const commandModifier = event.altKey || event.ctrlKey || event.metaKey
+  if (event.key.length === 1 && !commandModifier) return { kind: 'text', text: event.key }
+  const key = event.key.length === 1
+    ? event.key.toLowerCase()
+    : SPECIAL_BROWSER_KEYS.has(event.key)
+      ? event.key
+      : undefined
+  if (key === undefined) return undefined
+  const modifiers: BrowserUiKeyModifier[] = []
+  if (event.altKey) modifiers.push('Alt')
+  if (event.ctrlKey) modifiers.push('Control')
+  if (event.metaKey) modifiers.push('Meta')
+  if (event.shiftKey) modifiers.push('Shift')
+  return {
+    kind: 'press',
+    key,
+    ...(modifiers.length === 0 ? {} : { modifiers }),
   }
 }
