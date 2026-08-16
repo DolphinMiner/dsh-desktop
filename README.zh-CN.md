@@ -29,6 +29,16 @@ DSH Desktop 是一个独立的社区项目，基于 Electron 把官方
 项目不 fork 或修改 Harness 的 Agent 循环、模型适配器、会话存储、工具和
 Web UI。跨平台复用依赖 Electron 和官方 React Web UI，不依赖 React Native。
 
+## 插件
+
+Plugins 设置页只是官方 Harness Loader、Skills、Apps 和 MCP 状态的产品化
+视图。用户可以添加本地 DSH Bundle 目录或受限的 npm 包名；Electron 把变更
+交给官方 `dsh plugin --profile desktop add` 命令，恢复产品 Profile 链接后
+自动重启 Harness，运行时状态仍以官方 Loader 为准。
+
+插件与 Harness 拥有相同的本机权限，请只安装可信包和目录。网页渲染层不能
+提交任意包管理器参数、Git URL、核心产品 Bundle 或本地路径。
+
 ## Connections
 
 Connections 页面通过官方 Harness client slot 注入。当前基础能力支持通过已

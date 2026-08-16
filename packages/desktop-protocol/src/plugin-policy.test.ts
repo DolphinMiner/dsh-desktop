@@ -5,6 +5,7 @@ import {
   MAX_DESKTOP_PLUGIN_POLICY_OVERRIDES,
   parseDesktopPluginPolicy,
   parseDesktopPluginPolicySnapshot,
+  parseInstallDesktopPluginInput,
   parseUpdateDesktopPluginPolicyInput,
 } from './plugin-policy.js'
 
@@ -50,4 +51,13 @@ test('rejects malformed, polluted, or unbounded plugin policies', () => {
   }), undefined)
   assert.equal(parseDesktopPluginPolicySnapshot({ revision: -1, overrides: {} }), undefined)
   assert.equal(parseDesktopPluginPolicySnapshot({ revision: 0, overrides: {}, extra: true }), undefined)
+})
+
+test('parses only one bounded registry plugin package spec', () => {
+  assert.deepEqual(parseInstallDesktopPluginInput({ packageSpec: '@acme/dsh-plugin-review@1.2.3' }), {
+    packageSpec: '@acme/dsh-plugin-review@1.2.3',
+  })
+  assert.equal(parseInstallDesktopPluginInput({ packageSpec: ' plugin' }), undefined)
+  assert.equal(parseInstallDesktopPluginInput({ packageSpec: 'plugin', args: ['--force'] }), undefined)
+  assert.equal(parseInstallDesktopPluginInput({ packageSpec: 'x'.repeat(513) }), undefined)
 })

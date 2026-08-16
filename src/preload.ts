@@ -32,6 +32,8 @@ const bridge: DesktopBridge = {
   plugins: {
     getState: () => ipcRenderer.invoke('desktop:plugins:get-state'),
     update: input => ipcRenderer.invoke('desktop:plugins:update', input),
+    installRegistry: input => ipcRenderer.invoke('desktop:plugins:install-registry', input),
+    installDirectory: () => ipcRenderer.invoke('desktop:plugins:install-directory'),
     onChanged(listener) {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => {
         listener(snapshot)

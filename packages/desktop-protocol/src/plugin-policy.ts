@@ -24,6 +24,15 @@ export interface UpdateDesktopPluginPolicyInput {
   enabled: boolean
 }
 
+export interface InstallDesktopPluginInput {
+  packageSpec: string
+}
+
+export interface DesktopPluginInstallResult {
+  packageName: string
+  changed: boolean
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -83,4 +92,10 @@ export function parseUpdateDesktopPluginPolicyInput(value: unknown): UpdateDeskt
     moduleName: value.moduleName,
     enabled: value.enabled,
   }
+}
+
+export function parseInstallDesktopPluginInput(value: unknown): InstallDesktopPluginInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['packageSpec']) ||
+    !isBoundedIdentity(value.packageSpec, MAX_PLUGIN_MODULE_LENGTH)) return undefined
+  return { packageSpec: value.packageSpec }
 }

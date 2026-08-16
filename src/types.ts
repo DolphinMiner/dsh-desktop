@@ -27,6 +27,8 @@ export interface DesktopBridge {
   plugins: {
     getState(): Promise<DesktopPluginPolicySnapshot>
     update(input: UpdateDesktopPluginPolicyInput): Promise<DesktopPluginPolicySnapshot>
+    installRegistry(input: InstallDesktopPluginInput): Promise<DesktopPluginInstallResult>
+    installDirectory(): Promise<DesktopPluginInstallResult | undefined>
     onChanged(listener: (snapshot: DesktopPluginPolicySnapshot) => void): () => void
   }
   appSnapshots: {
@@ -158,6 +160,7 @@ import type {
   DesktopGitReviewInput,
   DesktopGitReviewCommentsInput,
   DesktopOpenAutomationSessionInput,
+  DesktopPluginInstallResult,
   DesktopPluginPolicySnapshot,
   DesktopQueueAutomationRunInput,
   DesktopSetAutomationStateInput,
@@ -178,6 +181,7 @@ import type {
   GitPushResult,
   GitRevertPreview,
   GitRevertResult,
+  InstallDesktopPluginInput,
   UpdateComputerControlPolicyInput,
   UpdateDesktopPluginPolicyInput,
   UpdateBrowserSettingsInput,

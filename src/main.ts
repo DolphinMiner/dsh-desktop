@@ -47,6 +47,7 @@ import {
   parseDesktopGitReviewCommentsInput,
   parseDesktopListAutomationRunsInput,
   parseDesktopOpenAutomationSessionInput,
+  parseInstallDesktopPluginInput,
   parseUpdateDesktopPluginPolicyInput,
   parseDesktopQueueAutomationRunInput,
   parseDesktopSetAutomationStateInput,
@@ -104,6 +105,7 @@ import { GitTurnAttributionJournal } from './git-turn-attribution-journal'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
 import { PlaywrightBrowserEngine } from './playwright-browser'
+import { DshPluginCommandRunner, DshPluginInstaller } from './plugin-installer'
 import { PluginPolicyController, PluginPolicyStore } from './plugin-policy'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
@@ -145,6 +147,8 @@ let oauthCoordinator: LinearOAuthCoordinator | undefined
 let automationScheduler: AutomationScheduler | undefined
 let appSnapshots: AppSnapshotController | undefined
 let controlledBrowser: BrowserController | undefined
+let pluginInstaller: DshPluginInstaller | undefined
+let pluginRestartTimer: NodeJS.Timeout | undefined
 let shuttingDown = false
 let shutdownComplete = false
 let state: HarnessState = {
@@ -350,6 +354,13 @@ function resolveDshBin(): string {
   return bin
 }
 
+function resolvePnpmBin(): string {
+  const packageJson = require.resolve('pnpm')
+  const bin = join(dirname(packageJson), 'bin', 'pnpm.cjs')
+  if (!existsSync(bin)) throw new Error(`The bundled plugin package manager is missing: ${bin}`)
+  return bin
+}
+
 function resolveComputerHelper(): string {
   if (process.platform !== 'darwin') {
     throw new Error('Computer observation is only available on macOS.')
@@ -515,6 +526,19 @@ async function restartHarness(): Promise<void> {
   await harnessRecovery.restartNow()
 }
 
+function schedulePluginHarnessRestart(): void {
+  if (pluginRestartTimer !== undefined || shuttingDown) return
+  pluginRestartTimer = setTimeout(() => {
+    pluginRestartTimer = undefined
+    void pluginInstaller?.whenIdle().then(async () => {
+      if (shuttingDown) return
+      await restartHarness()
+    }).catch(error => {
+      console.error('Could not restart Harness after plugin installation.', error)
+    })
+  }, 250)
+}
+
 function formatRecoveryDelay(milliseconds: number): string {
   if (milliseconds < 1_000) return `${String(milliseconds)} milliseconds`
   const seconds = Math.ceil(milliseconds / 1_000)
@@ -553,6 +577,7 @@ function installIpcHandlers(
   browser: BrowserController,
   connections: ConnectionManager,
   plugins: PluginPolicyController,
+  installer: DshPluginInstaller,
   computer: ComputerObserver,
   automations: AutomationController,
   git: WorkspaceGitCapabilityService,
@@ -610,6 +635,32 @@ function installIpcHandlers(
   ipcMain.handle('desktop:plugins:update', (event, value: unknown) => {
     assertTrustedSender(event)
     return plugins.update(validInput(parseUpdateDesktopPluginPolicyInput(value)))
+  })
+  ipcMain.handle('desktop:plugins:install-registry', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    if (activitySnapshot.runningSessionIds.length > 0) {
+      throw new Error('Finish running tasks before installing a plugin.')
+    }
+    const result = await installer.installRegistry(validInput(parseInstallDesktopPluginInput(value)))
+    if (result.changed) schedulePluginHarnessRestart()
+    return result
+  })
+  ipcMain.handle('desktop:plugins:install-directory', async event => {
+    assertTrustedSender(event)
+    if (activitySnapshot.runningSessionIds.length > 0) {
+      throw new Error('Finish running tasks before installing a plugin.')
+    }
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return undefined
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: 'Add DSH Plugin',
+      buttonLabel: 'Add Plugin',
+      properties: ['openDirectory'],
+    })
+    const directory = selected.canceled ? undefined : selected.filePaths[0]
+    if (directory === undefined) return undefined
+    const result = await installer.installDirectory(directory)
+    if (result.changed) schedulePluginHarnessRestart()
+    return result
   })
   ipcMain.handle('desktop:app-snapshots:get-state', event => {
     assertTrustedSender(event)
@@ -1337,12 +1388,39 @@ app.whenReady().then(async () => {
     },
   )
 
+  const dshHome = join(app.getPath('userData'), 'harness')
+  const restoreDesktopProfile = (): void => {
+    bootstrapDesktopProfile({
+      dshHome,
+      packageRoot: app.getAppPath(),
+      productVersion: app.getVersion(),
+    })
+  }
+  const desktopProfile = bootstrapDesktopProfile({
+    dshHome,
+    packageRoot: app.getAppPath(),
+    productVersion: app.getVersion(),
+  })
+  const installer = new DshPluginInstaller({
+    profileDir: desktopProfile.profileDir,
+    runner: new DshPluginCommandRunner({
+      dshBin: resolveDshBin(),
+      dshHome,
+      nodeExecutable: process.execPath,
+      pnpmBin: resolvePnpmBin(),
+      shimDir: join(desktopDataPath, 'plugin-runtime', 'bin'),
+    }),
+    restoreProfile: restoreDesktopProfile,
+  })
+  pluginInstaller = installer
+
   installMenu()
   installIpcHandlers(
     appSnapshots,
     controlledBrowser,
     connections,
     pluginPolicy,
+    installer,
     computerObserver,
     automationController,
     reviewWorkspaceGit,
@@ -1404,12 +1482,6 @@ app.whenReady().then(async () => {
   await appSnapshots.start(() => { void captureAppSnapshot() })
 
   const logPath = join(app.getPath('logs'), 'harness.log')
-  const dshHome = join(app.getPath('userData'), 'harness')
-  bootstrapDesktopProfile({
-    dshHome,
-    packageRoot: app.getAppPath(),
-    productVersion: app.getVersion(),
-  })
   const startupWorktreeSignal = new AbortController().signal
   await worktreeManager.reconcile(startupWorktreeSignal, { orphanUnboundReady: true })
   try {
@@ -1652,6 +1724,10 @@ app.on('before-quit', event => {
   if (shuttingDown) return
 
   shuttingDown = true
+  if (pluginRestartTimer !== undefined) {
+    clearTimeout(pluginRestartTimer)
+    pluginRestartTimer = undefined
+  }
   harnessRecovery?.stop()
   automationScheduler?.stop()
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
@@ -1663,6 +1739,7 @@ app.on('before-quit', event => {
     appSnapshots?.dispose() ?? Promise.resolve(),
     computerObserver?.dispose() ?? Promise.resolve(),
     controlledBrowser?.dispose() ?? Promise.resolve(),
+    pluginInstaller?.dispose() ?? Promise.resolve(),
     windowStateStore?.flush() ?? Promise.resolve(),
   ])
   void stopServices

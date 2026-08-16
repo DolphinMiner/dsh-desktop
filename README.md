@@ -30,6 +30,19 @@ The desktop host intentionally keeps the architecture narrow:
 The project does not fork or modify the Harness agent loop, model adapters,
 session storage, tools, or Web UI.
 
+## Plugins
+
+The Plugins settings page is a product view over the official Harness Loader,
+Skills, Apps, and MCP state. It can add a local DSH bundle directory or a
+bounded npm package name. Electron delegates the mutation to the official
+`dsh plugin --profile desktop add` command, restores the product-owned profile
+links, and restarts Harness so the official Loader remains runtime truth.
+
+Plugin packages execute with the same local privileges as Harness. Install
+only packages and local directories you trust. Arbitrary package-manager flags,
+Git URLs, core product bundles, and local paths are not accepted by the Web
+renderer.
+
 ## Connections
 
 The Connections page is contributed through the official Harness client-slot

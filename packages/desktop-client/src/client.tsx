@@ -35,6 +35,7 @@ import type {
   ConnectionAccess,
   ConnectionSnapshot,
   ConnectionSummary,
+  DesktopPluginInstallResult,
   DesktopPluginPolicySnapshot,
   DisconnectConnectionInput,
   DesktopRendererCommand,
@@ -44,6 +45,7 @@ import type {
   DesktopWorktreeRecoveryPreviewInput,
   DesktopWorktreeHandoffConfirmInput,
   DesktopWorktreeHandoffPreflightInput,
+  InstallDesktopPluginInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
   WorktreeRecoveryPreview,
@@ -97,6 +99,8 @@ interface DesktopConnectionsBridge {
 interface DesktopPluginPolicyBridge {
   getState(): Promise<DesktopPluginPolicySnapshot>
   update(input: UpdateDesktopPluginPolicyInput): Promise<DesktopPluginPolicySnapshot>
+  installRegistry(input: InstallDesktopPluginInput): Promise<DesktopPluginInstallResult>
+  installDirectory(): Promise<DesktopPluginInstallResult | undefined>
   onChanged(listener: (snapshot: DesktopPluginPolicySnapshot) => void): () => void
 }
 
@@ -295,9 +299,7 @@ interface PendingOAuth {
 
 function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return 'The desktop operation failed.'
-  const marker = 'Error invoking remote method'
-  const index = error.message.indexOf(marker)
-  return index < 0 ? error.message : error.message.slice(error.message.indexOf(':', index) + 1).trim()
+  return error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '').trim()
 }
 
 function connectionMeta(connection: ConnectionSummary): string {
@@ -844,6 +846,10 @@ const pluginCenterStyles = `
   margin-bottom: 12px;
   padding: 8px 10px;
 }
+.dsh-plugin-center__notice--info {
+  background: var(--dsw-alias-bg-overlay, #f3f3f0);
+  color: var(--dsw-alias-label-secondary, #45484d);
+}
 .dsh-plugin-center__marketplace {
   border: 1px solid var(--dsw-alias-border-l2, #deded9);
   border-radius: 8px;
@@ -1034,6 +1040,11 @@ function PluginsSettingsSection({
   const [connectionsFailure, setConnectionsFailure] = useState<string>()
   const [pendingPlugins, setPendingPlugins] = useState<ReadonlySet<string>>(() => new Set())
   const [pluginPolicySnapshot, setPluginPolicySnapshot] = useState<DesktopPluginPolicySnapshot>()
+  const [installOpen, setInstallOpen] = useState(false)
+  const [packageSpec, setPackageSpec] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [installFailure, setInstallFailure] = useState<string>()
+  const [installNotice, setInstallNotice] = useState<string>()
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const refreshPlugins = async (): Promise<void> => {
@@ -1164,6 +1175,50 @@ function PluginsSettingsSection({
     }
   }
 
+  const completeInstall = (result: DesktopPluginInstallResult | undefined): void => {
+    if (result === undefined) return
+    setInstallFailure(undefined)
+    setInstallNotice(result.changed
+      ? `Installed ${result.packageName}. Reloading Harness...`
+      : `${result.packageName} is already installed.`)
+    if (!result.changed) {
+      setActive('plugins')
+      void refreshPlugins()
+    }
+  }
+
+  const browseDirectory = async (): Promise<void> => {
+    if (pluginPolicyBridge === undefined || installing) return
+    setInstalling(true)
+    setInstallFailure(undefined)
+    setInstallNotice(undefined)
+    try {
+      completeInstall(await pluginPolicyBridge.installDirectory())
+    } catch (cause) {
+      setInstallFailure(errorMessage(cause))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  const installRegistry = async (event: FormEvent): Promise<void> => {
+    event.preventDefault()
+    if (pluginPolicyBridge === undefined || installing || packageSpec.trim() === '') return
+    setInstalling(true)
+    setInstallFailure(undefined)
+    setInstallNotice(undefined)
+    try {
+      const result = await pluginPolicyBridge.installRegistry({ packageSpec: packageSpec.trim() })
+      setInstallOpen(false)
+      setPackageSpec('')
+      completeInstall(result)
+    } catch (cause) {
+      setInstallFailure(errorMessage(cause))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   return (
     <section className="dsh-plugin-center" aria-label="Plugins">
       <SettingsStyles />
@@ -1174,10 +1229,25 @@ function PluginsSettingsSection({
           <p className="dsh-plugin-center__subtitle">Manage plugins, apps, and MCP servers</p>
         </div>
         <div className="dsh-plugin-center__toolbar">
-          <Button size="sm" variant="outline" icon={<IconBrowseOutline16 />} onClick={openPluginDirectory}>
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<IconBrowseOutline16 />}
+            disabled={pluginPolicyBridge === undefined || installing}
+            onClick={() => { void browseDirectory() }}
+          >
             Browse directory
           </Button>
-          <Button size="sm" variant="primary" icon={<IconPlusOutline16 />} onClick={() => setActive('marketplace')}>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<IconPlusOutline16 />}
+            disabled={pluginPolicyBridge === undefined || installing}
+            onClick={() => {
+              setInstallFailure(undefined)
+              setInstallOpen(true)
+            }}
+          >
             Add
           </Button>
         </div>
@@ -1226,6 +1296,14 @@ function PluginsSettingsSection({
         )}
       </div>
       <div className="dsh-plugin-center__panel" role="tabpanel">
+        {installFailure !== undefined && !installOpen && (
+          <div className="dsh-plugin-center__notice" role="alert">{installFailure}</div>
+        )}
+        {installNotice !== undefined && installFailure === undefined && (
+          <div className="dsh-plugin-center__notice dsh-plugin-center__notice--info" role="status">
+            {installNotice}
+          </div>
+        )}
         {active === 'plugins' && (
           <PluginCatalogTab
             entries={pluginEntries}
@@ -1248,6 +1326,45 @@ function PluginsSettingsSection({
         )}
         {active === 'marketplace' && <MarketplaceTab />}
       </div>
+      <Modal
+        open={installOpen}
+        onClose={() => { if (!installing) setInstallOpen(false) }}
+        title="Add plugin"
+        closeLabel="Close plugin installer"
+        footer={(
+          <div style={styles.formActions}>
+            <Button variant="outline" disabled={installing} onClick={() => setInstallOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="dsh-plugin-install-form"
+              variant="primary"
+              disabled={installing || packageSpec.trim() === ''}
+            >
+              {installing ? 'Adding...' : 'Add'}
+            </Button>
+          </div>
+        )}
+      >
+        <form id="dsh-plugin-install-form" style={styles.form} onSubmit={event => { void installRegistry(event) }}>
+          <label style={styles.field}>
+            <span style={styles.label}>npm package</span>
+            <Input
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={512}
+              value={packageSpec}
+              placeholder="@scope/dsh-plugin-name"
+              onChange={event => setPackageSpec(event.currentTarget.value)}
+            />
+          </label>
+          {installFailure !== undefined && (
+            <div className="dsh-plugin-center__notice" role="alert">{installFailure}</div>
+          )}
+        </form>
+      </Modal>
     </section>
   )
 }

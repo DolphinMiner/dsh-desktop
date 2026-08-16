@@ -71,3 +71,11 @@ supported browser already installed on the user's Mac; it does not redistribute
 a Playwright browser binary.
 
 Source: https://github.com/microsoft/playwright/tree/v1.62.1
+
+## pnpm
+
+Plugin installation uses the bundled `pnpm` 10.34.5 command-line runtime,
+distributed under the MIT License. DSH Desktop invokes it only through the
+official DeepSeek Harness profile plugin command.
+
+Source: https://github.com/pnpm/pnpm/tree/v10.34.5

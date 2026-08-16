@@ -1,0 +1,3 @@
+- insert:
+    - id: marketplace-fixture
+      name: dsh-plugin-marketplace-fixture
