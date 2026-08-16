@@ -125,6 +125,9 @@ input-control APIs:
 
 ## Architecture
 
+The durable scheduling and Harness ownership boundary is documented in
+[Desktop Automations Architecture](docs/AUTOMATIONS.md).
+
 ```text
 Electron main process
   -> bootstraps and starts the bundled dsh CLI with --profile desktop
