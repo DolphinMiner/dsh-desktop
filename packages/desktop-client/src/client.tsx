@@ -74,9 +74,15 @@ import { runDesktopCommand } from './desktop-command.js'
 import { ComputerControlSection, type DesktopComputerBridge } from './computer-control.js'
 import {
   BrowserSettingsSection,
-  BrowserView,
   type DesktopBrowserBridge,
 } from './browser.js'
+import {
+  BrowserPanel,
+  BrowserPanelToggle,
+  type BrowserPanelDetailsSlotProps,
+  type BrowserPanelToggleSlotProps,
+} from './browser-panel.js'
+import { BrowserPanelController } from './browser-panel-controller.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
 import { SettingsStyles, SettingsToggle } from './settings-ui.js'
@@ -2344,6 +2350,12 @@ export const inject = [
 
 export function apply(ctx: ClientContext): void {
   const bridge = window.dshDesktop
+  const browserPanel = new BrowserPanelController()
+  const setBrowserPanelOpen = (open: boolean): void => {
+    browserPanel.setOpen(open)
+    if (open) ctx.layout.openDetails()
+    else ctx.layout.closeDetails()
+  }
   ctx.effect(() => ctx.locale.register(DESKTOP_LOCALE_NAMESPACE, {
     zh: desktopZh,
     en: desktopEn,
@@ -2424,13 +2436,45 @@ export function apply(ctx: ClientContext): void {
     label: () => desktopT('Worktrees'),
     locale: DESKTOP_LOCALE_NAMESPACE,
   }, WorktreesSection))
-  ctx.slots.inject('conversation.view', () => ctx.slots.register({
-    name: 'conversation.view',
-    id: 'browser',
-    order: 19,
-    label: () => desktopT('Browser'),
+  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+    name: 'conversation.session.header.utilities',
+    id: 'desktop-browser',
+    order: 20,
     locale: DESKTOP_LOCALE_NAMESPACE,
-  }, (props: ConvViewProps & { t: DesktopTranslate }) => <BrowserView {...props} bridge={bridge?.browser} t={props.t} />))
+  }, (props: BrowserPanelToggleSlotProps) => (
+    <BrowserPanelToggle
+      {...props}
+      controller={browserPanel}
+      onOpenChange={setBrowserPanelOpen}
+    />
+  )))
+  ctx.slots.inject('details', () => {
+    let disposePanel: (() => void) | undefined
+    const reconcile = (): void => {
+      if (browserPanel.getSnapshot()) {
+        disposePanel ??= ctx.slots.register({
+          name: 'details',
+          priority: -10,
+          locale: DESKTOP_LOCALE_NAMESPACE,
+        }, (props: BrowserPanelDetailsSlotProps) => (
+          <BrowserPanel
+            {...props}
+            bridge={bridge?.browser}
+            onClose={() => { setBrowserPanelOpen(false) }}
+          />
+        ))
+        return
+      }
+      disposePanel?.()
+      disposePanel = undefined
+    }
+    const unsubscribe = browserPanel.subscribe(reconcile)
+    reconcile()
+    return () => {
+      unsubscribe()
+      disposePanel?.()
+    }
+  })
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'review',
