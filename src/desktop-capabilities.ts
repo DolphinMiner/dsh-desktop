@@ -9,10 +9,12 @@ import {
   ConnectionSnapshot,
   ConnectionSummary,
   BrowserClickParams,
+  BrowserFrame,
   BrowserNavigateParams,
   BrowserObservation,
   BrowserObserveParams,
   BrowserScrollParams,
+  BrowserScreenshotParams,
   BrowserState,
   BrowserTypeParams,
   ComputerApplicationList,
@@ -76,6 +78,7 @@ export interface DesktopCapabilityDependencies {
     snapshot(): BrowserState
     navigate(params: BrowserNavigateParams, signal: AbortSignal): Promise<BrowserObservation>
     observe(params: BrowserObserveParams, signal: AbortSignal): Promise<BrowserObservation>
+    screenshot(params: BrowserScreenshotParams, signal: AbortSignal): Promise<BrowserFrame>
     click(params: BrowserClickParams, signal: AbortSignal): Promise<BrowserObservation>
     type(params: BrowserTypeParams, signal: AbortSignal): Promise<BrowserObservation>
     scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation>
@@ -157,6 +160,8 @@ export function createDesktopCapabilityHandlers(
       dependencies.browser?.navigate(params, context.signal) ?? unsupportedBrowser(),
     'browser.observe': (params, context) =>
       dependencies.browser?.observe(params, context.signal) ?? unsupportedBrowser(),
+    'browser.screenshot': (params, context) =>
+      dependencies.browser?.screenshot(params, context.signal) ?? unsupportedBrowser(),
     'browser.click': (params, context) =>
       dependencies.browser?.click(params, context.signal) ?? unsupportedBrowser(),
     'browser.type': (params, context) =>

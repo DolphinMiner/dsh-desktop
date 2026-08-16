@@ -190,6 +190,65 @@ test('routes a child-process capability request through the desktop broker', asy
   }
 })
 
+test('preserves browser image bytes over advanced child-process IPC', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-binary-ipc-test-'))
+  let resolveReady: (nonce: string) => void
+  const ready = new Promise<string>(resolve => {
+    resolveReady = resolve
+  })
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles: {
+      reveal: () => Promise.reject(new Error('not configured')),
+      open: () => Promise.reject(new Error('not configured')),
+    },
+    git: unconfiguredGit,
+    worktrees: unconfiguredWorktrees,
+    connections: {
+      snapshot: () => ({
+        revision: 0,
+        vault: { available: true },
+        oauth: { linear: { available: false } },
+        connections: [],
+      }),
+      resolveMcpTransport: () => Promise.reject(new Error('not configured')),
+      reportStatus: () => ({ accepted: false, revision: 0 }),
+    },
+  })
+  handlers['browser.screenshot'] = params => ({
+    snapshotId: params.snapshotId,
+    tabId: 'tab-1',
+    capturedAt: '2026-08-16T12:00:00.000Z',
+    mediaType: 'image/jpeg',
+    pixelWidth: 2,
+    pixelHeight: 1,
+    data: new Uint8Array([1, 2, 3]),
+  })
+  handlers['desktop.ping'] = params => {
+    resolveReady(params.nonce)
+    return { nonce: params.nonce, protocolVersion: DESKTOP_PROTOCOL_VERSION }
+  }
+  const service = new HarnessService({
+    dshBin: FIXTURE_PATH,
+    dshHome: join(root, 'home'),
+    cwd: root,
+    logPath: join(root, 'logs', 'harness.log'),
+    nodeExecutable: process.execPath,
+    env: { DSH_TEST_MODE: 'capability-binary' },
+    capabilityBroker: new DesktopCapabilityBroker(handlers),
+    onState: () => undefined,
+  })
+  try {
+    await service.start()
+    assert.equal(await withTimeout(ready, 'binary capability response'), 'binary-ok')
+  } finally {
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('restarts the same Harness service without leaking the previous run', async () => {
   const firstReady = observePhase('ready')
 

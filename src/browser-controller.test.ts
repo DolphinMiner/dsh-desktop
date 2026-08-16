@@ -269,11 +269,51 @@ test('keeps the renderer preview independent from the Agent screenshot policy', 
   )
   assert.equal(agentObservation.screenshotCaptured, false)
   assert.equal(runtime.engine.captures.at(-1), false)
+  await assert.rejects(runtime.controller.screenshot({
+    sessionId: 'session-1',
+    snapshotId: agentObservation.snapshotId,
+  }), error => {
+    assert.equal((error as { code?: string }).code, 'NOT_FOUND')
+    return true
+  })
 
   await runtime.controller.navigateFromUi({ url: 'https://example.com/' })
 
   assert.equal(runtime.engine.captures.at(-1), true)
   assert.equal(runtime.frames.at(-1)?.pixelWidth, 1280)
+})
+
+test('returns only the latest session-bound browser screenshot as a defensive copy', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true, screenshotPolicy: 'always' })
+  const observation = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+
+  const first = await runtime.controller.screenshot({
+    sessionId: 'session-1',
+    snapshotId: observation.snapshotId,
+  })
+  first.data[0] = 99
+  const second = await runtime.controller.screenshot({
+    sessionId: 'session-1',
+    snapshotId: observation.snapshotId,
+  })
+  assert.deepEqual(second.data, new Uint8Array([1, 2, 3]))
+
+  await assert.rejects(runtime.controller.screenshot({
+    sessionId: 'another-session',
+    snapshotId: observation.snapshotId,
+  }), error => {
+    assert.equal((error as { code?: string }).code, 'TARGET_CHANGED')
+    return true
+  })
 })
 
 test('binds direct pointer and scroll intents to the rendered browser snapshot', async t => {

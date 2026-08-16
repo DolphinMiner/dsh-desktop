@@ -88,6 +88,7 @@ export class HarnessService {
       ],
       {
         cwd: this.options.cwd,
+        serialization: 'advanced',
         env: {
           ...process.env,
           ...this.options.env,

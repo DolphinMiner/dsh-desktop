@@ -9,6 +9,7 @@ import type {
   BrowserObservation,
   BrowserObserveParams,
   BrowserScrollParams,
+  BrowserScreenshotParams,
   BrowserSettings,
   BrowserState,
   BrowserTypeParams,
@@ -57,6 +58,10 @@ function cloneObservation(observation: BrowserObservation): BrowserObservation {
   return { ...observation }
 }
 
+function cloneFrame(frame: BrowserFrame): BrowserFrame {
+  return { ...frame, data: frame.data.slice() }
+}
+
 function cloneHistory(history: BrowserHistoryEntry[]): BrowserHistoryEntry[] {
   return history.map(entry => ({ ...entry }))
 }
@@ -91,6 +96,7 @@ export class BrowserController {
   private runtimeStatus: BrowserState['runtimeStatus'] = 'stopped'
   private engineState = emptyEngineState()
   private latest?: LatestObservation
+  private latestFrame?: BrowserFrame
   private statusMessage?: string
   private queue: Promise<void> = Promise.resolve()
   private disposed = false
@@ -223,6 +229,17 @@ export class BrowserController {
         false,
         signal,
       )
+    })
+  }
+
+  screenshot(params: BrowserScreenshotParams): Promise<BrowserFrame> {
+    return this.exclusive(async () => {
+      const tabId = this.assertLatest(params.sessionId, params.snapshotId)
+      const frame = this.latestFrame
+      if (frame === undefined || frame.snapshotId !== params.snapshotId || frame.tabId !== tabId) {
+        throw new ControlledBrowserError('NOT_FOUND', 'The latest browser observation has no screenshot.')
+      }
+      return cloneFrame(frame)
     })
   }
 
@@ -420,6 +437,7 @@ export class BrowserController {
     this.runtimeStatus = 'stopped'
     this.engineState = emptyEngineState()
     this.latest = undefined
+    this.latestFrame = undefined
     this.completedActions.clear()
     this.onFrame(undefined)
   }
@@ -449,7 +467,7 @@ export class BrowserController {
     this.engineState = await this.engine.state()
     if (recordHistory) this.recordHistory(observation)
     if (observed.screenshot !== undefined) {
-      this.onFrame({
+      const frame: BrowserFrame = {
         snapshotId,
         tabId: observed.tabId,
         capturedAt: observedAt,
@@ -457,8 +475,11 @@ export class BrowserController {
         pixelWidth: observed.screenshot.pixelWidth,
         pixelHeight: observed.screenshot.pixelHeight,
         data: observed.screenshot.data.slice(),
-      })
+      }
+      this.latestFrame = frame
+      this.onFrame(cloneFrame(frame))
     } else {
+      this.latestFrame = undefined
       this.onFrame(undefined)
     }
     this.publish()

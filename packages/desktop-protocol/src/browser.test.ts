@@ -8,6 +8,7 @@ import {
   parseBrowserHistory,
   parseBrowserNavigateParams,
   parseBrowserObservation,
+  parseBrowserScreenshotParams,
   parseBrowserSettings,
   parseBrowserState,
   parseBrowserTypeParams,
@@ -130,6 +131,13 @@ test('requires idempotency and latest-snapshot identities for browser actions', 
   }
   assert.deepEqual(parseBrowserTypeParams(type), type)
   assert.equal(parseBrowserTypeParams({ ...type, role: '' }), undefined)
+})
+
+test('binds browser screenshot reads to one agent session and observation', () => {
+  const input = { sessionId: 'session-1', snapshotId: 'snapshot-1' }
+  assert.deepEqual(parseBrowserScreenshotParams(input), input)
+  assert.equal(parseBrowserScreenshotParams({ ...input, tabId: 'tab-1' }), undefined)
+  assert.equal(parseBrowserScreenshotParams({ ...input, snapshotId: '' }), undefined)
 })
 
 test('validates snapshot-bound renderer pointer and scroll intents', () => {

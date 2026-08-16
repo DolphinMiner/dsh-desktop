@@ -29,7 +29,7 @@ function stayAlive() {
   })
 }
 
-if (mode === 'ready' || mode === 'capability') {
+if (mode === 'ready' || mode === 'capability' || mode === 'capability-binary') {
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/plain' })
     response.end('ok')
@@ -49,8 +49,34 @@ if (mode === 'ready' || mode === 'capability') {
         method: 'desktop.ping',
         params: { nonce: 'from-child' },
       })
+    } else if (mode === 'capability-binary') {
+      if (typeof process.send !== 'function') process.exit(3)
+      process.send({
+        channel: 'dsh-desktop',
+        version: DESKTOP_PROTOCOL_VERSION,
+        kind: 'request',
+        id: 'fixture-browser-image',
+        method: 'browser.screenshot',
+        params: { sessionId: 'fixture-session', snapshotId: 'fixture-snapshot' },
+      })
     }
   })
+
+  if (mode === 'capability-binary') {
+    process.on('message', message => {
+      if (message?.id !== 'fixture-browser-image') return
+      if (message.kind !== 'response' || message.ok !== true ||
+        !(message.result?.data instanceof Uint8Array) || message.result.data[1] !== 2) process.exit(5)
+      process.send?.({
+        channel: 'dsh-desktop',
+        version: DESKTOP_PROTOCOL_VERSION,
+        kind: 'request',
+        id: 'fixture-binary-ping',
+        method: 'desktop.ping',
+        params: { nonce: 'binary-ok' },
+      })
+    })
+  }
 
   process.on('SIGTERM', () => server.close(() => process.exit(0)))
 } else if (mode === 'unhealthy') {

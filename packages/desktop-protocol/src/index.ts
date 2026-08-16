@@ -14,17 +14,21 @@ import {
 } from './computer.js'
 import {
   BrowserClickParams,
+  BrowserFrame,
   BrowserNavigateParams,
   BrowserObservation,
   BrowserObserveParams,
   BrowserScrollParams,
+  BrowserScreenshotParams,
   BrowserState,
   BrowserTypeParams,
   parseBrowserClickParams,
+  parseBrowserFrame,
   parseBrowserNavigateParams,
   parseBrowserObservation,
   parseBrowserObserveParams,
   parseBrowserScrollParams,
+  parseBrowserScreenshotParams,
   parseBrowserState,
   parseBrowserTypeParams,
 } from './browser.js'
@@ -94,7 +98,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 22 as const
+export const DESKTOP_PROTOCOL_VERSION = 23 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -295,6 +299,10 @@ export interface DesktopCapabilityMap {
   'browser.observe': {
     params: BrowserObserveParams
     result: BrowserObservation
+  }
+  'browser.screenshot': {
+    params: BrowserScreenshotParams
+    result: BrowserFrame
   }
   'browser.click': {
     params: BrowserClickParams
@@ -788,6 +796,9 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   if (method === 'browser.observe') {
     return parseBrowserObserveParams(value) as DesktopCapabilityParams<M> | undefined
   }
+  if (method === 'browser.screenshot') {
+    return parseBrowserScreenshotParams(value) as DesktopCapabilityParams<M> | undefined
+  }
   if (method === 'browser.click') {
     return parseBrowserClickParams(value) as DesktopCapabilityParams<M> | undefined
   }
@@ -897,6 +908,9 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   if (method === 'browser.navigate' || method === 'browser.observe' ||
     method === 'browser.click' || method === 'browser.type' || method === 'browser.scroll') {
     return parseBrowserObservation(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'browser.screenshot') {
+    return parseBrowserFrame(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'git.discover') {
     return parseGitRepositoryIdentity(value) as DesktopCapabilityResult<M> | undefined
@@ -1012,7 +1026,8 @@ export function createEvent<E extends DesktopEventName>(
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
     method === 'computer.act' || method === 'browser.navigate' || method === 'browser.observe' ||
-    method === 'browser.click' || method === 'browser.type' || method === 'browser.scroll' ||
+    method === 'browser.screenshot' || method === 'browser.click' || method === 'browser.type' ||
+    method === 'browser.scroll' ||
     method === 'worktrees.provision' ||
     method === 'automations.claimNext' || method === 'automations.inspectOwned' ||
     method === 'automations.markRunning' ||

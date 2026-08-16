@@ -284,6 +284,15 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     truncated: false,
     screenshotCaptured: true,
   }
+  const frame = {
+    snapshotId: observation.snapshotId,
+    tabId: observation.tabId,
+    capturedAt: observation.observedAt,
+    mediaType: 'image/jpeg' as const,
+    pixelWidth: 1280,
+    pixelHeight: 800,
+    data: new Uint8Array([1, 2, 3]),
+  }
   const handlers = createDesktopCapabilityHandlers({
     isAppFocused: () => false,
     notifications: { isSupported: () => false, show: () => undefined },
@@ -317,6 +326,10 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
         calls.push(`observe:${params.sessionId}`)
         return observation
       },
+      screenshot: async params => {
+        calls.push(`screenshot:${params.sessionId}:${params.snapshotId}`)
+        return frame
+      },
       click: async params => {
         calls.push(`click:${params.snapshotId}:${params.name}`)
         return observation
@@ -340,6 +353,10 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
     url: observation.url,
   }, context)
   await handlers['browser.observe']({ sessionId: 'session-1' }, context)
+  assert.deepEqual(await handlers['browser.screenshot']({
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+  }, context), frame)
   await handlers['browser.click']({
     actionId: 'click-1',
     sessionId: 'session-1',
@@ -365,6 +382,7 @@ test('routes snapshot-bound controlled browser capabilities', async () => {
   assert.deepEqual(calls, [
     'navigate:navigate-1:https://example.com/',
     'observe:session-1',
+    'screenshot:session-1:snapshot-1',
     'click:snapshot-1:Continue',
     'type:snapshot-1:DeepSeek',
     'scroll:snapshot-1:600',

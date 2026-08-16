@@ -138,6 +138,38 @@ test('never caches or replays computer action capability responses', async () =>
   assert.ok(replies.every(reply => !reply.ok && reply.error.code === 'PERMISSION_DENIED'))
 })
 
+test('never retains browser screenshot bytes in the response cache', async () => {
+  let calls = 0
+  const handlers = testHandlers()
+  handlers['browser.screenshot'] = params => {
+    calls += 1
+    return {
+      snapshotId: params.snapshotId,
+      tabId: 'tab-1',
+      capturedAt: '2026-08-16T12:00:00.000Z',
+      mediaType: 'image/jpeg',
+      pixelWidth: 2,
+      pixelHeight: 1,
+      data: new Uint8Array([1, 2, 3]),
+    }
+  }
+  const broker = new DesktopCapabilityBroker(handlers)
+  const replies: DesktopResponse[] = []
+  const request = createRequest('browser-image', 'browser.screenshot', {
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+  })
+
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+  broker.receive(request, value => replies.push(value))
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(calls, 2)
+  assert.equal(replies.length, 2)
+  assert.ok(replies.every(reply => reply.ok && reply.result !== undefined))
+})
+
 test('never caches worktree provisioning responses at the capability broker', async () => {
   let calls = 0
   const handlers = testHandlers()

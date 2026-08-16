@@ -88,6 +88,23 @@ test('rejects malformed envelopes and capability payloads', () => {
   assert.equal(parseCapabilityResult('desktop.notify', { delivered: 'yes' }), undefined)
 })
 
+test('round-trips a sensitive browser screenshot over the desktop protocol', () => {
+  const params = { sessionId: 'session-1', snapshotId: 'snapshot-1' }
+  const frame = {
+    snapshotId: 'snapshot-1',
+    tabId: 'tab-1',
+    capturedAt: '2026-08-16T12:00:00.000Z',
+    mediaType: 'image/jpeg' as const,
+    pixelWidth: 1280,
+    pixelHeight: 800,
+    data: new Uint8Array([1, 2, 3]),
+  }
+  assert.deepEqual(parseCapabilityParams('browser.screenshot', params), params)
+  assert.deepEqual(parseCapabilityResult('browser.screenshot', frame), frame)
+  assert.equal(isSensitiveCapabilityMethod('browser.screenshot'), true)
+  assert.equal(parseCapabilityParams('browser.screenshot', { ...params, tabId: 'tab-1' }), undefined)
+})
+
 test('validates desktop commands and session activity reports', () => {
   assert.deepEqual(parseRendererCommand({ type: 'session.open', sessionId: 'session-1' }), {
     type: 'session.open',

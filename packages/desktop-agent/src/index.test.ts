@@ -423,3 +423,99 @@ test('binds browser tools to one agent session and latest browser snapshots', as
     submit: true,
   })).includes('private query'), false)
 })
+
+test('commits Browser screenshots through the official attachment store for vision routes', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: string[] = []
+  const saved: Uint8Array[] = []
+  let vision = true
+  const observation = {
+    version: 1 as const,
+    snapshotId: 'snapshot-vision',
+    tabId: 'tab-1',
+    observedAt: '2026-08-16T12:00:00.000Z',
+    url: 'https://example.com/',
+    title: 'Example',
+    ariaSnapshot: '- heading "Example" [level=1]',
+    truncated: false,
+    screenshotCaptured: true,
+  }
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string) => {
+        calls.push(method)
+        if (method === 'browser.observe') return observation
+        return {
+          snapshotId: observation.snapshotId,
+          tabId: observation.tabId,
+          capturedAt: observation.observedAt,
+          mediaType: 'image/jpeg',
+          pixelWidth: 1280,
+          pixelHeight: 800,
+          data: new Uint8Array([1, 2, 3]),
+        }
+      },
+    },
+    get: (service: string) => service === 'attachments'
+      ? {
+          imageLimits: {
+            maxImageBytes: 5_000_000,
+            maxImagesPerMessage: 10,
+            maxMessageImageBytes: 10_000_000,
+            maxImagePixels: 2_000_000,
+            mediaTypes: ['image/jpeg'],
+          },
+          saveImage: async ({ data }: { data: Uint8Array }) => {
+            saved.push(data.slice())
+            return {
+              attachmentId: 'attachment-browser',
+              mediaType: 'image/jpeg',
+              bytes: data.byteLength,
+              width: 1280,
+              height: 800,
+              name: 'browser-page.jpg',
+            }
+          },
+        }
+      : service === 'llm'
+        ? { resolveModelInfo: async () => ({ inputModalities: vision ? ['text', 'image'] : ['text'] }) }
+        : undefined,
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+  const tool = definitions.find(definition => definition.name === 'browser_observe')!
+  const result = await tool.execute({}, {
+    agent: {
+      id: 'session-browser',
+      options: { provider: 'test', model: 'vision' },
+      session: { header: { cwd: '/repo' }, requestHeader: () => undefined },
+    },
+    signal: new AbortController().signal,
+  } as never) as typeof observation & { image: { attachmentId: string } }
+
+  assert.deepEqual(calls, ['browser.observe', 'browser.screenshot'])
+  assert.deepEqual(saved, [new Uint8Array([1, 2, 3])])
+  assert.equal(result.image.attachmentId, 'attachment-browser')
+  const content = tool.output.render({}, result)
+  assert.equal(content[0]?.type, 'text')
+  assert.equal(content[1]?.type, 'image')
+  if (content[1]?.type === 'image') {
+    assert.equal(content[1].attachment.attachmentId, 'attachment-browser')
+  }
+
+  vision = false
+  calls.length = 0
+  saved.length = 0
+  const textOnly = await tool.execute({}, {
+    agent: {
+      id: 'session-browser',
+      options: { provider: 'test', model: 'text-only' },
+      session: { header: { cwd: '/repo' }, requestHeader: () => undefined },
+    },
+    signal: new AbortController().signal,
+  } as never) as typeof observation & { image?: unknown }
+  assert.deepEqual(calls, ['browser.observe'])
+  assert.deepEqual(saved, [])
+  assert.equal(textOnly.image, undefined)
+})

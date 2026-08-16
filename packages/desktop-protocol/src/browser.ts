@@ -85,6 +85,11 @@ export interface BrowserObserveParams {
   tabId?: string
 }
 
+export interface BrowserScreenshotParams {
+  sessionId: string
+  snapshotId: string
+}
+
 export interface BrowserClickParams {
   actionId: string
   sessionId: string
@@ -376,6 +381,12 @@ export function parseBrowserObserveParams(value: unknown): BrowserObserveParams 
     !isString(value.sessionId, MAX_ID_LENGTH) ||
     (value.tabId !== undefined && !isString(value.tabId, MAX_ID_LENGTH))) return undefined
   return { sessionId: value.sessionId, ...(value.tabId === undefined ? {} : { tabId: value.tabId }) }
+}
+
+export function parseBrowserScreenshotParams(value: unknown): BrowserScreenshotParams | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['sessionId', 'snapshotId']) ||
+    !isString(value.sessionId, MAX_ID_LENGTH) || !isString(value.snapshotId, MAX_ID_LENGTH)) return undefined
+  return { sessionId: value.sessionId, snapshotId: value.snapshotId }
 }
 
 export function parseBrowserClickParams(value: unknown): BrowserClickParams | undefined {

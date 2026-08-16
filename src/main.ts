@@ -1485,6 +1485,10 @@ app.whenReady().then(async () => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.observe(params, signal)
       },
+      screenshot: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.screenshot(params)
+      },
       click: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
         return controlledBrowser!.click(params, signal)

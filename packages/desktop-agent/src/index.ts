@@ -2,9 +2,17 @@ import { randomUUID } from 'node:crypto'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-llm'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@dolphinminer/dsh-desktop-host'
-import type { ComputerAction, GitReviewScope } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  BrowserObservation,
+  ComputerAction,
+  GitReviewScope,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -16,6 +24,33 @@ const OUTPUT_SCHEMA = {
 } as const
 
 const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
+const BROWSER_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    version: { type: 'integer', enum: [1], required: true },
+    snapshotId: { type: 'string', required: true },
+    tabId: { type: 'string', required: true },
+    observedAt: { type: 'string', required: true },
+    url: { type: 'string', required: true },
+    title: { type: 'string', required: true },
+    ariaSnapshot: { type: 'string', required: true },
+    truncated: { type: 'boolean', required: true },
+    screenshotCaptured: { type: 'boolean', required: true },
+    image: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        attachmentId: { type: 'string', required: true },
+        mediaType: { type: 'string', enum: ['image/jpeg'], required: true },
+        bytes: { type: 'integer', required: true },
+        width: { type: 'integer', required: true },
+        height: { type: 'integer', required: true },
+        name: { type: 'string' },
+      },
+    },
+  },
+} as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
 const BROWSER_ACTION_TIMEOUT_MS = 45_000
 const GIT_READ_TIMEOUT_MS = 35_000
@@ -30,6 +65,87 @@ const COMPUTER_ACTION_TOOLS = new Set([
   'computer_scroll',
   'computer_scroll_at',
 ])
+
+interface BrowserToolImage {
+  attachmentId: string
+  mediaType: 'image/jpeg'
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
+interface BrowserToolValue extends BrowserObservation {
+  image?: BrowserToolImage
+}
+
+function renderBrowserResult(value: BrowserToolValue): ContentBlock[] {
+  const { image, ...observation } = value
+  const content: ContentBlock[] = [{ type: 'text', text: JSON.stringify(observation) }]
+  if (image !== undefined) {
+    content.push({
+      type: 'image',
+      attachment: {
+        attachmentId: AttachmentId(image.attachmentId),
+        mediaType: image.mediaType,
+        bytes: image.bytes,
+        width: image.width,
+        height: image.height,
+        ...(image.name === undefined ? {} : { name: image.name }),
+      },
+    })
+  }
+  return content
+}
+
+async function routeAcceptsImages(ctx: Context, exec: ToolRunContext): Promise<boolean> {
+  const routed = exec.agent?.session.requestHeader()?.config
+  const provider = routed?.provider ?? exec.agent?.options.provider
+  const model = routed?.model ?? exec.agent?.options.model
+  const llm = ctx.get('llm')
+  if (provider === undefined || model === undefined || llm === undefined) return false
+  try {
+    const active = await llm.resolveModelInfo(provider, model, exec.signal)
+    return active.inputModalities?.includes('image') === true
+  } catch (error) {
+    if (exec.signal.aborted) throw exec.signal.reason ?? error
+    return false
+  }
+}
+
+async function browserToolValue(
+  ctx: Context,
+  observation: BrowserObservation,
+  exec: ToolRunContext,
+): Promise<BrowserToolValue> {
+  if (!observation.screenshotCaptured) return observation
+  const attachments = ctx.get('attachments')
+  if (attachments === undefined || !attachments.imageLimits.mediaTypes.includes('image/jpeg') ||
+    !(await routeAcceptsImages(ctx, exec))) return observation
+  const frame = await ctx.desktopBridge.call('browser.screenshot', {
+    sessionId: agentSessionId(exec),
+    snapshotId: observation.snapshotId,
+  }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+  const limits = attachments.imageLimits
+  if (frame.data.byteLength > Math.min(limits.maxImageBytes, limits.maxMessageImageBytes) ||
+    frame.pixelWidth * frame.pixelHeight > limits.maxImagePixels) return observation
+  const ref = await attachments.saveImage({
+    data: frame.data,
+    mediaType: frame.mediaType,
+    name: 'browser-page.jpg',
+  })
+  return {
+    ...observation,
+    image: {
+      attachmentId: ref.attachmentId,
+      mediaType: 'image/jpeg',
+      bytes: ref.bytes,
+      width: ref.width,
+      height: ref.height,
+      ...(ref.name === undefined ? {} : { name: ref.name }),
+    },
+  }
+}
 
 function agentSessionId(exec: { agent?: { id: string } }): string {
   const sessionId = exec.agent?.id
@@ -141,19 +257,20 @@ export function apply(ctx: Context): void {
       new_tab: { type: 'boolean', description: 'Open the URL in a new controlled-browser tab.' },
     },
     output: {
-      schema: JSON_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
     },
     presentCall: args => ({ card: 'generic', title: `Open ${args.url}`, kind: 'read' }),
     timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.navigate', {
+      const observation = await ctx.desktopBridge.call('browser.navigate', {
         actionId: randomUUID(),
         sessionId: agentSessionId(exec),
         url: args.url,
         ...(args.new_tab === undefined ? {} : { newTab: args.new_tab }),
-      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
     },
   }))
 
@@ -164,17 +281,18 @@ export function apply(ctx: Context): void {
       tab_id: { type: 'string', description: 'Optional controlled-browser tab ID.' },
     },
     output: {
-      schema: JSON_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
     },
     presentCall: () => ({ card: 'generic', title: 'Observe browser page', kind: 'read' }),
     timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.observe', {
+      const observation = await ctx.desktopBridge.call('browser.observe', {
         sessionId: agentSessionId(exec),
         ...(args.tab_id === undefined ? {} : { tabId: args.tab_id }),
-      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
     },
   }))
 
@@ -188,21 +306,22 @@ export function apply(ctx: Context): void {
       exact: { type: 'boolean', description: 'Require an exact accessible-name match. Defaults to true.' },
     },
     output: {
-      schema: JSON_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
     },
     presentCall: args => ({ card: 'generic', title: `Click ${args.name}`, kind: 'execute' }),
     timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.click', {
+      const observation = await ctx.desktopBridge.call('browser.click', {
         actionId: randomUUID(),
         sessionId: agentSessionId(exec),
         snapshotId: args.snapshot_id,
         role: args.role,
         name: args.name,
         ...(args.exact === undefined ? {} : { exact: args.exact }),
-      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
     },
   }))
 
@@ -217,8 +336,8 @@ export function apply(ctx: Context): void {
       submit: { type: 'boolean', description: 'Press Enter after filling the field.' },
     },
     output: {
-      schema: JSON_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
     },
     presentCall: args => ({
       card: 'generic',
@@ -228,7 +347,7 @@ export function apply(ctx: Context): void {
     timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.type', {
+      const observation = await ctx.desktopBridge.call('browser.type', {
         actionId: randomUUID(),
         sessionId: agentSessionId(exec),
         snapshotId: args.snapshot_id,
@@ -236,7 +355,8 @@ export function apply(ctx: Context): void {
         name: args.name,
         text: args.text,
         ...(args.submit === undefined ? {} : { submit: args.submit }),
-      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
     },
   }))
 
@@ -249,20 +369,21 @@ export function apply(ctx: Context): void {
       delta_y: { type: 'number', required: true, description: 'Vertical scroll amount in CSS pixels.' },
     },
     output: {
-      schema: JSON_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      schema: BROWSER_OUTPUT_SCHEMA,
+      render: (_args, value) => renderBrowserResult(value),
     },
     presentCall: () => ({ card: 'generic', title: 'Scroll browser page', kind: 'execute' }),
     timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.scroll', {
+      const observation = await ctx.desktopBridge.call('browser.scroll', {
         actionId: randomUUID(),
         sessionId: agentSessionId(exec),
         snapshotId: args.snapshot_id,
         deltaX: args.delta_x,
         deltaY: args.delta_y,
-      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })
+      return browserToolValue(ctx, observation, exec)
     },
   }))
 
