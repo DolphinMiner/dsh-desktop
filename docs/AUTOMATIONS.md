@@ -149,10 +149,18 @@ in the UI. It does not install a daemon or claim wake-from-sleep delivery.
 - A repeated daylight-saving local time runs once at its earlier occurrence.
 - On startup, a recurring automation admits only the latest missed occurrence;
   it never replays an unbounded backlog.
+- Calendar evaluation uses a pinned, timezone-aware cron parser. Randomized
+  `H` expressions are rejected so every process derives the same occurrence.
 - Duplicate timer delivery for the same occurrence resolves to one immutable
   run id.
 - Overlap is disabled by default. A configured queue policy admits at most one
   deferred occurrence while the current run remains nonterminal.
+
+Trigger admission, cadence advancement, and optional run creation share one
+atomic registry commit. A persistence failure advances neither the definition
+nor the run queue. The scheduler stops on an authority error and is recreated
+on the next application launch; a renderer event or Host wakeup is never used
+as proof that a trigger was admitted.
 
 ## Security And Presentation
 

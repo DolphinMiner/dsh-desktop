@@ -21,6 +21,12 @@ import {
 } from '@dolphinminer/dsh-desktop-protocol'
 
 import { readJsonFile, writeJsonAtomically } from './atomic-json'
+import {
+  isAutomationOccurrence,
+  latestDueAutomationOccurrence,
+  nextAutomationOccurrence,
+  validateAutomationTrigger,
+} from './automation-schedule'
 
 export const AUTOMATION_REGISTRY_SCHEMA_VERSION = 1 as const
 
@@ -71,15 +77,30 @@ export interface AutomationDefinitionMutationReceipt {
   duplicate: boolean
 }
 
-export type QueueAutomationRunInvocation =
-  | { kind: 'manual' }
-  | { kind: 'scheduled'; occurrenceAt: string }
-
 export interface QueueAutomationRunInput {
   operationId: string
   automationId: string
-  invocation: QueueAutomationRunInvocation
+  invocation: { kind: 'manual' }
   retryOfRunId?: string
+}
+
+export interface AdmitScheduledAutomationRunInput {
+  operationId: string
+  automationId: string
+  expectedRevision: number
+  expectedNextTriggerAt: string
+  occurrenceAt: string
+  nextTriggerAt?: string
+}
+
+export interface ScheduledAutomationAdmission {
+  automationId: string
+  revision: number
+  state: AutomationState
+  occurrenceAt: string
+  decision: 'queued' | 'skipped'
+  run?: AutomationRunSummary
+  duplicate: boolean
 }
 
 export interface ClaimAutomationRunInput {
@@ -110,7 +131,7 @@ export interface FinishAutomationRunInput {
   detail?: string
 }
 
-type DefinitionOperationKind = 'create' | 'replace' | 'pause' | 'resume' | 'delete'
+type DefinitionOperationKind = 'create' | 'replace' | 'pause' | 'resume' | 'trigger' | 'delete'
 
 interface DefinitionOperationRecord {
   id: string
@@ -119,6 +140,9 @@ interface DefinitionOperationRecord {
   requestHash: string
   resultRevision: number
   resultState: AutomationState | 'deleted'
+  triggerDecision?: 'queued' | 'skipped'
+  occurrenceAt?: string
+  runId?: string
   at: string
 }
 
@@ -300,6 +324,24 @@ function emptyDocument(): AutomationRegistryDocument {
   }
 }
 
+function hasConsistentTriggerState(definition: AutomationDefinition): boolean {
+  try {
+    validateAutomationTrigger(definition.trigger)
+    return !(
+      (definition.nextTriggerAt !== undefined &&
+        !isAutomationOccurrence(definition.trigger, definition.nextTriggerAt)) ||
+      (definition.lastTriggeredAt !== undefined &&
+        !isAutomationOccurrence(definition.trigger, definition.lastTriggeredAt)) ||
+      (definition.trigger.kind === 'once' && definition.state === 'enabled' &&
+        definition.nextTriggerAt !== definition.trigger.at) ||
+      (definition.trigger.kind === 'once' && definition.state === 'completed' &&
+        definition.lastTriggeredAt !== definition.trigger.at)
+    )
+  } catch {
+    return false
+  }
+}
+
 function normalizeDraft(value: unknown): AutomationDefinitionDraft {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'name', 'prompt', 'projectPath', 'repository', 'trigger', 'execution', 'concurrencyPolicy',
@@ -319,6 +361,9 @@ function normalizeDraft(value: unknown): AutomationDefinitionDraft {
     !isCanonicalAbsolutePath(parsed.repository.commonDir)) {
     throw new AutomationRegistryError('BAD_MESSAGE', 'The automation definition is invalid.')
   }
+  if (!hasConsistentTriggerState(parsed)) {
+    throw new AutomationRegistryError('BAD_MESSAGE', 'The automation trigger timestamps are inconsistent.')
+  }
   return cloneDraft(parsed)
 }
 
@@ -331,6 +376,7 @@ function parseStoredRecord(value: unknown): StoredAutomationRecord | undefined {
       !isCanonicalAbsolutePath(definition.repository.root) ||
       !isCanonicalAbsolutePath(definition.repository.gitDir) ||
       !isCanonicalAbsolutePath(definition.repository.commonDir)) return undefined
+    if (!hasConsistentTriggerState(definition)) return undefined
     return { status: value.status, definition }
   }
   if (!hasOnlyKeys(value, ['status', 'id', 'revision', 'createdAt', 'deletedAt']) || !isUuid(value.id) ||
@@ -349,17 +395,27 @@ function parseStoredRecord(value: unknown): StoredAutomationRecord | undefined {
 
 function parseDefinitionOperation(value: unknown): DefinitionOperationRecord | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'id', 'kind', 'automationId', 'requestHash', 'resultRevision', 'resultState', 'at',
+    'id', 'kind', 'automationId', 'requestHash', 'resultRevision', 'resultState',
+    'triggerDecision', 'occurrenceAt', 'runId', 'at',
   ]) || !isBoundedString(value.id) ||
     (value.kind !== 'create' && value.kind !== 'replace' && value.kind !== 'pause' &&
-      value.kind !== 'resume' && value.kind !== 'delete') ||
+      value.kind !== 'resume' && value.kind !== 'trigger' && value.kind !== 'delete') ||
     !isUuid(value.automationId) || typeof value.requestHash !== 'string' ||
     !/^[a-f0-9]{64}$/.test(value.requestHash) || !isPositiveSafeInteger(value.resultRevision) ||
     (value.resultState !== 'enabled' && value.resultState !== 'paused' &&
       value.resultState !== 'completed' && value.resultState !== 'deleted') ||
     !isCanonicalIsoDate(value.at)) return undefined
+  const hasTriggerFields = value.triggerDecision !== undefined || value.occurrenceAt !== undefined ||
+    value.runId !== undefined
   if ((value.kind === 'pause' && value.resultState !== 'paused') ||
     (value.kind === 'resume' && value.resultState !== 'enabled') ||
+    (value.kind === 'trigger' &&
+      ((value.resultState !== 'enabled' && value.resultState !== 'completed') ||
+        (value.triggerDecision !== 'queued' && value.triggerDecision !== 'skipped') ||
+        !isCanonicalIsoDate(value.occurrenceAt) ||
+        (value.triggerDecision === 'queued') !== isUuid(value.runId) ||
+        (value.triggerDecision === 'skipped' && value.runId !== undefined))) ||
+    (value.kind !== 'trigger' && hasTriggerFields) ||
     (value.kind === 'delete' && value.resultState !== 'deleted') ||
     (value.kind !== 'delete' && value.resultState === 'deleted')) return undefined
   return {
@@ -369,6 +425,11 @@ function parseDefinitionOperation(value: unknown): DefinitionOperationRecord | u
     requestHash: value.requestHash,
     resultRevision: Number(value.resultRevision),
     resultState: value.resultState,
+    ...(value.kind !== 'trigger' ? {} : {
+      triggerDecision: value.triggerDecision as 'queued' | 'skipped',
+      occurrenceAt: value.occurrenceAt as string,
+      ...(value.runId === undefined ? {} : { runId: value.runId as string }),
+    }),
     at: value.at,
   }
 }
@@ -432,8 +493,7 @@ function parseDocument(value: unknown): AutomationRegistryDocument {
   const runOperationIds = exactRuns.flatMap(run => run.events.map(event => event.operationId))
   const definitionOperationIds = exactOperations.map(operation => operation.id)
   if (new Set(ids).size !== ids.length || new Set(definitionOperationIds).size !== definitionOperationIds.length ||
-    new Set([...definitionOperationIds, ...runOperationIds]).size !==
-      definitionOperationIds.length + runOperationIds.length) {
+    new Set(runOperationIds).size !== runOperationIds.length) {
     throw new Error('The automation registry contains duplicate immutable identifiers.')
   }
   const activeDefinitions = exactRecords.flatMap(record =>
@@ -458,6 +518,22 @@ function parseDocument(value: unknown): AutomationRegistryDocument {
       throw new Error('The automation registry contains an orphaned definition operation.')
     }
   }
+  const runsByOperationId = new Map(exactRuns.flatMap(run =>
+    run.events.map(event => [event.operationId, { run, event }] as const),
+  ))
+  for (const operation of exactOperations) {
+    const overlap = runsByOperationId.get(operation.id)
+    if (overlap === undefined) continue
+    if (operation.kind !== 'trigger' || operation.triggerDecision !== 'queued' ||
+      operation.runId !== overlap.run.id || overlap.event.type !== 'queued' ||
+      overlap.run.automationId !== operation.automationId ||
+      overlap.run.payload.invocation.kind !== 'scheduled' ||
+      overlap.run.payload.invocation.occurrenceAt !== operation.occurrenceAt ||
+      overlap.run.payload.definitionRevision + 1 !== operation.resultRevision ||
+      overlap.event.at !== operation.at) {
+      throw new Error('The automation registry contains a conflicting operation identity.')
+    }
+  }
   for (const run of exactRuns) {
     const record = byAutomationId.get(run.automationId)
     if (record === undefined || run.payload.definitionRevision > recordRevision(record) ||
@@ -465,6 +541,12 @@ function parseDocument(value: unknown): AutomationRegistryDocument {
       (record.status === 'deleted' && Date.parse(run.createdAt) > Date.parse(record.deletedAt)) ||
       hashAutomationRunPayload(run.payload) !== run.payloadHash) {
       throw new Error('The automation registry contains an invalid run identity or payload.')
+    }
+    if (run.payload.invocation.kind === 'scheduled') {
+      const triggerOperation = exactOperations.find(operation => operation.id === run.events[0]!.operationId)
+      if (triggerOperation?.kind !== 'trigger' || triggerOperation.runId !== run.id) {
+        throw new Error('The automation registry contains an uncommitted scheduled admission.')
+      }
     }
   }
   return {
@@ -499,6 +581,16 @@ function queuedRunRequestHash(run: AutomationRunSummary): string {
       ? { kind: 'manual' }
       : { kind: 'scheduled', occurrenceAt: run.payload.invocation.occurrenceAt },
     ...(run.retryOfRunId === undefined ? {} : { retryOfRunId: run.retryOfRunId }),
+  })
+}
+
+function scheduledAdmissionRequestHash(input: AdmitScheduledAutomationRunInput): string {
+  return hashJson({
+    automationId: input.automationId,
+    expectedRevision: input.expectedRevision,
+    expectedNextTriggerAt: input.expectedNextTriggerAt,
+    occurrenceAt: input.occurrenceAt,
+    ...(input.nextTriggerAt === undefined ? {} : { nextTriggerAt: input.nextTriggerAt }),
   })
 }
 
@@ -731,14 +823,9 @@ export class AutomationRegistry {
     this.assertAvailable()
     this.assertOperationId(input.operationId)
     this.assertAutomationId(input.automationId)
-    if (!isRecord(input.invocation) ||
-      (input.invocation.kind !== 'manual' && input.invocation.kind !== 'scheduled') ||
-      (input.invocation.kind === 'manual' && !hasOnlyKeys(input.invocation, ['kind'])) ||
-      (input.invocation.kind === 'scheduled' &&
-        (!hasOnlyKeys(input.invocation, ['kind', 'occurrenceAt']) ||
-          !isCanonicalIsoDate(input.invocation.occurrenceAt))) ||
-      (input.retryOfRunId !== undefined && !isUuid(input.retryOfRunId)) ||
-      (input.invocation.kind === 'scheduled' && input.retryOfRunId !== undefined)) {
+    if (!isRecord(input.invocation) || input.invocation.kind !== 'manual' ||
+      !hasOnlyKeys(input.invocation, ['kind']) ||
+      (input.retryOfRunId !== undefined && !isUuid(input.retryOfRunId))) {
       throw new AutomationRegistryError('BAD_MESSAGE', 'The automation run request is invalid.')
     }
     const requestHash = queueRequestHash(input)
@@ -755,30 +842,10 @@ export class AutomationRegistry {
       return cloneRun(operationOwner)
     }
     this.assertUnusedDefinitionOperationId(input.operationId)
-    if (input.invocation.kind === 'scheduled') {
-      const occurrenceAt = input.invocation.occurrenceAt
-      const existingOccurrence = this.state.runs.find(run =>
-        run.automationId === input.automationId && run.payload.invocation.kind === 'scheduled' &&
-        run.payload.invocation.occurrenceAt === occurrenceAt,
-      )
-      if (existingOccurrence !== undefined) {
-        throw new AutomationRegistryError(
-          'DUPLICATE_REQUEST',
-          'This scheduled occurrence already has an immutable run identity.',
-        )
-      }
-    }
     if (this.state.runs.length >= this.maxRuns) {
       throw new AutomationRegistryError('DESKTOP_UNAVAILABLE', 'The automation run registry is full.')
     }
     const definition = this.requireActiveDefinition(input.automationId)
-    if (input.invocation.kind === 'scheduled' &&
-      (definition.state !== 'enabled' || definition.nextTriggerAt !== input.invocation.occurrenceAt)) {
-      throw new AutomationRegistryError(
-        'CONFLICT',
-        'The scheduled occurrence is no longer the automation\'s authoritative next trigger.',
-      )
-    }
     let prior: AutomationRunSummary | undefined
     if (input.retryOfRunId !== undefined) {
       prior = this.state.runs.find(run => run.id === input.retryOfRunId)
@@ -790,41 +857,105 @@ export class AutomationRegistry {
       }
     }
     const at = this.nextTimestamp(definition.updatedAt, prior?.updatedAt)
-    const runIds = new Set(this.state.runs.map(run => run.id))
-    const sessionIds = new Set(this.state.runs.map(run => run.payload.sessionId))
-    const runId = this.newUniqueId(runIds)
-    const sessionId = this.newUniqueId(sessionIds)
-    const invocation: AutomationRunInvocation = input.invocation.kind === 'manual'
-      ? { kind: 'manual', requestedAt: at }
-      : { kind: 'scheduled', occurrenceAt: input.invocation.occurrenceAt }
-    const payload: AutomationRunPayload = {
-      definitionRevision: definition.revision,
-      definitionName: definition.name,
-      prompt: definition.prompt,
-      projectPath: definition.projectPath,
-      repository: cloneRepository(definition.repository),
-      trigger: cloneTrigger(definition.trigger),
-      execution: cloneExecution(definition.execution),
-      concurrencyPolicy: definition.concurrencyPolicy,
-      skillIds: [...definition.skillIds],
-      connectionIds: [...definition.connectionIds],
-      invocation,
-      sessionId,
-    }
-    const run = parseAutomationRunSummary({
-      id: runId,
-      automationId: definition.id,
-      ...(prior === undefined ? {} : { retryOfRunId: prior.id }),
-      payloadHash: hashAutomationRunPayload(payload),
-      payload,
-      phase: 'queued',
-      cancellationRequested: false,
-      createdAt: at,
-      updatedAt: at,
-      events: [{ seq: 1, operationId: input.operationId, at, type: 'queued' }],
-    })!
+    const run = this.buildQueuedRun(
+      definition,
+      input.operationId,
+      { kind: 'manual', requestedAt: at },
+      at,
+      prior,
+    )
     this.commit(next => next.runs.push(run))
     return cloneRun(run)
+  }
+
+  admitScheduledRun(input: AdmitScheduledAutomationRunInput): ScheduledAutomationAdmission {
+    this.assertAvailable()
+    this.assertOperationId(input.operationId)
+    this.assertAutomationId(input.automationId)
+    if (!isPositiveSafeInteger(input.expectedRevision) ||
+      !isCanonicalIsoDate(input.expectedNextTriggerAt) || !isCanonicalIsoDate(input.occurrenceAt) ||
+      (input.nextTriggerAt !== undefined && !isCanonicalIsoDate(input.nextTriggerAt))) {
+      throw new AutomationRegistryError('BAD_MESSAGE', 'The scheduled automation admission is invalid.')
+    }
+    const requestHash = scheduledAdmissionRequestHash(input)
+    const existingOperation = this.state.definitionOperations.find(operation => operation.id === input.operationId)
+    if (existingOperation !== undefined) {
+      if (existingOperation.kind !== 'trigger' || existingOperation.requestHash !== requestHash) {
+        throw new AutomationRegistryError(
+          'DUPLICATE_REQUEST',
+          'The automation operation identifier was already used for a different request.',
+        )
+      }
+      return this.scheduledAdmission(existingOperation, true)
+    }
+    this.assertUnusedOperationId(input.operationId)
+    const current = this.requireActiveDefinition(input.automationId, input.expectedRevision)
+    if (current.state !== 'enabled' || current.nextTriggerAt !== input.expectedNextTriggerAt) {
+      throw new AutomationRegistryError('CONFLICT', 'The automation trigger state or next occurrence has changed.')
+    }
+    const due = latestDueAutomationOccurrence(current.trigger, current.nextTriggerAt, this.now())
+    if (due !== input.occurrenceAt) {
+      throw new AutomationRegistryError('CONFLICT', 'The requested occurrence is not the latest due trigger.')
+    }
+    const calculatedNext = nextAutomationOccurrence(current.trigger, input.occurrenceAt)
+    if (calculatedNext !== input.nextTriggerAt) {
+      throw new AutomationRegistryError('CONFLICT', 'The next automation trigger does not follow the due occurrence.')
+    }
+    this.assertDefinitionOperationCapacity()
+    const activeRuns = this.state.runs.filter(run => run.automationId === current.id && !isTerminal(run))
+    const decision: 'queued' | 'skipped' = activeRuns.length > 0 &&
+      (current.concurrencyPolicy === 'skip' || activeRuns.some(run => run.phase === 'queued'))
+      ? 'skipped'
+      : 'queued'
+    if (decision === 'queued' && this.state.runs.length >= this.maxRuns) {
+      throw new AutomationRegistryError('DESKTOP_UNAVAILABLE', 'The automation run registry is full.')
+    }
+    const at = this.nextTimestamp(current.updatedAt)
+    const advancedDraft = draftFromDefinition(current)
+    advancedDraft.state = current.trigger.kind === 'once' ? 'completed' : 'enabled'
+    advancedDraft.lastTriggeredAt = input.occurrenceAt
+    if (calculatedNext === undefined) delete advancedDraft.nextTriggerAt
+    else advancedDraft.nextTriggerAt = calculatedNext
+    const updated = parseAutomationDefinition({
+      ...advancedDraft,
+      id: current.id,
+      revision: current.revision + 1,
+      createdAt: current.createdAt,
+      updatedAt: at,
+    })
+    if (updated === undefined) {
+      throw new AutomationRegistryError('CONFLICT', 'The scheduled automation could not advance safely.')
+    }
+    const run = decision === 'queued'
+      ? this.buildQueuedRun(
+          current,
+          input.operationId,
+          { kind: 'scheduled', occurrenceAt: input.occurrenceAt },
+          at,
+        )
+      : undefined
+    const operation: DefinitionOperationRecord = {
+      id: input.operationId,
+      kind: 'trigger',
+      automationId: current.id,
+      requestHash,
+      resultRevision: updated.revision,
+      resultState: updated.state,
+      triggerDecision: decision,
+      occurrenceAt: input.occurrenceAt,
+      ...(run === undefined ? {} : { runId: run.id }),
+      at,
+    }
+    this.commit(next => {
+      const index = next.records.findIndex(record => recordId(record) === current.id)
+      if (index < 0 || next.records[index]!.status !== 'active') {
+        throw new AutomationRegistryError('NOT_FOUND', 'The automation definition was not found.')
+      }
+      next.records[index] = { status: 'active', definition: updated }
+      next.definitionOperations.push(operation)
+      if (run !== undefined) next.runs.push(run)
+    })
+    return this.scheduledAdmission(operation, false)
   }
 
   claimRun(input: ClaimAutomationRunInput): AutomationRunSummary {
@@ -844,6 +975,10 @@ export class AutomationRegistry {
     const current = this.requireRun(input.runId)
     if (current.phase !== 'queued' || current.cancellationRequested) {
       throw new AutomationRegistryError('CONFLICT', 'Only an uncancelled queued run can be claimed.')
+    }
+    if (this.state.runs.some(run => run.id !== current.id && run.automationId === current.automationId &&
+      (run.phase === 'dispatching' || run.phase === 'running'))) {
+      throw new AutomationRegistryError('CONFLICT', 'Another run of this automation still owns execution.')
     }
     return this.appendRunEvent(current, {
       seq: current.events.length + 1,
@@ -963,9 +1098,75 @@ export class AutomationRegistry {
     })
   }
 
+  private buildQueuedRun(
+    definition: AutomationDefinition,
+    operationId: string,
+    invocation: AutomationRunInvocation,
+    at: string,
+    prior?: AutomationRunSummary,
+  ): AutomationRunSummary {
+    const runId = this.newUniqueId(new Set(this.state.runs.map(run => run.id)))
+    const sessionId = this.newUniqueId(new Set(this.state.runs.map(run => run.payload.sessionId)))
+    const payload: AutomationRunPayload = {
+      definitionRevision: definition.revision,
+      definitionName: definition.name,
+      prompt: definition.prompt,
+      projectPath: definition.projectPath,
+      repository: cloneRepository(definition.repository),
+      trigger: cloneTrigger(definition.trigger),
+      execution: cloneExecution(definition.execution),
+      concurrencyPolicy: definition.concurrencyPolicy,
+      skillIds: [...definition.skillIds],
+      connectionIds: [...definition.connectionIds],
+      invocation: { ...invocation },
+      sessionId,
+    }
+    const run = parseAutomationRunSummary({
+      id: runId,
+      automationId: definition.id,
+      ...(prior === undefined ? {} : { retryOfRunId: prior.id }),
+      payloadHash: hashAutomationRunPayload(payload),
+      payload,
+      phase: 'queued',
+      cancellationRequested: false,
+      createdAt: at,
+      updatedAt: at,
+      events: [{ seq: 1, operationId, at, type: 'queued' }],
+    })
+    if (run === undefined) {
+      throw new AutomationRegistryError('BAD_MESSAGE', 'The immutable automation run payload is invalid.')
+    }
+    return run
+  }
+
+  private scheduledAdmission(
+    operation: DefinitionOperationRecord,
+    duplicate: boolean,
+  ): ScheduledAutomationAdmission {
+    if (operation.kind !== 'trigger' || operation.triggerDecision === undefined ||
+      operation.occurrenceAt === undefined || operation.resultState === 'deleted') {
+      throw new AutomationRegistryError('DUPLICATE_REQUEST', 'The trigger operation identity is invalid.')
+    }
+    const run = operation.runId === undefined
+      ? undefined
+      : this.state.runs.find(item => item.id === operation.runId)
+    if ((operation.triggerDecision === 'queued') !== (run !== undefined)) {
+      throw new AutomationRegistryError('DESKTOP_UNAVAILABLE', 'The scheduled run identity is unavailable.')
+    }
+    return {
+      automationId: operation.automationId,
+      revision: operation.resultRevision,
+      state: operation.resultState,
+      occurrenceAt: operation.occurrenceAt,
+      decision: operation.triggerDecision,
+      ...(run === undefined ? {} : { run: cloneRun(run) }),
+      duplicate,
+    }
+  }
+
   private storeDefinitionMutation(
     operationId: string,
-    kind: Exclude<DefinitionOperationKind, 'create' | 'delete'>,
+    kind: Exclude<DefinitionOperationKind, 'create' | 'trigger' | 'delete'>,
     requestHash: string,
     current: AutomationDefinition,
     draft: AutomationDefinitionDraft,

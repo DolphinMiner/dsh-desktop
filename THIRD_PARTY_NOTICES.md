@@ -51,5 +51,14 @@ Corresponding source and build scripts:
 - https://github.com/lovell/sharp-libvips/tree/v1.3.2
 - https://github.com/libvips/libvips/tree/v8.18.3
 
+## cron-parser and Luxon
+
+The desktop automation scheduler uses `cron-parser` 5.7.0 and its Luxon 3.7.2
+dependency for deterministic calendar evaluation and IANA time-zone handling.
+Both packages are distributed under the MIT License.
+
+- https://github.com/harrisiirak/cron-parser/tree/v5.7.0
+- https://github.com/moment/luxon/tree/3.7.2
+
 The production dependency directories retain the individual license files
 shipped by their package authors.

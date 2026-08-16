@@ -194,38 +194,59 @@ test('snapshots immutable run payloads and verifies their hash after restart', a
 
 test('deduplicates scheduled occurrences and permits only terminal retries', async t => {
   const { path } = await temporaryRegistry(t)
-  const registry = new AutomationRegistry(path)
-  const created = registry.createDefinition({ operationId: 'create-scheduled', definition: definition() })
-  const scheduled = registry.queueRun({
-    operationId: 'queue-scheduled-1',
-    automationId: created.automationId,
-    invocation: { kind: 'scheduled', occurrenceAt: '2026-08-17T01:00:00.000Z' },
+  const registry = new AutomationRegistry(path, {
+    now: () => new Date('2026-08-17T02:00:00.000Z'),
   })
-  assert.equal(registry.queueRun({
+  const created = registry.createDefinition({ operationId: 'create-scheduled', definition: definition() })
+  const admission = registry.admitScheduledRun({
     operationId: 'queue-scheduled-1',
     automationId: created.automationId,
-    invocation: { kind: 'scheduled', occurrenceAt: '2026-08-17T01:00:00.000Z' },
-  }).id, scheduled.id)
-  assert.throws(() => registry.queueRun({
+    expectedRevision: 1,
+    expectedNextTriggerAt: '2026-08-17T01:00:00.000Z',
+    occurrenceAt: '2026-08-17T01:00:00.000Z',
+    nextTriggerAt: '2026-08-18T01:00:00.000Z',
+  })
+  const scheduled = admission.run!
+  assert.equal(admission.decision, 'queued')
+  assert.equal(admission.revision, 2)
+  assert.equal(registry.getDefinition(created.automationId)?.nextTriggerAt, '2026-08-18T01:00:00.000Z')
+  assert.equal(registry.admitScheduledRun({
+    operationId: 'queue-scheduled-1',
+    automationId: created.automationId,
+    expectedRevision: 1,
+    expectedNextTriggerAt: '2026-08-17T01:00:00.000Z',
+    occurrenceAt: '2026-08-17T01:00:00.000Z',
+    nextTriggerAt: '2026-08-18T01:00:00.000Z',
+  }).run?.id, scheduled.id)
+  assert.throws(() => registry.admitScheduledRun({
     operationId: 'queue-scheduled-duplicate-delivery',
     automationId: created.automationId,
-    invocation: { kind: 'scheduled', occurrenceAt: '2026-08-17T01:00:00.000Z' },
-  }), (error: AutomationRegistryError) => error.code === 'DUPLICATE_REQUEST')
+    expectedRevision: 1,
+    expectedNextTriggerAt: '2026-08-17T01:00:00.000Z',
+    occurrenceAt: '2026-08-17T01:00:00.000Z',
+    nextTriggerAt: '2026-08-18T01:00:00.000Z',
+  }), (error: AutomationRegistryError) => error.code === 'CONFLICT')
   assert.equal(registry.snapshot().runs.length, 1)
-  assert.throws(() => registry.queueRun({
+  assert.throws(() => registry.admitScheduledRun({
     operationId: 'queue-stale-occurrence',
     automationId: created.automationId,
-    invocation: { kind: 'scheduled', occurrenceAt: '2026-08-18T01:00:00.000Z' },
+    expectedRevision: 2,
+    expectedNextTriggerAt: '2026-08-18T01:00:00.000Z',
+    occurrenceAt: '2026-08-18T01:00:00.000Z',
+    nextTriggerAt: '2026-08-19T01:00:00.000Z',
   }), (error: AutomationRegistryError) => error.code === 'CONFLICT')
 
   const paused = registry.createDefinition({
     operationId: 'create-paused-scheduled',
     definition: definition({ state: 'paused', nextTriggerAt: undefined }),
   })
-  assert.throws(() => registry.queueRun({
+  assert.throws(() => registry.admitScheduledRun({
     operationId: 'queue-paused-occurrence',
     automationId: paused.automationId,
-    invocation: { kind: 'scheduled', occurrenceAt: '2026-08-17T01:00:00.000Z' },
+    expectedRevision: 1,
+    expectedNextTriggerAt: '2026-08-17T01:00:00.000Z',
+    occurrenceAt: '2026-08-17T01:00:00.000Z',
+    nextTriggerAt: '2026-08-18T01:00:00.000Z',
   }), (error: AutomationRegistryError) => error.code === 'CONFLICT')
   assert.throws(() => registry.queueRun({
     operationId: 'retry-active',
@@ -475,6 +496,31 @@ test('fails closed for corrupt state and for persistence before dispatch', async
   assert.equal(registry.status().available, false)
   const durable = new AutomationRegistry(join(durableData, 'automations.json'))
   assert.equal(durable.getRun(run.id)?.phase, 'queued')
+
+  const triggerData = join(root, 'trigger-data')
+  const durableTriggerData = join(root, 'durable-trigger-data')
+  const triggerPath = join(triggerData, 'automations.json')
+  await mkdir(triggerData)
+  const triggerRegistry = new AutomationRegistry(triggerPath, {
+    now: () => new Date('2026-08-17T02:00:00.000Z'),
+  })
+  const triggerDefinition = triggerRegistry.createDefinition({
+    operationId: 'create-trigger-failure',
+    definition: definition(),
+  })
+  await rename(triggerData, durableTriggerData)
+  await writeFile(triggerData, 'blocks trigger persistence')
+  assert.throws(() => triggerRegistry.admitScheduledRun({
+    operationId: 'admit-trigger-failure',
+    automationId: triggerDefinition.automationId,
+    expectedRevision: 1,
+    expectedNextTriggerAt: '2026-08-17T01:00:00.000Z',
+    occurrenceAt: '2026-08-17T01:00:00.000Z',
+    nextTriggerAt: '2026-08-18T01:00:00.000Z',
+  }), (error: AutomationRegistryError) => error.code === 'DESKTOP_UNAVAILABLE')
+  const durableTrigger = new AutomationRegistry(join(durableTriggerData, 'automations.json'))
+  assert.equal(durableTrigger.getDefinition(triggerDefinition.automationId)?.revision, 1)
+  assert.equal(durableTrigger.snapshot().runs.length, 0)
 
   const unsupportedPath = join(root, 'unsupported.json')
   await writeFile(unsupportedPath, JSON.stringify({

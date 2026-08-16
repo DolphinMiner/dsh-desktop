@@ -44,6 +44,8 @@ import {
 
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
+import { AutomationRegistry } from './automation-registry'
+import { AutomationScheduler } from './automation-scheduler'
 import { ConnectionManager } from './connection-manager'
 import { ConnectionRegistry } from './connection-registry'
 import { CredentialVault, safeStorageBackend } from './credential-vault'
@@ -98,6 +100,7 @@ let computerObserver: ComputerObserver | undefined
 let windowStateStore: WindowStateStore | undefined
 let harnessOrigin: string | undefined
 let oauthCoordinator: LinearOAuthCoordinator | undefined
+let automationScheduler: AutomationScheduler | undefined
 let shuttingDown = false
 let shutdownComplete = false
 let state: HarnessState = {
@@ -826,6 +829,11 @@ app.whenReady().then(async () => {
   const gitMutations = new GitMutationJournal(join(desktopDataPath, 'git-mutations.v1.json'))
   const gitMutationQueue = new GitRepositoryMutationQueue()
   const worktreeRegistry = new WorktreeRegistry(join(desktopDataPath, 'worktrees.v1.json'))
+  const automationRegistry = new AutomationRegistry(join(desktopDataPath, 'automations.v1.json'))
+  automationScheduler = new AutomationScheduler(automationRegistry, {
+    onError: error => console.error('Automation scheduling stopped safely.', error),
+  })
+  automationScheduler.start()
   const worktreeManager = new WorktreeManager(
     gitService,
     worktreeRegistry,
@@ -1197,6 +1205,7 @@ app.on('before-quit', event => {
 
   shuttingDown = true
   harnessRecovery?.stop()
+  automationScheduler?.stop()
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
     windowStateStore?.schedule(captureWindowState(mainWindow))
   }
