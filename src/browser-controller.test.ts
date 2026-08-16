@@ -21,6 +21,7 @@ class FakeBrowserEngine implements BrowserEngine {
   clicks = 0
   typed: string[] = []
   scrolls = 0
+  captures: boolean[] = []
   url = 'about:blank'
   title = ''
   activeTabId = 'tab-1'
@@ -56,6 +57,7 @@ class FakeBrowserEngine implements BrowserEngine {
   }
 
   observe(tabId: string | undefined, captureScreenshot: boolean): Promise<BrowserEngineObservation> {
+    this.captures.push(captureScreenshot)
     if (tabId !== undefined) this.activeTabId = tabId
     return Promise.resolve({
       tabId: this.activeTabId,
@@ -219,6 +221,28 @@ test('clear data stops, removes the profile, and restarts only when enabled', as
   assert.equal(cleared.runtimeStatus, 'ready')
   assert.equal(runtime.engine.stops >= 1, true)
   assert.equal(runtime.engine.starts >= 2, true)
+})
+
+test('keeps the renderer preview independent from the Agent screenshot policy', async t => {
+  const runtime = await fixture()
+  t.after(async () => {
+    await runtime.controller.dispose()
+    await rm(runtime.root, { recursive: true, force: true })
+  })
+  await runtime.controller.start()
+  await runtime.controller.update({ enabled: true, screenshotPolicy: 'never' })
+
+  const agentObservation = await runtime.controller.observe(
+    { sessionId: 'session-1' },
+    new AbortController().signal,
+  )
+  assert.equal(agentObservation.screenshotCaptured, false)
+  assert.equal(runtime.engine.captures.at(-1), false)
+
+  await runtime.controller.navigateFromUi({ url: 'https://example.com/' })
+
+  assert.equal(runtime.engine.captures.at(-1), true)
+  assert.equal(runtime.frames.at(-1)?.pixelWidth, 1280)
 })
 
 test('classifies only local development hosts as local browser URLs', () => {

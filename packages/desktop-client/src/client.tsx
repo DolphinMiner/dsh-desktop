@@ -62,6 +62,11 @@ import {
 } from './app-snapshots.js'
 import { runDesktopCommand } from './desktop-command.js'
 import { ComputerControlSection, type DesktopComputerBridge } from './computer-control.js'
+import {
+  BrowserSettingsSection,
+  BrowserView,
+  type DesktopBrowserBridge,
+} from './browser.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
 
@@ -98,6 +103,7 @@ declare global {
       onCommand(listener: (command: DesktopRendererCommand) => void): () => void
       pickProjectDirectory(): Promise<string | null>
       appSnapshots: DesktopAppSnapshotsBridge
+      browser: DesktopBrowserBridge
       git: DesktopGitBridge
       automations: DesktopAutomationsBridge
       worktrees: DesktopWorktreesBridge
@@ -1573,6 +1579,12 @@ export function apply(ctx: ClientContext): void {
   }, AutomationsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
+    id: 'browser',
+    order: 12,
+    label: 'Browser',
+  }, () => <BrowserSettingsSection bridge={bridge?.browser} />))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
     id: 'connections',
     order: 31,
     label: 'Connections',
@@ -1589,6 +1601,12 @@ export function apply(ctx: ClientContext): void {
     order: 32,
     label: 'Worktrees',
   }, WorktreesSection))
+  ctx.slots.inject('conversation.view', () => ctx.slots.register({
+    name: 'conversation.view',
+    id: 'browser',
+    order: 19,
+    label: 'Browser',
+  }, (props: ConvViewProps) => <BrowserView {...props} bridge={bridge?.browser} />))
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'review',

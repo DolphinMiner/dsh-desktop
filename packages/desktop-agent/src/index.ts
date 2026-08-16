@@ -17,6 +17,7 @@ const OUTPUT_SCHEMA = {
 
 const JSON_OUTPUT_SCHEMA = { type: 'json' } as const
 const COMPUTER_ACTION_TIMEOUT_MS = 65_000
+const BROWSER_ACTION_TIMEOUT_MS = 45_000
 const GIT_READ_TIMEOUT_MS = 35_000
 const WORKTREE_PROVISION_TIMEOUT_MS = 65_000
 const MAX_AGENT_GIT_ENTRIES = 500
@@ -32,7 +33,7 @@ const COMPUTER_ACTION_TOOLS = new Set([
 
 function agentSessionId(exec: { agent?: { id: string } }): string {
   const sessionId = exec.agent?.id
-  if (sessionId === undefined) throw new Error('Computer actions require an agent session.')
+  if (sessionId === undefined) throw new Error('Desktop actions require an agent session.')
   return sessionId
 }
 
@@ -129,6 +130,139 @@ export function apply(ctx: Context): void {
         { sessionId, ...(args.application === undefined ? {} : { application: args.application }) },
         { signal: exec.signal, timeoutMs: 30_000 },
       )))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_navigate',
+    description: 'Open an HTTP or HTTPS URL in the isolated DSH controlled browser and return the resulting page observation.',
+    parameters: {
+      url: { type: 'string', required: true, description: 'Absolute HTTP or HTTPS URL.' },
+      new_tab: { type: 'boolean', description: 'Open the URL in a new controlled-browser tab.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({ card: 'generic', title: `Open ${args.url}`, kind: 'read' }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.navigate', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        url: args.url,
+        ...(args.new_tab === undefined ? {} : { newTab: args.new_tab }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_observe',
+    description: 'Read the current controlled-browser page as a bounded accessibility snapshot. Use this before semantic actions.',
+    parameters: {
+      tab_id: { type: 'string', description: 'Optional controlled-browser tab ID.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Observe browser page', kind: 'read' }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.observe', {
+        sessionId: agentSessionId(exec),
+        ...(args.tab_id === undefined ? {} : { tabId: args.tab_id }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_click',
+    description: 'Click one uniquely named accessible element from the latest controlled-browser observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest browser snapshot ID.' },
+      role: { type: 'string', required: true, description: 'Accessible role from the snapshot.' },
+      name: { type: 'string', required: true, description: 'Accessible name from the snapshot.' },
+      exact: { type: 'boolean', description: 'Require an exact accessible-name match. Defaults to true.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({ card: 'generic', title: `Click ${args.name}`, kind: 'execute' }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.click', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        snapshotId: args.snapshot_id,
+        role: args.role,
+        name: args.name,
+        ...(args.exact === undefined ? {} : { exact: args.exact }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_type',
+    description: 'Fill one uniquely named accessible field from the latest browser observation and optionally submit it.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest browser snapshot ID.' },
+      role: { type: 'string', required: true, description: 'Accessible role from the snapshot.' },
+      name: { type: 'string', required: true, description: 'Exact accessible name from the snapshot.' },
+      text: { type: 'string', required: true, description: 'Text to enter.' },
+      submit: { type: 'boolean', description: 'Press Enter after filling the field.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Type ${String(args.text.length)} characters in browser`,
+      kind: 'execute',
+    }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.type', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        snapshotId: args.snapshot_id,
+        role: args.role,
+        name: args.name,
+        text: args.text,
+        ...(args.submit === undefined ? {} : { submit: args.submit }),
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'browser_scroll',
+    description: 'Scroll the current controlled-browser page from the latest compatible observation.',
+    parameters: {
+      snapshot_id: { type: 'string', required: true, description: 'Latest browser snapshot ID.' },
+      delta_x: { type: 'number', required: true, description: 'Horizontal scroll amount in CSS pixels.' },
+      delta_y: { type: 'number', required: true, description: 'Vertical scroll amount in CSS pixels.' },
+    },
+    output: {
+      schema: JSON_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    presentCall: () => ({ card: 'generic', title: 'Scroll browser page', kind: 'execute' }),
+    timeoutMs: BROWSER_ACTION_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return JSON.parse(JSON.stringify(await ctx.desktopBridge.call('browser.scroll', {
+        actionId: randomUUID(),
+        sessionId: agentSessionId(exec),
+        snapshotId: args.snapshot_id,
+        deltaX: args.delta_x,
+        deltaY: args.delta_y,
+      }, { signal: exec.signal, timeoutMs: BROWSER_ACTION_TIMEOUT_MS })))
     },
   }))
 

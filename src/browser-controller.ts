@@ -199,7 +199,13 @@ export class BrowserController {
       this.assertEnabled()
       await this.ensureRunning(signal)
       await this.engine.navigate(params.url, params.newTab ?? false, signal)
-      return this.observeCurrent(params.sessionId, undefined, true, true, signal)
+      return this.observeCurrent(
+        params.sessionId,
+        undefined,
+        this.settings.screenshotPolicy !== 'never',
+        true,
+        signal,
+      )
     }))
   }
 
@@ -207,7 +213,13 @@ export class BrowserController {
     return this.exclusive(async () => {
       this.assertEnabled()
       await this.ensureRunning(signal)
-      return this.observeCurrent(params.sessionId, params.tabId, true, false, signal)
+      return this.observeCurrent(
+        params.sessionId,
+        params.tabId,
+        this.settings.screenshotPolicy !== 'never',
+        false,
+        signal,
+      )
     })
   }
 
@@ -256,28 +268,28 @@ export class BrowserController {
   navigateFromUi(input: BrowserUiNavigateInput): Promise<BrowserState> {
     return this.uiOperation(async signal => {
       await this.engine.navigate(input.url, input.newTab ?? false, signal)
-      await this.observeCurrent(undefined, undefined, this.settings.screenshotPolicy !== 'never', true, signal)
+      await this.observeCurrent(undefined, undefined, true, true, signal)
     })
   }
 
   activateTab(tabId: string): Promise<BrowserState> {
     return this.uiOperation(async signal => {
       await this.engine.activate(tabId)
-      await this.observeCurrent(undefined, tabId, this.settings.screenshotPolicy !== 'never', false, signal)
+      await this.observeCurrent(undefined, tabId, true, false, signal)
     })
   }
 
   newTab(): Promise<BrowserState> {
     return this.uiOperation(async signal => {
       await this.engine.newTab()
-      await this.observeCurrent(undefined, undefined, this.settings.screenshotPolicy !== 'never', false, signal)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
     })
   }
 
   closeTab(tabId: string): Promise<BrowserState> {
     return this.uiOperation(async signal => {
       await this.engine.closeTab(tabId)
-      await this.observeCurrent(undefined, undefined, this.settings.screenshotPolicy !== 'never', false, signal)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
     })
   }
 
@@ -295,7 +307,7 @@ export class BrowserController {
 
   refreshFrame(): Promise<BrowserState> {
     return this.uiOperation(async signal => {
-      await this.observeCurrent(undefined, undefined, this.settings.screenshotPolicy !== 'never', false, signal)
+      await this.observeCurrent(undefined, undefined, true, false, signal)
     })
   }
 
@@ -314,7 +326,7 @@ export class BrowserController {
   private navigateHistory(operation: (signal: AbortSignal) => Promise<void>): Promise<BrowserState> {
     return this.uiOperation(async signal => {
       await operation(signal)
-      await this.observeCurrent(undefined, undefined, this.settings.screenshotPolicy !== 'never', true, signal)
+      await this.observeCurrent(undefined, undefined, true, true, signal)
     })
   }
 

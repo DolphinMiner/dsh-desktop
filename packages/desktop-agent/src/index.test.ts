@@ -28,6 +28,11 @@ test('registers workspace-bound file tools and asks before opening', async () =>
     'computer_get_permissions',
     'computer_list_apps',
     'computer_observe',
+    'browser_navigate',
+    'browser_observe',
+    'browser_click',
+    'browser_type',
+    'browser_scroll',
     'desktop_reveal_file',
     'desktop_open_file',
     'desktop_git_status',
@@ -42,7 +47,7 @@ test('registers workspace-bound file tools and asks before opening', async () =>
   ])
 
   const signal = new AbortController().signal
-  await definitions[3]!.execute({ path: 'README.md' }, {
+  await definitions.find(definition => definition.name === 'desktop_reveal_file')!.execute({ path: 'README.md' }, {
     agent: { id: 'session-1', session: { header: { cwd: '/repo' } } },
     signal,
   } as never)
@@ -243,7 +248,7 @@ test('refuses a desktop file action without an authoritative workspace', async (
   } as unknown as Context
   apply(ctx)
 
-  await assert.rejects(definitions[3]!.execute({ path: 'README.md' }, {
+  await assert.rejects(definitions.find(definition => definition.name === 'desktop_reveal_file')!.execute({ path: 'README.md' }, {
     agent: { id: 'session-1', session: { header: {} } },
     signal: new AbortController().signal,
   } as never), /requires an agent session with a workspace/)
@@ -347,4 +352,74 @@ test('binds approved computer actions to fresh IDs and redacts typed text from p
     text: 'private draft',
     replace: true,
   })).includes('private draft'), false)
+})
+
+test('binds browser tools to one agent session and latest browser snapshots', async () => {
+  const definitions: ToolDefinition[] = []
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const ctx = {
+    tools: { register: (definition: ToolDefinition) => { definitions.push(definition) } },
+    desktopBridge: {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params })
+        return { snapshotId: 'snapshot-next' }
+      },
+    },
+    on: () => undefined,
+  } as unknown as Context
+  apply(ctx)
+  const execution = {
+    agent: { id: 'session-browser', session: { header: { cwd: '/repo' } } },
+    signal: new AbortController().signal,
+  } as never
+
+  await definitions.find(definition => definition.name === 'browser_navigate')!.execute({
+    url: 'https://example.com',
+    new_tab: true,
+  }, execution)
+  await definitions.find(definition => definition.name === 'browser_observe')!.execute({
+    tab_id: 'tab-1',
+  }, execution)
+  const typeTool = definitions.find(definition => definition.name === 'browser_type')!
+  await typeTool.execute({
+    snapshot_id: 'snapshot-1',
+    role: 'textbox',
+    name: 'Search',
+    text: 'private query',
+    submit: true,
+  }, execution)
+
+  assert.equal(calls[0]!.method, 'browser.navigate')
+  assert.match(String(calls[0]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.deepEqual({ ...calls[0]!.params, actionId: '<id>' }, {
+    actionId: '<id>',
+    sessionId: 'session-browser',
+    url: 'https://example.com',
+    newTab: true,
+  })
+  assert.deepEqual(calls[1], {
+    method: 'browser.observe',
+    params: { sessionId: 'session-browser', tabId: 'tab-1' },
+  })
+  assert.equal(calls[2]!.method, 'browser.type')
+  assert.match(String(calls[2]!.params.actionId), /^[a-f0-9-]{36}$/i)
+  assert.equal(calls[2]!.params.snapshotId, 'snapshot-1')
+  assert.deepEqual(typeTool.presentCall?.({
+    snapshot_id: 'snapshot-1',
+    role: 'textbox',
+    name: 'Search',
+    text: 'private query',
+    submit: true,
+  }), {
+    card: 'generic',
+    title: 'Type 13 characters in browser',
+    kind: 'execute',
+  })
+  assert.equal(JSON.stringify(typeTool.presentCall?.({
+    snapshot_id: 'snapshot-1',
+    role: 'textbox',
+    name: 'Search',
+    text: 'private query',
+    submit: true,
+  })).includes('private query'), false)
 })
