@@ -63,6 +63,7 @@ test('validates connection inputs, snapshots, and desktop events', () => {
   assert.deepEqual(parseDesktopProtocolMessage(automationEvent), automationEvent)
   assert.equal(isSensitiveCapabilityMethod('automations.claimNext'), true)
   assert.equal(isSensitiveCapabilityMethod('automations.inspectOwned'), true)
+  assert.equal(isSensitiveCapabilityMethod('browser.click'), true)
   assert.deepEqual(parseCapabilityParams('automations.claimNext', {
     hostInstanceId: '11111111-1111-4111-8111-111111111111',
   }), {

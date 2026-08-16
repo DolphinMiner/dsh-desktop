@@ -22,6 +22,9 @@ import {
   DesktopRendererCommand,
   parseAddGitReviewCommentInput,
   parseBeginOAuthInput,
+  parseControlledBrowserUrl,
+  parseBrowserUiNavigateInput,
+  parseBrowserUiTabInput,
   parseDesktopCancelAutomationRunInput,
   parseDesktopCreateAutomationInput,
   parseDesktopDeleteAutomationInput,
@@ -49,6 +52,7 @@ import {
   parseDesktopWorktreeHandoffConfirmInput,
   parseDesktopWorktreeHandoffPreflightInput,
   parseUpdateComputerControlPolicyInput,
+  parseUpdateBrowserSettingsInput,
   parseUpdateAppSnapshotSettingsInput,
   WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -58,6 +62,8 @@ import {
   AppSnapshotImage,
   AppSnapshotSettingsStore,
 } from './app-snapshots'
+import { BrowserController } from './browser-controller'
+import { BrowserStore } from './browser-store'
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
 import { ComputerControlPolicyStore } from './computer-policy'
@@ -92,6 +98,7 @@ import { GitTurnAttributionService } from './git-turn-attribution'
 import { GitTurnAttributionJournal } from './git-turn-attribution-journal'
 import { McpCredentialProxy } from './mcp-credential-proxy'
 import { NativeComputerHelper } from './native-computer-helper'
+import { PlaywrightBrowserEngine } from './playwright-browser'
 import { EncryptedOAuthStateStore, LinearOAuthCoordinator } from './oauth-provider'
 import { bootstrapDesktopProfile } from './profile-bootstrap'
 import { HarnessState } from './types'
@@ -126,6 +133,7 @@ let harnessOrigin: string | undefined
 let oauthCoordinator: LinearOAuthCoordinator | undefined
 let automationScheduler: AutomationScheduler | undefined
 let appSnapshots: AppSnapshotController | undefined
+let controlledBrowser: BrowserController | undefined
 let shuttingDown = false
 let shutdownComplete = false
 let state: HarnessState = {
@@ -356,8 +364,16 @@ function showLoadingPageSafely(): void {
 }
 
 function openExternalUrl(url: string): void {
-  void shell.openExternal(url).catch(error => {
-    console.error(`Could not open external URL: ${url}`, error)
+  const normalized = parseControlledBrowserUrl(url)
+  if (normalized === undefined) return
+  if (controlledBrowser?.shouldOpenControlled(normalized) === true) {
+    void controlledBrowser.navigateFromUi({ url: normalized, newTab: true }).catch(error => {
+      console.error(`Could not open URL in the controlled browser: ${normalized}`, error)
+    })
+    return
+  }
+  void shell.openExternal(normalized).catch(error => {
+    console.error(`Could not open external URL: ${normalized}`, error)
   })
 }
 
@@ -429,7 +445,7 @@ function createWindow(restoredState?: PersistedWindowState): BrowserWindow {
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) openExternalUrl(url)
+    if (url.startsWith('https://') || url.startsWith('http://')) openExternalUrl(url)
     return { action: 'deny' }
   })
 
@@ -440,7 +456,7 @@ function createWindow(restoredState?: PersistedWindowState): BrowserWindow {
     if (isHarnessPage || isLoadingPage) return
 
     event.preventDefault()
-    if (url.startsWith('https://')) openExternalUrl(url)
+    if (url.startsWith('https://') || url.startsWith('http://')) openExternalUrl(url)
   })
 
   const saveWindowState = (): void => {
@@ -523,6 +539,7 @@ function publishRecoveryExhausted(maxAttempts: number): void {
 
 function installIpcHandlers(
   snapshots: AppSnapshotController,
+  browser: BrowserController,
   connections: ConnectionManager,
   computer: ComputerObserver,
   automations: AutomationController,
@@ -595,6 +612,62 @@ function installIpcHandlers(
     await shell.openExternal(
       'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
     )
+  })
+  ipcMain.handle('desktop:browser:get-state', event => {
+    assertTrustedSender(event)
+    return browser.snapshot()
+  })
+  ipcMain.handle('desktop:browser:update', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.update(validInput(parseUpdateBrowserSettingsInput(value)))
+  })
+  ipcMain.handle('desktop:browser:navigate', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.navigateFromUi(validInput(parseBrowserUiNavigateInput(value)))
+  })
+  ipcMain.handle('desktop:browser:activate-tab', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.activateTab(validInput(parseBrowserUiTabInput(value)).tabId)
+  })
+  ipcMain.handle('desktop:browser:new-tab', async event => {
+    assertTrustedSender(event)
+    return browser.newTab()
+  })
+  ipcMain.handle('desktop:browser:close-tab', async (event, value: unknown) => {
+    assertTrustedSender(event)
+    return browser.closeTab(validInput(parseBrowserUiTabInput(value)).tabId)
+  })
+  ipcMain.handle('desktop:browser:back', async event => {
+    assertTrustedSender(event)
+    return browser.goBack()
+  })
+  ipcMain.handle('desktop:browser:forward', async event => {
+    assertTrustedSender(event)
+    return browser.goForward()
+  })
+  ipcMain.handle('desktop:browser:reload', async event => {
+    assertTrustedSender(event)
+    return browser.reload()
+  })
+  ipcMain.handle('desktop:browser:refresh-frame', async event => {
+    assertTrustedSender(event)
+    return browser.refreshFrame()
+  })
+  ipcMain.handle('desktop:browser:stop', async event => {
+    assertTrustedSender(event)
+    return browser.stop()
+  })
+  ipcMain.handle('desktop:browser:list-history', event => {
+    assertTrustedSender(event)
+    return browser.listHistory()
+  })
+  ipcMain.handle('desktop:browser:clear-history', event => {
+    assertTrustedSender(event)
+    return browser.clearHistory()
+  })
+  ipcMain.handle('desktop:browser:clear-data', async event => {
+    assertTrustedSender(event)
+    return browser.clearData()
   })
   ipcMain.handle('desktop:git:review', async (event, value: unknown) => {
     assertTrustedSender(event)
@@ -977,6 +1050,29 @@ app.whenReady().then(async () => {
   )
   await computerObserver.stop(false)
 
+  controlledBrowser = new BrowserController(
+    new BrowserStore(
+      join(desktopDataPath, 'browser.v1.json'),
+      error => console.error('Could not load Browser settings.', error),
+    ),
+    new PlaywrightBrowserEngine(),
+    {
+      profilePath: join(desktopDataPath, 'browser-profile'),
+      onChange: snapshot => {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('desktop:browser-changed', snapshot)
+        }
+        harness?.send(createEvent('browser.changed', { revision: snapshot.revision }))
+      },
+      onFrame: frame => {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('desktop:browser-frame', frame)
+        }
+      },
+    },
+  )
+  await controlledBrowser.start()
+
   const gitService = new GitService()
   const gitTurnAttributions = new GitTurnAttributionService(
     gitService,
@@ -1179,6 +1275,7 @@ app.whenReady().then(async () => {
   installMenu()
   installIpcHandlers(
     appSnapshots,
+    controlledBrowser,
     connections,
     computerObserver,
     automationController,
@@ -1363,6 +1460,29 @@ app.whenReady().then(async () => {
         return computerObserver!.act(params, signal)
       },
     },
+    browser: {
+      snapshot: () => controlledBrowser!.snapshot(),
+      navigate: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.navigate(params, signal)
+      },
+      observe: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.observe(params, signal)
+      },
+      click: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.click(params, signal)
+      },
+      type: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.type(params, signal)
+      },
+      scroll: (params, signal) => {
+        assertActiveSession(params.sessionId, signal)
+        return controlledBrowser!.scroll(params, signal)
+      },
+    },
     connections: {
       snapshot: () => connections.snapshot(),
       resolveMcpTransport: (connectionId, signal) =>
@@ -1449,6 +1569,7 @@ app.on('before-quit', event => {
     mcpProxy?.stop() ?? Promise.resolve(),
     appSnapshots?.dispose() ?? Promise.resolve(),
     computerObserver?.dispose() ?? Promise.resolve(),
+    controlledBrowser?.dispose() ?? Promise.resolve(),
     windowStateStore?.flush() ?? Promise.resolve(),
   ])
   void stopServices

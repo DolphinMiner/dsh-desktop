@@ -13,6 +13,22 @@ import {
   parseComputerPermissions,
 } from './computer.js'
 import {
+  BrowserClickParams,
+  BrowserNavigateParams,
+  BrowserObservation,
+  BrowserObserveParams,
+  BrowserScrollParams,
+  BrowserState,
+  BrowserTypeParams,
+  parseBrowserClickParams,
+  parseBrowserNavigateParams,
+  parseBrowserObservation,
+  parseBrowserObserveParams,
+  parseBrowserScrollParams,
+  parseBrowserState,
+  parseBrowserTypeParams,
+} from './browser.js'
+import {
   AutomationClaimNextParams,
   AutomationClaimNextResult,
   AutomationFinishParams,
@@ -63,6 +79,7 @@ import {
 
 export * from './computer.js'
 export * from './app-snapshot.js'
+export * from './browser.js'
 export * from './automation.js'
 export * from './git.js'
 export * from './git-turn.js'
@@ -77,7 +94,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 21 as const
+export const DESKTOP_PROTOCOL_VERSION = 22 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -267,6 +284,30 @@ export interface DesktopCapabilityMap {
     params: ComputerActParams
     result: ComputerActionResult
   }
+  'browser.list': {
+    params: Record<string, never>
+    result: BrowserState
+  }
+  'browser.navigate': {
+    params: BrowserNavigateParams
+    result: BrowserObservation
+  }
+  'browser.observe': {
+    params: BrowserObserveParams
+    result: BrowserObservation
+  }
+  'browser.click': {
+    params: BrowserClickParams
+    result: BrowserObservation
+  }
+  'browser.type': {
+    params: BrowserTypeParams
+    result: BrowserObservation
+  }
+  'browser.scroll': {
+    params: BrowserScrollParams
+    result: BrowserObservation
+  }
   'git.discover': {
     params: GitDiscoverParams
     result: GitRepositoryIdentity
@@ -332,6 +373,9 @@ export interface DesktopEventMap {
   'worktrees.changed': WorktreeChangedEvent
   'worktrees.snapshot': WorktreeSnapshot
   'automations.changed': {
+    revision: number
+  }
+  'browser.changed': {
     revision: number
   }
 }
@@ -648,6 +692,10 @@ export function parseDesktopProtocolMessage(value: unknown): DesktopProtocolMess
       Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
       return createEvent('automations.changed', { revision: Number(value.data.revision) })
     }
+    if (value.event === 'browser.changed' && isRecord(value.data) &&
+      Number.isSafeInteger(value.data.revision) && Number(value.data.revision) >= 0) {
+      return createEvent('browser.changed', { revision: Number(value.data.revision) })
+    }
     return undefined
   }
 
@@ -730,6 +778,24 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
   }
   if (method === 'computer.act') {
     return parseComputerActParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.list') {
+    return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
+  }
+  if (method === 'browser.navigate') {
+    return parseBrowserNavigateParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.observe') {
+    return parseBrowserObserveParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.click') {
+    return parseBrowserClickParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.type') {
+    return parseBrowserTypeParams(value) as DesktopCapabilityParams<M> | undefined
+  }
+  if (method === 'browser.scroll') {
+    return parseBrowserScrollParams(value) as DesktopCapabilityParams<M> | undefined
   }
   if (method === 'git.discover') {
     return parseGitDiscoverParams(value) as DesktopCapabilityParams<M> | undefined
@@ -824,6 +890,13 @@ export function parseCapabilityResult<M extends DesktopCapabilityMethod>(
   }
   if (method === 'computer.act') {
     return parseComputerActionResult(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'browser.list') {
+    return parseBrowserState(value) as DesktopCapabilityResult<M> | undefined
+  }
+  if (method === 'browser.navigate' || method === 'browser.observe' ||
+    method === 'browser.click' || method === 'browser.type' || method === 'browser.scroll') {
+    return parseBrowserObservation(value) as DesktopCapabilityResult<M> | undefined
   }
   if (method === 'git.discover') {
     return parseGitRepositoryIdentity(value) as DesktopCapabilityResult<M> | undefined
@@ -938,7 +1011,9 @@ export function createEvent<E extends DesktopEventName>(
 
 export function isSensitiveCapabilityMethod(method: DesktopCapabilityMethod): boolean {
   return method === 'connections.resolveMcpTransport' || method === 'computer.observe' ||
-    method === 'computer.act' || method === 'worktrees.provision' ||
+    method === 'computer.act' || method === 'browser.navigate' || method === 'browser.observe' ||
+    method === 'browser.click' || method === 'browser.type' || method === 'browser.scroll' ||
+    method === 'worktrees.provision' ||
     method === 'automations.claimNext' || method === 'automations.inspectOwned' ||
     method === 'automations.markRunning' ||
     method === 'automations.finish'

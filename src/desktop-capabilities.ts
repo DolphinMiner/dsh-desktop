@@ -8,6 +8,13 @@ import {
   ConnectionRuntimeStatusParams,
   ConnectionSnapshot,
   ConnectionSummary,
+  BrowserClickParams,
+  BrowserNavigateParams,
+  BrowserObservation,
+  BrowserObserveParams,
+  BrowserScrollParams,
+  BrowserState,
+  BrowserTypeParams,
   ComputerApplicationList,
   ComputerActParams,
   ComputerActionResult,
@@ -65,6 +72,14 @@ export interface DesktopCapabilityDependencies {
     observe(params: ComputerObserveParams, signal: AbortSignal): Promise<ComputerObservation>
     act(params: ComputerActParams, signal: AbortSignal): Promise<ComputerActionResult>
   }
+  browser?: {
+    snapshot(): BrowserState
+    navigate(params: BrowserNavigateParams, signal: AbortSignal): Promise<BrowserObservation>
+    observe(params: BrowserObserveParams, signal: AbortSignal): Promise<BrowserObservation>
+    click(params: BrowserClickParams, signal: AbortSignal): Promise<BrowserObservation>
+    type(params: BrowserTypeParams, signal: AbortSignal): Promise<BrowserObservation>
+    scroll(params: BrowserScrollParams, signal: AbortSignal): Promise<BrowserObservation>
+  }
   git: {
     discover(params: GitDiscoverParams, signal: AbortSignal): Promise<GitRepositoryIdentity>
     status(params: GitStatusParams, signal: AbortSignal): Promise<GitStatusSnapshot>
@@ -91,6 +106,13 @@ function unsupportedComputer(): never {
   throw {
     code: 'UNSUPPORTED',
     message: 'Computer observation is unavailable on this platform or build.',
+  }
+}
+
+function unsupportedBrowser(): never {
+  throw {
+    code: 'UNSUPPORTED',
+    message: 'The controlled browser is unavailable in this desktop build.',
   }
 }
 
@@ -130,6 +152,17 @@ export function createDesktopCapabilityHandlers(
       dependencies.computer?.observe(params, context.signal) ?? unsupportedComputer(),
     'computer.act': (params, context) =>
       dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
+    'browser.list': () => dependencies.browser?.snapshot() ?? unsupportedBrowser(),
+    'browser.navigate': (params, context) =>
+      dependencies.browser?.navigate(params, context.signal) ?? unsupportedBrowser(),
+    'browser.observe': (params, context) =>
+      dependencies.browser?.observe(params, context.signal) ?? unsupportedBrowser(),
+    'browser.click': (params, context) =>
+      dependencies.browser?.click(params, context.signal) ?? unsupportedBrowser(),
+    'browser.type': (params, context) =>
+      dependencies.browser?.type(params, context.signal) ?? unsupportedBrowser(),
+    'browser.scroll': (params, context) =>
+      dependencies.browser?.scroll(params, context.signal) ?? unsupportedBrowser(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),
     'git.status': (params, context) => dependencies.git.status(params, context.signal),
     'git.review': (params, context) => dependencies.git.review(params, context.signal),

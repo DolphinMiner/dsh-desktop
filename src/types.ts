@@ -34,6 +34,24 @@ export interface DesktopBridge {
     onCaptured(listener: (capture: AppSnapshotCapture) => void): () => void
     onError(listener: (notice: AppSnapshotErrorNotice) => void): () => void
   }
+  browser: {
+    getState(): Promise<BrowserState>
+    update(input: UpdateBrowserSettingsInput): Promise<BrowserState>
+    navigate(input: BrowserUiNavigateInput): Promise<BrowserState>
+    activateTab(input: BrowserUiTabInput): Promise<BrowserState>
+    newTab(): Promise<BrowserState>
+    closeTab(input: BrowserUiTabInput): Promise<BrowserState>
+    back(): Promise<BrowserState>
+    forward(): Promise<BrowserState>
+    reload(): Promise<BrowserState>
+    refreshFrame(): Promise<BrowserState>
+    stop(): Promise<BrowserState>
+    listHistory(): Promise<BrowserHistoryEntry[]>
+    clearHistory(): Promise<BrowserState>
+    clearData(): Promise<BrowserState>
+    onChanged(listener: (state: BrowserState) => void): () => void
+    onFrame(listener: (frame: BrowserFrame | undefined) => void): () => void
+  }
   git: {
     review(input: DesktopGitReviewInput): Promise<GitReviewSnapshot>
     mutateIndex(input: DesktopGitIndexMutationInput): Promise<GitIndexMutationResult>
@@ -101,6 +119,11 @@ import type {
   AutomationTaskCenterSnapshot,
   BeginOAuthInput,
   BeginOAuthResult,
+  BrowserFrame,
+  BrowserHistoryEntry,
+  BrowserState,
+  BrowserUiNavigateInput,
+  BrowserUiTabInput,
   CancelOAuthInput,
   AddGitReviewCommentInput,
   ConnectApiKeyInput,
@@ -142,6 +165,7 @@ import type {
   GitRevertPreview,
   GitRevertResult,
   UpdateComputerControlPolicyInput,
+  UpdateBrowserSettingsInput,
   UpdateAppSnapshotSettingsInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,

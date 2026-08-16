@@ -57,6 +57,36 @@ const bridge: DesktopBridge = {
       return () => ipcRenderer.removeListener('desktop:app-snapshots:error', handler)
     },
   },
+  browser: {
+    getState: () => ipcRenderer.invoke('desktop:browser:get-state'),
+    update: input => ipcRenderer.invoke('desktop:browser:update', input),
+    navigate: input => ipcRenderer.invoke('desktop:browser:navigate', input),
+    activateTab: input => ipcRenderer.invoke('desktop:browser:activate-tab', input),
+    newTab: () => ipcRenderer.invoke('desktop:browser:new-tab'),
+    closeTab: input => ipcRenderer.invoke('desktop:browser:close-tab', input),
+    back: () => ipcRenderer.invoke('desktop:browser:back'),
+    forward: () => ipcRenderer.invoke('desktop:browser:forward'),
+    reload: () => ipcRenderer.invoke('desktop:browser:reload'),
+    refreshFrame: () => ipcRenderer.invoke('desktop:browser:refresh-frame'),
+    stop: () => ipcRenderer.invoke('desktop:browser:stop'),
+    listHistory: () => ipcRenderer.invoke('desktop:browser:list-history'),
+    clearHistory: () => ipcRenderer.invoke('desktop:browser:clear-history'),
+    clearData: () => ipcRenderer.invoke('desktop:browser:clear-data'),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => {
+        listener(state)
+      }
+      ipcRenderer.on('desktop:browser-changed', handler)
+      return () => ipcRenderer.removeListener('desktop:browser-changed', handler)
+    },
+    onFrame(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, frame: Parameters<typeof listener>[0]): void => {
+        listener(frame)
+      }
+      ipcRenderer.on('desktop:browser-frame', handler)
+      return () => ipcRenderer.removeListener('desktop:browser-frame', handler)
+    },
+  },
   git: {
     review: input => ipcRenderer.invoke('desktop:git:review', input),
     mutateIndex: input => ipcRenderer.invoke('desktop:git:index:mutate', input),

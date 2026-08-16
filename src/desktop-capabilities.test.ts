@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { AutomationRunSummary, ComputerObservation } from '@dolphinminer/dsh-desktop-protocol'
+import type {
+  AutomationRunSummary,
+  BrowserObservation,
+  ComputerObservation,
+} from '@dolphinminer/dsh-desktop-protocol'
 
 import { createDesktopCapabilityHandlers } from './desktop-capabilities'
 
@@ -265,6 +269,106 @@ test('routes bounded computer observation and action capabilities', async () => 
     },
   }, context)).observation.snapshotId, 'snapshot-2')
   assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1:Editor', 'act:session-1:click'])
+})
+
+test('routes snapshot-bound controlled browser capabilities', async () => {
+  const calls: string[] = []
+  const observation: BrowserObservation = {
+    version: 1,
+    snapshotId: 'snapshot-1',
+    tabId: 'tab-1',
+    observedAt: '2026-08-16T12:00:00.000Z',
+    url: 'https://example.com/',
+    title: 'Example',
+    ariaSnapshot: '- heading "Example" [level=1]',
+    truncated: false,
+    screenshotCaptured: true,
+  }
+  const handlers = createDesktopCapabilityHandlers({
+    isAppFocused: () => false,
+    notifications: { isSupported: () => false, show: () => undefined },
+    sessionActivity: { report: () => true },
+    workspaceFiles,
+    git,
+    worktrees,
+    connections,
+    browser: {
+      snapshot: () => ({
+        revision: 1,
+        settings: {
+          enabled: true,
+          webUrlTarget: 'system',
+          localUrlTarget: 'controlled',
+          screenshotPolicy: 'always',
+          storageMode: 'isolated',
+        },
+        runtimeStatus: 'ready',
+        tabs: [{ id: 'tab-1', url: observation.url, title: observation.title, loading: false }],
+        activeTabId: 'tab-1',
+        canGoBack: false,
+        canGoForward: false,
+        historyCount: 1,
+      }),
+      navigate: async params => {
+        calls.push(`navigate:${params.actionId}:${params.url}`)
+        return observation
+      },
+      observe: async params => {
+        calls.push(`observe:${params.sessionId}`)
+        return observation
+      },
+      click: async params => {
+        calls.push(`click:${params.snapshotId}:${params.name}`)
+        return observation
+      },
+      type: async params => {
+        calls.push(`type:${params.snapshotId}:${params.text}`)
+        return observation
+      },
+      scroll: async params => {
+        calls.push(`scroll:${params.snapshotId}:${String(params.deltaY)}`)
+        return observation
+      },
+    },
+  })
+  const context = { requestId: 'browser-1', signal: new AbortController().signal }
+
+  assert.equal((await handlers['browser.list']({}, context)).activeTabId, 'tab-1')
+  await handlers['browser.navigate']({
+    actionId: 'navigate-1',
+    sessionId: 'session-1',
+    url: observation.url,
+  }, context)
+  await handlers['browser.observe']({ sessionId: 'session-1' }, context)
+  await handlers['browser.click']({
+    actionId: 'click-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    role: 'button',
+    name: 'Continue',
+  }, context)
+  await handlers['browser.type']({
+    actionId: 'type-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    role: 'textbox',
+    name: 'Search',
+    text: 'DeepSeek',
+  }, context)
+  await handlers['browser.scroll']({
+    actionId: 'scroll-1',
+    sessionId: 'session-1',
+    snapshotId: 'snapshot-1',
+    deltaX: 0,
+    deltaY: 600,
+  }, context)
+  assert.deepEqual(calls, [
+    'navigate:navigate-1:https://example.com/',
+    'observe:session-1',
+    'click:snapshot-1:Continue',
+    'type:snapshot-1:DeepSeek',
+    'scroll:snapshot-1:600',
+  ])
 })
 
 test('routes workspace-bound Git discovery, status, and review with caller cancellation', async () => {

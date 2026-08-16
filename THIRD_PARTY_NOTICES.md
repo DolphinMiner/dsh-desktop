@@ -62,3 +62,12 @@ Both packages are distributed under the MIT License.
 
 The production dependency directories retain the individual license files
 shipped by their package authors.
+
+## Playwright
+
+The controlled Browser runtime uses `playwright-core` 1.62.1, distributed by
+Microsoft under the Apache License 2.0. DSH Desktop currently launches a
+supported browser already installed on the user's Mac; it does not redistribute
+a Playwright browser binary.
+
+Source: https://github.com/microsoft/playwright/tree/v1.62.1
