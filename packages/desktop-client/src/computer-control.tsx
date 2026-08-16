@@ -25,6 +25,7 @@ import {
   SettingsToggle,
 } from './settings-ui.js'
 import type { DesktopTranslate } from './locales.js'
+import { computerPermissionLabel } from './view-model.js'
 
 export interface DesktopComputerBridge {
   getState(): Promise<ComputerControlSnapshot>
@@ -87,10 +88,7 @@ function managedBrowserDescription(state: BrowserState | undefined, t: DesktopTr
 }
 
 function permissionDescription(status: ComputerPermissionStatus, t: DesktopTranslate): string {
-  if (status === 'granted') return t('Allowed')
-  if (status === 'not-determined') return t('Not requested')
-  if (status === 'unavailable') return t('Unavailable')
-  return t('Not allowed')
+  return t(computerPermissionLabel(status))
 }
 
 export function ComputerControlSection({
@@ -127,13 +125,18 @@ export function ComputerControlSection({
     const stop = bridge.onChanged(next => {
       if (active) setSnapshot(next)
     })
-    void bridge.refresh().then(next => {
-      if (active) setSnapshot(next)
-    }).catch(cause => {
-      if (active) setError(cause instanceof Error ? cause.message : t('Computer Control is unavailable.'))
-    })
+    const refresh = (): void => {
+      void bridge.refresh().then(next => {
+        if (active) setSnapshot(next)
+      }).catch(cause => {
+        if (active) setError(cause instanceof Error ? cause.message : t('Computer Control is unavailable.'))
+      })
+    }
+    window.addEventListener('focus', refresh)
+    refresh()
     return () => {
       active = false
+      window.removeEventListener('focus', refresh)
       stop()
     }
   }, [bridge, t])
@@ -215,6 +218,53 @@ export function ComputerControlSection({
       subtitle={t('Manage how DSH can use other applications on your Mac.')}
     >
       <style>{styles}</style>
+      {showPermissions && bridge !== undefined && (
+        <>
+          <SettingsNotice level="error">
+            {t('macOS is blocking Computer Control. App switches below only configure DSH policy and cannot grant system access.')}
+          </SettingsNotice>
+          <SettingsSection title={t('macOS permissions')}>
+            <SettingsGroup>
+              {permissionNeedsAttention(permissions.screenRecording) && (
+                <SettingsRow
+                  title={t('Screen Recording')}
+                  description={t('Required to see application windows. Status: {status}', {
+                    status: permissionDescription(permissions.screenRecording, t),
+                  })}
+                  control={(
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconRightUpOutline16 />}
+                      onClick={() => openPermission('screen-recording')}
+                    >
+                      {t('Open System Settings')}
+                    </Button>
+                  )}
+                />
+              )}
+              {permissionNeedsAttention(permissions.accessibility) && (
+                <SettingsRow
+                  title={t('Accessibility')}
+                  description={t('Required to click, type, and read interface elements. Status: {status}', {
+                    status: permissionDescription(permissions.accessibility, t),
+                  })}
+                  control={(
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon={<IconRightUpOutline16 />}
+                      onClick={() => openPermission('accessibility')}
+                    >
+                      {t('Open System Settings')}
+                    </Button>
+                  )}
+                />
+              )}
+            </SettingsGroup>
+          </SettingsSection>
+        </>
+      )}
       <SettingsSection
         title={t('Control')}
         action={(
@@ -326,45 +376,6 @@ export function ComputerControlSection({
           ))}
         </SettingsGroup>
       </SettingsSection>
-
-      {showPermissions && bridge !== undefined && (
-        <SettingsSection title={t('Permissions')}>
-          <SettingsGroup>
-            {permissionNeedsAttention(permissions.screenRecording) && (
-              <SettingsRow
-                title={t('Screen Recording')}
-                description={permissionDescription(permissions.screenRecording, t)}
-                control={(
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    icon={<IconRightUpOutline16 />}
-                    onClick={() => openPermission('screen-recording')}
-                  >
-                    {t('Open Settings')}
-                  </Button>
-                )}
-              />
-            )}
-            {permissionNeedsAttention(permissions.accessibility) && (
-              <SettingsRow
-                title={t('Accessibility')}
-                description={permissionDescription(permissions.accessibility, t)}
-                control={(
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    icon={<IconRightUpOutline16 />}
-                    onClick={() => openPermission('accessibility')}
-                  >
-                    {t('Open Settings')}
-                  </Button>
-                )}
-              />
-            )}
-          </SettingsGroup>
-        </SettingsSection>
-      )}
 
       {error !== undefined && <SettingsNotice level="error">{error}</SettingsNotice>}
       {error === undefined && snapshot?.statusMessage !== undefined && (

@@ -37,7 +37,9 @@ export function linearConnectionAction(
   return oauthAvailable ? 'oauth' : 'oauth-unavailable'
 }
 
-export function computerPermissionLabel(status: ComputerPermissionStatus): string {
+export type ComputerPermissionLabel = 'Allowed' | 'Not requested' | 'Unavailable' | 'Not allowed'
+
+export function computerPermissionLabel(status: ComputerPermissionStatus): ComputerPermissionLabel {
   if (status === 'granted') return 'Allowed'
   if (status === 'not-determined') return 'Not requested'
   if (status === 'unavailable') return 'Unavailable'
