@@ -86,7 +86,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'computer_list_apps',
-    description: 'List running Mac applications and report which user-selected target may be observed.',
+    description: 'List running Mac applications and the durable Computer Control policy that allows each app.',
     parameters: {},
     output: {
       schema: JSON_OUTPUT_SCHEMA,
@@ -104,20 +104,29 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'computer_observe',
-    description: 'Observe the application, window, or display explicitly selected in Desktop settings. Read only.',
-    parameters: {},
+    description: 'Observe an allowed Mac application. Omit application to use the allowed frontmost app. Read only.',
+    parameters: {
+      application: {
+        type: 'string',
+        description: 'Optional exact application name or bundle identifier from computer_list_apps.',
+      },
+    },
     output: {
       schema: JSON_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
-    presentCall: () => ({ card: 'generic', title: 'Observe selected computer target', kind: 'read' }),
+    presentCall: args => ({
+      card: 'generic',
+      title: args.application === undefined ? 'Observe frontmost application' : `Observe ${args.application}`,
+      kind: 'read',
+    }),
     timeoutMs: 30_000,
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const sessionId = exec.agent?.id
       if (sessionId === undefined) throw new Error('Computer observation requires an agent session.')
       return JSON.parse(JSON.stringify(await ctx.desktopBridge.call(
         'computer.observe',
-        { sessionId },
+        { sessionId, ...(args.application === undefined ? {} : { application: args.application }) },
         { signal: exec.signal, timeoutMs: 30_000 },
       )))
     },

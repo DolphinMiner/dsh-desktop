@@ -21,6 +21,7 @@ import {
   ComputerUseError,
 } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
+import { ComputerControlPolicyStore } from './computer-policy'
 
 const granted: ComputerPermissions = {
   supported: true,
@@ -119,6 +120,7 @@ class FakeHelper implements ComputerHelper {
 async function fixture(
   options: ConstructorParameters<typeof ComputerCaptureStore>[1] = {},
   withAudit = false,
+  allowAnyApplication = true,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-computer-test-'))
   const helper = new FakeHelper()
@@ -127,26 +129,32 @@ async function fixture(
   const audit = withAudit
     ? new ComputerActionAuditStore(auditPath)
     : undefined
-  const observer = new ComputerObserver(helper, captures, { audit })
-  return { root, helper, captures, observer, audit, auditPath }
+  const policyPath = join(root, 'computer-control-policy.v1.json')
+  const observer = new ComputerObserver(helper, captures, {
+    audit,
+    policyStore: new ComputerControlPolicyStore(policyPath),
+  })
+  if (allowAnyApplication) observer.updatePolicy({ allowAnyApplication: true })
+  return { root, helper, captures, observer, audit, auditPath, policyPath }
 }
 
-test('requires permission and an explicit live target before observing', async t => {
+test('requires permission and automatically resolves an allowed frontmost application', async t => {
   const { root, helper, observer } = await fixture()
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
 
   helper.permissions = { ...granted, screenRecording: 'denied', canObserve: false, canAct: false }
   helper.targetList = { permissions: helper.permissions, targets }
-  await observer.selectTarget('window:7')
   await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>
     error.code === 'PERMISSION_DENIED')
   assert.equal(helper.observeCalls.length, 0)
 
   helper.permissions = granted
-  helper.targetList = { permissions: granted, targets: targets.filter(target => target.id !== 'window:7') }
-  const snapshot = await observer.refresh()
-  assert.equal(snapshot.selectedTarget, undefined)
+  helper.targetList = {
+    permissions: granted,
+    targets: targets.map(target => target.id === 'application:42' ? { ...target, frontmost: false } : target),
+  }
+  await observer.refresh()
   await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) => error.code === 'NOT_FOUND')
 })
 
@@ -155,11 +163,10 @@ test('preserves display scale, bounds output, and bounded screenshot retention',
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
 
-  await observer.selectTarget('display:2')
   const first = await observer.observe('session-1')
   const second = await observer.observe('session-1')
 
-  assert.equal(first.capture.displayScale, 1.5)
+  assert.equal(first.capture.displayScale, 2)
   assert.deepEqual(second.capture.bounds, { x: 0, y: 0, width: 800, height: 600 })
   assert.equal((await readdir(join(root, 'captures'))).length, 1)
   assert.equal(observer.snapshot().lastObservation?.snapshotId, second.snapshotId)
@@ -169,8 +176,6 @@ test('turns helper crashes and malformed secure values into safe failures and cl
   const { root, helper, observer } = await fixture()
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('application:42')
-
   helper.observeError = new Error('helper exited with status 9')
   await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>
     error.code === 'DESKTOP_UNAVAILABLE' && !error.message.includes('secret'))
@@ -178,24 +183,72 @@ test('turns helper crashes and malformed secure values into safe failures and cl
   assert.deepEqual(entries, [])
 })
 
-test('stop revokes the target and removes all transient captures', async t => {
+test('stop clears transient capture state without revoking durable app policy', async t => {
   const { root, observer } = await fixture()
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   await observer.observe('session-1')
 
   const stopped = await observer.stop()
-  assert.equal(stopped.enabled, false)
-  assert.equal(stopped.selectedTarget, undefined)
+  assert.equal(stopped.enabled, true)
+  assert.equal(stopped.actionsPaused, true)
+  assert.equal(stopped.activeTarget, undefined)
   assert.deepEqual(await readdir(join(root, 'captures')).catch(() => []), [])
 })
 
-test('requires a session-only app grant and re-observes after an action', async t => {
+test('persists one app policy and resolves it by name or bundle identifier after restart', async t => {
+  const { root, observer, policyPath } = await fixture({}, false, false)
+  t.after(() => observer.dispose())
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>
+    error.code === 'PERMISSION_DENIED')
+  const allowed = observer.updatePolicy({
+    application: { bundleId: 'dev.editor', name: 'Editor', allowed: true },
+  })
+  assert.deepEqual(allowed.policy.applicationRules, [{
+    bundleId: 'dev.editor',
+    name: 'Editor',
+    access: 'allow',
+  }])
+  assert.equal((await observer.observe('session-1', 'Editor')).target.id, 'application:42')
+
+  const restarted = new ComputerObserver(
+    new FakeHelper(),
+    new ComputerCaptureStore(join(root, 'restart-captures')),
+    { policyStore: new ComputerControlPolicyStore(policyPath) },
+  )
+  t.after(() => restarted.dispose())
+  assert.equal((await restarted.observe('session-2', 'dev.editor')).target.id, 'application:42')
+})
+
+test('keeps lock screen targets denied until the dedicated policy is enabled', async t => {
+  const { root, helper, observer } = await fixture()
+  t.after(() => observer.dispose())
+  t.after(() => rm(root, { recursive: true, force: true }))
+  helper.targetList = {
+    permissions: granted,
+    targets: [{
+      id: 'application:loginwindow',
+      kind: 'application',
+      name: 'Lock Screen',
+      bundleId: 'com.apple.loginwindow',
+      pid: 9,
+      frontmost: true,
+    }],
+  }
+
+  await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>
+    error.code === 'PERMISSION_DENIED')
+  const enabled = observer.updatePolicy({ lockScreenOperations: true })
+  assert.equal(enabled.policy.lockScreenOperations, true)
+  assert.equal((await observer.observe('session-1')).target.id, 'application:loginwindow')
+})
+
+test('uses durable app policy and re-observes after an approved Harness action', async t => {
   const { root, helper, observer, audit } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   const source = await observer.observe('session-1')
   const action = {
     actionId: '11111111-1111-4111-8111-111111111111',
@@ -209,12 +262,6 @@ test('requires a session-only app grant and re-observes after an action', async 
     },
   }
 
-  await assert.rejects(observer.act(action), (error: ComputerUseError) =>
-    error.code === 'PERMISSION_DENIED')
-  assert.equal(observer.snapshot().pendingActionGrant?.sessionId, 'session-1')
-  assert.equal(helper.actCalls.length, 0)
-
-  observer.grantPendingActions()
   const result = await observer.act(action)
   assert.equal(result.previousSnapshotId, source.snapshotId)
   assert.notEqual(result.observation.snapshotId, source.snapshotId)
@@ -238,7 +285,6 @@ test('redacts typed values and OCR from the post-action result', async t => {
     bounds: { x: 20, y: 20, width: 180, height: 30 },
     secure: false,
   }]
-  await observer.selectTarget('window:7')
   const source = await observer.observe('session-1')
   const request = {
     actionId: '77777777-7777-4777-8777-777777777777',
@@ -251,9 +297,6 @@ test('redacts typed values and OCR from the post-action result', async t => {
       replace: true,
     },
   }
-  await assert.rejects(observer.act(request), (error: ComputerUseError) =>
-    error.code === 'PERMISSION_DENIED')
-  observer.grantPendingActions()
   helper.elements = [{ ...helper.elements[0]!, value: 'private draft' }]
 
   const result = await observer.act(request)
@@ -268,34 +311,24 @@ test('redacts typed values and OCR from the post-action result', async t => {
   assert.equal(JSON.stringify(result).includes('private draft'), false)
 })
 
-test('projects pause, resume, and revoke controls from the authoritative action state', async t => {
+test('projects pause, resume, and durable app overrides from one policy state', async t => {
   const { root, observer } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
-  const source = await observer.observe('session-1')
-  await assert.rejects(observer.act({
-    actionId: '88888888-8888-4888-8888-888888888888',
-    sessionId: 'session-1',
-    snapshotId: source.snapshotId,
-    action: { kind: 'key', key: 'escape', modifiers: [] },
-  }), (error: ComputerUseError) => error.code === 'PERMISSION_DENIED')
-
-  const granted = observer.grantPendingActions()
-  assert.equal(granted.actionsPaused, false)
-  assert.equal(granted.actionGrants.length, 1)
   assert.equal(observer.pauseActions().actionsPaused, true)
   assert.equal(observer.resumeActions().actionsPaused, false)
-  const revoked = observer.revokeActions()
-  assert.equal(revoked.actionsPaused, true)
-  assert.equal(revoked.actionGrants.length, 0)
+  const denied = observer.updatePolicy({
+    application: { bundleId: 'dev.editor', name: 'Editor', allowed: false },
+  })
+  assert.equal(denied.applications.find(application => application.bundleId === 'dev.editor')?.allowed, false)
+  await assert.rejects(observer.observe('session-1'), (error: ComputerUseError) =>
+    error.code === 'PERMISSION_DENIED')
 })
 
 test('rejects stale snapshots and secure fields before dispatch', async t => {
   const { root, helper, observer, audit } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   const first = await observer.observe('session-1')
   const grantRequest = {
     actionId: '22222222-2222-4222-8222-222222222222',
@@ -303,9 +336,6 @@ test('rejects stale snapshots and secure fields before dispatch', async t => {
     snapshotId: first.snapshotId,
     action: { kind: 'key' as const, key: 'escape', modifiers: [] },
   }
-  await assert.rejects(observer.act(grantRequest), (error: ComputerUseError) =>
-    error.code === 'PERMISSION_DENIED')
-  observer.grantPendingActions()
   await observer.observe('session-1')
   await assert.rejects(observer.act(grantRequest), (error: ComputerUseError) =>
     error.code === 'TARGET_CHANGED')
@@ -334,7 +364,6 @@ test('emergency pause makes an in-flight action ambiguous and blocks replay afte
   const { root, helper, observer, audit } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   const source = await observer.observe('session-1')
   const action = {
     actionId: '44444444-4444-4444-8444-444444444444',
@@ -342,9 +371,6 @@ test('emergency pause makes an in-flight action ambiguous and blocks replay afte
     snapshotId: source.snapshotId,
     action: { kind: 'key' as const, key: 'enter', modifiers: [] },
   }
-  await assert.rejects(observer.act(action), (error: ComputerUseError) =>
-    error.code === 'PERMISSION_DENIED')
-  observer.grantPendingActions()
   helper.hangAction = true
   const pending = observer.act(action)
   while (helper.actCalls.length === 0) await new Promise(resolve => setImmediate(resolve))
@@ -367,7 +393,6 @@ test('does not dispatch when action intent cannot be persisted', async t => {
   const { root, auditPath, helper, observer } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   const source = await observer.observe('session-1')
   const action = {
     actionId: '55555555-5555-4555-8555-555555555555',
@@ -375,9 +400,6 @@ test('does not dispatch when action intent cannot be persisted', async t => {
     snapshotId: source.snapshotId,
     action: { kind: 'key' as const, key: 'escape', modifiers: [] },
   }
-  await assert.rejects(observer.act(action), (error: ComputerUseError) =>
-    error.code === 'PERMISSION_DENIED')
-  observer.grantPendingActions()
   await mkdir(auditPath)
 
   await assert.rejects(observer.act(action), (error: ComputerUseError) =>
@@ -386,23 +408,20 @@ test('does not dispatch when action intent cannot be persisted', async t => {
   assert.equal(observer.snapshot().auditAvailable, false)
 })
 
-test('revokes session grants when Accessibility permission is lost', async t => {
+test('keeps durable policy while Accessibility loss blocks actions', async t => {
   const { root, helper, observer } = await fixture({}, true)
   t.after(() => observer.dispose())
   t.after(() => rm(root, { recursive: true, force: true }))
-  await observer.selectTarget('window:7')
   const source = await observer.observe('session-1')
+  helper.permissions = { ...granted, accessibility: 'denied', canAct: false }
+  helper.targetList = { permissions: helper.permissions, targets }
+  const snapshot = await observer.refresh()
+  assert.equal(snapshot.policy.allowAnyApplication, true)
+  assert.equal(snapshot.actionsPaused, false)
   await assert.rejects(observer.act({
     actionId: '66666666-6666-4666-8666-666666666666',
     sessionId: 'session-1',
     snapshotId: source.snapshotId,
     action: { kind: 'key', key: 'escape', modifiers: [] },
   }), (error: ComputerUseError) => error.code === 'PERMISSION_DENIED')
-  assert.equal(observer.grantPendingActions().actionGrants.length, 1)
-
-  helper.permissions = { ...granted, accessibility: 'denied', canAct: false }
-  helper.targetList = { permissions: helper.permissions, targets }
-  const snapshot = await observer.refresh()
-  assert.equal(snapshot.actionsPaused, true)
-  assert.equal(snapshot.actionGrants.length, 0)
 })

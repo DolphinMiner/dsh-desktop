@@ -12,6 +12,7 @@ import {
   ComputerActParams,
   ComputerActionResult,
   ComputerObservation,
+  ComputerObserveParams,
   ComputerPermissions,
   GitDiscoverParams,
   GitRepositoryIdentity,
@@ -61,7 +62,7 @@ export interface DesktopCapabilityDependencies {
   computer?: {
     getPermissions(signal: AbortSignal): Promise<ComputerPermissions>
     listApplications(signal: AbortSignal): Promise<ComputerApplicationList>
-    observe(sessionId: string, signal: AbortSignal): Promise<ComputerObservation>
+    observe(params: ComputerObserveParams, signal: AbortSignal): Promise<ComputerObservation>
     act(params: ComputerActParams, signal: AbortSignal): Promise<ComputerActionResult>
   }
   git: {
@@ -126,7 +127,7 @@ export function createDesktopCapabilityHandlers(
     'computer.listApps': (_params, context) =>
       dependencies.computer?.listApplications(context.signal) ?? unsupportedComputer(),
     'computer.observe': (params, context) =>
-      dependencies.computer?.observe(params.sessionId, context.signal) ?? unsupportedComputer(),
+      dependencies.computer?.observe(params, context.signal) ?? unsupportedComputer(),
     'computer.act': (params, context) =>
       dependencies.computer?.act(params, context.signal) ?? unsupportedComputer(),
     'git.discover': (params, context) => dependencies.git.discover(params, context.signal),

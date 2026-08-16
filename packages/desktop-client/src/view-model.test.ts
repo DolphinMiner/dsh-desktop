@@ -7,10 +7,8 @@ import {
   automationStateDot,
   automationStateLabel,
   canReconnect,
-  computerActionStateDot,
   computerActionStatusLabel,
   computerPermissionLabel,
-  computerTargetGroupLabel,
   connectionStateDot,
   connectionStatusLabel,
 } from './view-model.js'
@@ -25,17 +23,12 @@ test('maps connection state to truthful status presentation', () => {
   assert.equal(canReconnect('expired'), true)
 })
 
-test('maps computer permissions and target kinds to truthful labels', () => {
+test('maps computer permissions and action outcomes to truthful labels', () => {
   assert.equal(computerPermissionLabel('granted'), 'Allowed')
   assert.equal(computerPermissionLabel('denied'), 'Not allowed')
   assert.equal(computerPermissionLabel('not-determined'), 'Not requested')
-  assert.equal(computerTargetGroupLabel('window'), 'Windows')
-  assert.equal(computerTargetGroupLabel('display'), 'Displays')
   assert.equal(computerActionStatusLabel('dispatch'), 'Dispatched')
   assert.equal(computerActionStatusLabel('ambiguous'), 'Result uncertain')
-  assert.equal(computerActionStateDot('succeeded'), 'done')
-  assert.equal(computerActionStateDot('cancelled'), 'warning')
-  assert.equal(computerActionStateDot('ambiguous'), 'error')
 })
 
 test('maps durable automation and run state without overstating ambiguous outcomes', () => {

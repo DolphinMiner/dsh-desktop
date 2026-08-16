@@ -94,8 +94,9 @@ export interface ComputerTargetList {
 
 export interface ComputerApplicationList {
   permissions: ComputerPermissions
-  applications: ComputerApplication[]
-  selectedTarget?: ComputerTarget
+  policy: ComputerControlPolicy
+  applications: ComputerApplicationAccess[]
+  activeTarget?: ComputerTarget
 }
 
 export interface ComputerObservationSummary {
@@ -106,16 +107,40 @@ export interface ComputerObservationSummary {
   screenshotCaptured: boolean
 }
 
-export interface ComputerActionGrant {
-  sessionId: string
-  application: ComputerApplication
-  grantedAt: string
+export type ComputerApplicationRuleAccess = 'allow' | 'deny'
+
+export interface ComputerApplicationRule {
+  bundleId: string
+  name: string
+  access: ComputerApplicationRuleAccess
 }
 
-export interface ComputerPendingActionGrant {
-  sessionId: string
-  application: ComputerApplication
-  requestedAt: string
+export interface ComputerControlPolicy {
+  allowAnyApplication: boolean
+  lockScreenOperations: boolean
+  applicationRules: ComputerApplicationRule[]
+}
+
+export interface UpdateComputerControlPolicyInput {
+  allowAnyApplication?: boolean
+  lockScreenOperations?: boolean
+  application?: {
+    bundleId: string
+    name: string
+    allowed: boolean
+  }
+}
+
+export interface ComputerApplicationAccess {
+  id: string
+  name: string
+  bundleId?: string
+  pid?: number
+  frontmost: boolean
+  running: boolean
+  allowed: boolean
+  policy: 'default' | ComputerApplicationRuleAccess
+  canSetPolicy: boolean
 }
 
 export interface ComputerActionHistorySummary {
@@ -137,21 +162,17 @@ export interface ComputerControlSnapshot {
   actionsPaused: boolean
   auditAvailable: boolean
   permissions: ComputerPermissions
-  targets: ComputerTarget[]
-  selectedTarget?: ComputerTarget
+  policy: ComputerControlPolicy
+  applications: ComputerApplicationAccess[]
+  activeTarget?: ComputerTarget
   lastObservation?: ComputerObservationSummary
-  actionGrants: ComputerActionGrant[]
-  pendingActionGrant?: ComputerPendingActionGrant
   recentActions: ComputerActionHistorySummary[]
   statusMessage?: string
 }
 
-export interface SelectComputerTargetInput {
-  targetId: string
-}
-
 export interface ComputerObserveParams {
   sessionId: string
+  application?: string
 }
 
 export interface ComputerPoint {
@@ -332,6 +353,88 @@ function parseApplication(value: unknown): ComputerApplication | undefined {
   }
 }
 
+function parseApplicationRule(value: unknown): ComputerApplicationRule | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['bundleId', 'name', 'access']) ||
+    !isString(value.bundleId, MAX_ID_LENGTH) || !isString(value.name, MAX_NAME_LENGTH) ||
+    (value.access !== 'allow' && value.access !== 'deny')) return undefined
+  return { bundleId: value.bundleId, name: value.name, access: value.access }
+}
+
+export function parseComputerControlPolicy(value: unknown): ComputerControlPolicy | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['allowAnyApplication', 'lockScreenOperations', 'applicationRules'],
+  ) || typeof value.allowAnyApplication !== 'boolean' ||
+    typeof value.lockScreenOperations !== 'boolean' || !Array.isArray(value.applicationRules) ||
+    value.applicationRules.length > MAX_ITEMS) return undefined
+  const applicationRules = value.applicationRules.map(parseApplicationRule)
+  if (applicationRules.some(rule => rule === undefined)) return undefined
+  const parsed = applicationRules as ComputerApplicationRule[]
+  if (new Set(parsed.map(rule => rule.bundleId)).size !== parsed.length) return undefined
+  return {
+    allowAnyApplication: value.allowAnyApplication,
+    lockScreenOperations: value.lockScreenOperations,
+    applicationRules: parsed,
+  }
+}
+
+export function parseUpdateComputerControlPolicyInput(
+  value: unknown,
+): UpdateComputerControlPolicyInput | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['allowAnyApplication', 'lockScreenOperations', 'application'],
+  ) || Object.keys(value).length === 0 ||
+    (value.allowAnyApplication !== undefined && typeof value.allowAnyApplication !== 'boolean') ||
+    (value.lockScreenOperations !== undefined && typeof value.lockScreenOperations !== 'boolean')) {
+    return undefined
+  }
+  if (value.allowAnyApplication === undefined && value.lockScreenOperations === undefined &&
+    value.application === undefined) return undefined
+  let application: UpdateComputerControlPolicyInput['application']
+  if (value.application !== undefined) {
+    if (!isRecord(value.application) || !hasOnlyKeys(value.application, ['bundleId', 'name', 'allowed']) ||
+      !isString(value.application.bundleId, MAX_ID_LENGTH) ||
+      !isString(value.application.name, MAX_NAME_LENGTH) ||
+      typeof value.application.allowed !== 'boolean') return undefined
+    application = {
+      bundleId: value.application.bundleId,
+      name: value.application.name,
+      allowed: value.application.allowed,
+    }
+  }
+  return {
+    ...(value.allowAnyApplication === undefined ? {} : { allowAnyApplication: value.allowAnyApplication }),
+    ...(value.lockScreenOperations === undefined ? {} : { lockScreenOperations: value.lockScreenOperations }),
+    ...(application === undefined ? {} : { application }),
+  }
+}
+
+function parseApplicationAccess(value: unknown): ComputerApplicationAccess | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['id', 'name', 'bundleId', 'pid', 'frontmost', 'running', 'allowed', 'policy', 'canSetPolicy'],
+  ) || !isString(value.id, MAX_ID_LENGTH) || !isString(value.name, MAX_NAME_LENGTH) ||
+    typeof value.frontmost !== 'boolean' || typeof value.running !== 'boolean' ||
+    typeof value.allowed !== 'boolean' || typeof value.canSetPolicy !== 'boolean' ||
+    (value.policy !== 'default' && value.policy !== 'allow' && value.policy !== 'deny')) return undefined
+  if (value.bundleId !== undefined && !isString(value.bundleId, MAX_ID_LENGTH)) return undefined
+  if (value.pid !== undefined && (!Number.isSafeInteger(value.pid) || Number(value.pid) <= 0)) return undefined
+  if (!value.running && (value.pid !== undefined || value.frontmost)) return undefined
+  if (value.canSetPolicy !== (value.bundleId !== undefined)) return undefined
+  return {
+    id: value.id,
+    name: value.name,
+    ...(value.bundleId === undefined ? {} : { bundleId: value.bundleId }),
+    ...(value.pid === undefined ? {} : { pid: Number(value.pid) }),
+    frontmost: value.frontmost,
+    running: value.running,
+    allowed: value.allowed,
+    policy: value.policy,
+    canSetPolicy: value.canSetPolicy,
+  }
+}
+
 function parseElement(value: unknown): ComputerElement | undefined {
   if (!isRecord(value) || !isString(value.id, MAX_ID_LENGTH) || !isString(value.role, MAX_NAME_LENGTH) ||
     !Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS ||
@@ -398,16 +501,19 @@ export function parseComputerApplicationList(value: unknown): ComputerApplicatio
     return undefined
   }
   const permissions = parseComputerPermissions(value.permissions)
-  const applications = value.applications.map(parseApplication)
-  const selectedTarget = value.selectedTarget === undefined
+  const policy = parseComputerControlPolicy(value.policy)
+  const applications = value.applications.map(parseApplicationAccess)
+  const activeTarget = value.activeTarget === undefined
     ? undefined
-    : parseComputerTarget(value.selectedTarget)
-  if (permissions === undefined || applications.some(application => application === undefined) ||
-    (value.selectedTarget !== undefined && selectedTarget === undefined)) return undefined
+    : parseComputerTarget(value.activeTarget)
+  if (permissions === undefined || policy === undefined ||
+    applications.some(application => application === undefined) ||
+    (value.activeTarget !== undefined && activeTarget === undefined)) return undefined
   return {
     permissions,
-    applications: applications as ComputerApplication[],
-    ...(selectedTarget === undefined ? {} : { selectedTarget }),
+    policy,
+    applications: applications as ComputerApplicationAccess[],
+    ...(activeTarget === undefined ? {} : { activeTarget }),
   }
 }
 
@@ -458,13 +564,6 @@ export function parseComputerObservation(value: unknown): ComputerObservation | 
     truncated: value.truncated,
     warnings: [...value.warnings],
   }
-}
-
-export function parseSelectComputerTargetInput(value: unknown): SelectComputerTargetInput | undefined {
-  if (!isRecord(value) || !isString(value.targetId, MAX_ID_LENGTH) || Object.keys(value).length !== 1) {
-    return undefined
-  }
-  return { targetId: value.targetId }
 }
 
 function parseActionTarget(value: unknown): ComputerActionTarget | undefined {

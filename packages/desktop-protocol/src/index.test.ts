@@ -18,9 +18,10 @@ import {
   isSensitiveCapabilityMethod,
   parseComputerActParams,
   parseComputerActionResult,
+  parseComputerControlPolicy,
   parseComputerObservation,
   parseComputerPermissions,
-  parseSelectComputerTargetInput,
+  parseUpdateComputerControlPolicyInput,
   summarizeComputerAction,
   WorktreeSummary,
 } from './index'
@@ -461,9 +462,30 @@ test('validates bounded computer permissions and observations', () => {
   assert.deepEqual(parseCapabilityParams('computer.observe', { sessionId: 'session-1' }), {
     sessionId: 'session-1',
   })
+  assert.deepEqual(parseCapabilityParams('computer.observe', {
+    sessionId: 'session-1',
+    application: 'dev.editor',
+  }), { sessionId: 'session-1', application: 'dev.editor' })
+  assert.equal(parseCapabilityParams('computer.observe', {
+    sessionId: 'session-1',
+    application: 'dev.editor',
+    targetId: 'window:7',
+  }), undefined)
   assert.deepEqual(parseCapabilityResult('computer.observe', observation), observation)
-  assert.deepEqual(parseSelectComputerTargetInput({ targetId: 'window:7' }), { targetId: 'window:7' })
-  assert.equal(parseSelectComputerTargetInput({ targetId: 'window:7', path: '/tmp' }), undefined)
+  const policy = {
+    allowAnyApplication: false,
+    lockScreenOperations: false,
+    applicationRules: [{ bundleId: 'dev.editor', name: 'Editor', access: 'allow' as const }],
+  }
+  assert.deepEqual(parseComputerControlPolicy(policy), policy)
+  assert.deepEqual(parseUpdateComputerControlPolicyInput({
+    application: { bundleId: 'dev.editor', name: 'Editor', allowed: true },
+  }), { application: { bundleId: 'dev.editor', name: 'Editor', allowed: true } })
+  assert.equal(parseUpdateComputerControlPolicyInput({ allowAnyApplication: undefined }), undefined)
+  assert.equal(parseComputerControlPolicy({
+    ...policy,
+    applicationRules: [...policy.applicationRules, policy.applicationRules[0]],
+  }), undefined)
 })
 
 test('validates snapshot-bound computer actions without echoing typed text', () => {

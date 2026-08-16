@@ -6,20 +6,20 @@ import {
   COMPUTER_ACTION_VERSION,
   ComputerActParams,
   ComputerAction,
-  ComputerActionGrant,
   ComputerActionHistorySummary,
   ComputerActionResult,
-  ComputerApplication,
+  ComputerApplicationAccess,
   ComputerApplicationList,
+  ComputerControlPolicy,
   ComputerControlSnapshot,
   ComputerElement,
   ComputerObservation,
-  ComputerPendingActionGrant,
   ComputerPermissions,
   ComputerSnapshotCompatibility,
   ComputerTarget,
   ComputerTargetList,
   DesktopProtocolError,
+  UpdateComputerControlPolicyInput,
   parseComputerActParams,
   parseComputerObservation,
   summarizeComputerAction,
@@ -29,6 +29,11 @@ import {
   ComputerActionAuditError,
   ComputerActionAuditStore,
 } from './computer-action-audit'
+import {
+  ComputerControlPolicyStore,
+  DEFAULT_COMPUTER_CONTROL_POLICY,
+  cloneComputerControlPolicy,
+} from './computer-policy'
 
 export interface ComputerHelperObserveInput {
   snapshotId: string
@@ -66,6 +71,7 @@ export interface ComputerObserverOptions {
   maxElements?: number
   maxDepth?: number
   audit?: ComputerActionAuditStore
+  policyStore?: ComputerControlPolicyStore
   now?: () => Date
   onChange?: (snapshot: ComputerControlSnapshot) => void
 }
@@ -105,14 +111,6 @@ function cloneTarget(target: ComputerTarget): ComputerTarget {
 
 function clonePermissions(value: ComputerPermissions): ComputerPermissions {
   return { ...value }
-}
-
-function cloneApplication(application: ComputerApplication): ComputerApplication {
-  return { ...application }
-}
-
-function cloneGrant(grant: ComputerActionGrant): ComputerActionGrant {
-  return { ...grant, application: cloneApplication(grant.application) }
 }
 
 function redactTypedObservation(observation: ComputerObservation): ComputerObservation {
@@ -218,11 +216,11 @@ export class ComputerObserver {
   private lastObservationSessionId?: string
   private observing = false
   private acting = false
-  private actionsPaused = true
+  private actionsPaused = false
   private activeController?: AbortController
   private activeActionController?: AbortController
-  private readonly actionGrants = new Map<string, ComputerActionGrant>()
-  private pendingActionGrant?: ComputerPendingActionGrant
+  private policy = cloneComputerControlPolicy(DEFAULT_COMPUTER_CONTROL_POLICY)
+  private readonly policyStore?: ComputerControlPolicyStore
   private statusMessage?: string
   private readonly maxElements: number
   private readonly maxDepth: number
@@ -238,8 +236,16 @@ export class ComputerObserver {
     this.maxElements = options.maxElements ?? 400
     this.maxDepth = options.maxDepth ?? 12
     this.audit = options.audit
+    this.policyStore = options.policyStore
     this.now = options.now ?? (() => new Date())
     this.onChange = options.onChange
+    const loaded = this.policyStore?.load()
+    if (loaded !== undefined) {
+      this.policy = cloneComputerControlPolicy(loaded.policy)
+      if (loaded.recovered) {
+        this.statusMessage = 'Computer Control policy was reset because the saved file could not be read.'
+      }
+    }
   }
 
   snapshot(): ComputerControlSnapshot {
@@ -260,14 +266,16 @@ export class ComputerObserver {
     })
     return {
       revision: this.revision,
-      enabled: this.selectedTarget !== undefined,
+      enabled: this.policy.allowAnyApplication ||
+        this.policy.applicationRules.some(rule => rule.access === 'allow'),
       observing: this.observing,
       acting: this.acting,
       actionsPaused: this.actionsPaused,
       auditAvailable: auditStatus?.available ?? false,
       permissions: clonePermissions(this.permissions),
-      targets: this.targets.map(cloneTarget),
-      ...(this.selectedTarget === undefined ? {} : { selectedTarget: cloneTarget(this.selectedTarget) }),
+      policy: cloneComputerControlPolicy(this.policy),
+      applications: this.applicationAccess(),
+      ...(this.selectedTarget === undefined ? {} : { activeTarget: cloneTarget(this.selectedTarget) }),
       ...(this.lastObservation === undefined ? {} : {
         lastObservation: {
           snapshotId: this.lastObservation.snapshotId,
@@ -275,13 +283,6 @@ export class ComputerObserver {
           target: cloneTarget(this.lastObservation.target),
           elementCount: this.lastObservation.elements.length,
           screenshotCaptured: this.lastObservation.capture.screenshotCaptured,
-        },
-      }),
-      actionGrants: [...this.actionGrants.values()].map(cloneGrant),
-      ...(this.pendingActionGrant === undefined ? {} : {
-        pendingActionGrant: {
-          ...this.pendingActionGrant,
-          application: cloneApplication(this.pendingActionGrant.application),
         },
       }),
       recentActions,
@@ -295,15 +296,15 @@ export class ComputerObserver {
       const result = await this.helper.listTargets(signal)
       this.permissions = clonePermissions(result.permissions)
       this.targets = result.targets.map(cloneTarget)
-      if (!this.permissions.canAct) this.clearActionAccess()
+      if (!this.permissions.canObserve) this.clearTransientObservation()
+      else if (!this.permissions.canAct) this.activeActionController?.abort()
       if (this.selectedTarget !== undefined) {
         const current = this.targets.find(target => target.id === this.selectedTarget?.id)
         if (current === undefined) {
           this.selectedTarget = undefined
           this.lastObservation = undefined
           this.lastObservationSessionId = undefined
-          this.clearActionAccess()
-          this.statusMessage = 'The selected application or window is no longer available.'
+          this.statusMessage = 'The active application is no longer available.'
         } else {
           this.selectedTarget = cloneTarget(current)
         }
@@ -321,7 +322,8 @@ export class ComputerObserver {
     this.assertNotAborted(signal)
     try {
       this.permissions = clonePermissions(await this.helper.getPermissions(signal))
-      if (!this.permissions.canAct) this.clearActionAccess()
+      if (!this.permissions.canObserve) this.clearTransientObservation()
+      else if (!this.permissions.canAct) this.activeActionController?.abort()
       this.statusMessage = undefined
       this.bump()
       return clonePermissions(this.permissions)
@@ -334,45 +336,56 @@ export class ComputerObserver {
     await this.refresh(signal)
     return {
       permissions: clonePermissions(this.permissions),
-      applications: this.targets
-        .filter((target): target is ComputerTarget & { pid: number } =>
-          target.kind === 'application' && target.pid !== undefined)
-        .map(target => ({
-          id: target.id,
-          name: target.name,
-          ...(target.bundleId === undefined ? {} : { bundleId: target.bundleId }),
-          pid: target.pid,
-          frontmost: target.frontmost ?? false,
-        })),
-      ...(this.selectedTarget === undefined ? {} : { selectedTarget: cloneTarget(this.selectedTarget) }),
+      policy: cloneComputerControlPolicy(this.policy),
+      applications: this.applicationAccess(),
+      ...(this.selectedTarget === undefined ? {} : { activeTarget: cloneTarget(this.selectedTarget) }),
     }
   }
 
-  async selectTarget(targetId: string, signal?: AbortSignal): Promise<ComputerControlSnapshot> {
-    if (targetId.length === 0 || targetId.length > 256) {
-      throw new ComputerUseError('BAD_MESSAGE', 'The computer target identifier is invalid.')
+  updatePolicy(input: UpdateComputerControlPolicyInput): ComputerControlSnapshot {
+    const next = cloneComputerControlPolicy(this.policy)
+    if (input.allowAnyApplication !== undefined) {
+      next.allowAnyApplication = input.allowAnyApplication
+      next.applicationRules = next.applicationRules.filter(rule =>
+        (rule.access === 'allow') !== next.allowAnyApplication)
     }
-    await this.refresh(signal)
-    const target = this.targets.find(item => item.id === targetId)
-    if (target === undefined) throw new ComputerUseError('NOT_FOUND', 'The selected computer target is unavailable.')
-    this.activeController?.abort()
-    this.activeActionController?.abort()
-    this.selectedTarget = cloneTarget(target)
-    this.lastObservation = undefined
-    this.lastObservationSessionId = undefined
-    this.clearActionAccess()
+    if (input.lockScreenOperations !== undefined) {
+      next.lockScreenOperations = input.lockScreenOperations
+    }
+    if (input.application !== undefined) {
+      const existing = next.applicationRules.findIndex(rule => rule.bundleId === input.application?.bundleId)
+      if (existing >= 0) next.applicationRules.splice(existing, 1)
+      if (input.application.allowed !== next.allowAnyApplication) {
+        next.applicationRules.push({
+          bundleId: input.application.bundleId,
+          name: input.application.name,
+          access: input.application.allowed ? 'allow' : 'deny',
+        })
+      }
+    }
+    next.applicationRules.sort((left, right) => left.name.localeCompare(right.name))
+    this.policyStore?.save(next)
+    this.policy = next
+    if (this.selectedTarget !== undefined && !this.targetAllowed(this.selectedTarget)) {
+      this.activeController?.abort()
+      this.activeActionController?.abort()
+      this.clearTransientObservation()
+    }
     this.statusMessage = undefined
-    await this.captures.cleanup()
     this.bump()
     return this.snapshot()
   }
 
-  async observe(sessionId: string, signal?: AbortSignal): Promise<ComputerObservation> {
+  async observe(sessionId: string, application?: string, signal?: AbortSignal): Promise<ComputerObservation> {
     if (this.acting) throw new ComputerUseError('CONFLICT', 'A computer action is already running.')
-    return this.captureObservation(sessionId, signal)
+    return this.captureObservation(sessionId, application, signal)
   }
 
-  private async captureObservation(sessionId: string, signal?: AbortSignal): Promise<ComputerObservation> {
+  private async captureObservation(
+    sessionId: string,
+    application?: string,
+    signal?: AbortSignal,
+  ): Promise<ComputerObservation> {
     if (sessionId.length === 0) throw new ComputerUseError('BAD_MESSAGE', 'An agent session is required.')
     if (this.observing) throw new ComputerUseError('CONFLICT', 'A computer observation is already running.')
     await this.refresh(signal)
@@ -385,10 +398,10 @@ export class ComputerObserver {
         'Screen Recording permission is required. Enable it in System Settings > Privacy & Security.',
       )
     }
-    const target = this.selectedTarget
-    if (target === undefined) {
-      throw new ComputerUseError('NOT_FOUND', 'Select an application, window, or display in Desktop settings first.')
-    }
+    const target = this.resolveAllowedTarget(application)
+    this.selectedTarget = cloneTarget(target)
+    this.lastObservation = undefined
+    this.lastObservationSessionId = undefined
 
     const snapshotId = randomUUID()
     const screenshotPath = await this.captures.allocate(snapshotId)
@@ -503,7 +516,11 @@ export class ComputerObserver {
       }
       helperAcknowledged = true
       this.assertNotAborted(controller.signal)
-      const observation = await this.captureObservation(prepared.params.sessionId, controller.signal)
+      const observation = await this.captureObservation(
+        prepared.params.sessionId,
+        prepared.target.bundleId ?? prepared.target.name,
+        controller.signal,
+      )
       const result: ComputerActionResult = {
         version: COMPUTER_ACTION_VERSION,
         actionId: prepared.params.actionId,
@@ -540,31 +557,6 @@ export class ComputerObserver {
     }
   }
 
-  grantPendingActions(): ComputerControlSnapshot {
-    const pending = this.pendingActionGrant
-    if (pending === undefined) {
-      throw new ComputerUseError('NOT_FOUND', 'There is no pending computer action grant.')
-    }
-    const observation = this.lastObservation
-    if (observation === undefined || this.lastObservationSessionId !== pending.sessionId ||
-      observation.foregroundApplication?.id !== pending.application.id) {
-      this.pendingActionGrant = undefined
-      this.bump()
-      throw new ComputerUseError('TARGET_CHANGED', 'Observe the selected application again before granting actions.')
-    }
-    const grant: ComputerActionGrant = {
-      sessionId: pending.sessionId,
-      application: cloneApplication(pending.application),
-      grantedAt: this.now().toISOString(),
-    }
-    this.actionGrants.set(this.grantKey(grant.sessionId, grant.application.id), grant)
-    this.pendingActionGrant = undefined
-    this.actionsPaused = false
-    this.statusMessage = `Actions are allowed for ${grant.application.name} in this agent session.`
-    this.bump()
-    return this.snapshot()
-  }
-
   pauseActions(): ComputerControlSnapshot {
     this.activeActionController?.abort()
     this.actionsPaused = true
@@ -574,26 +566,21 @@ export class ComputerObserver {
   }
 
   resumeActions(): ComputerControlSnapshot {
-    if (this.actionGrants.size === 0) {
-      throw new ComputerUseError('PERMISSION_DENIED', 'Grant an application to an agent session before resuming actions.')
+    if (!this.policy.allowAnyApplication &&
+      !this.policy.applicationRules.some(rule => rule.access === 'allow')) {
+      throw new ComputerUseError('PERMISSION_DENIED', 'Allow an application before resuming computer actions.')
     }
     this.actionsPaused = false
-    this.statusMessage = 'Computer actions are enabled for the listed session grants.'
+    this.statusMessage = 'Computer actions are enabled for allowed applications.'
     this.bump()
     return this.snapshot()
   }
 
-  revokeActions(): ComputerControlSnapshot {
-    this.clearActionAccess()
-    this.statusMessage = 'Computer action grants were revoked.'
-    this.bump()
-    return this.snapshot()
-  }
-
-  async stop(): Promise<ComputerControlSnapshot> {
+  async stop(pauseActions = true): Promise<ComputerControlSnapshot> {
     this.activeController?.abort()
     this.activeController = undefined
-    this.clearActionAccess()
+    this.activeActionController?.abort()
+    this.actionsPaused = pauseActions
     this.selectedTarget = undefined
     this.lastObservation = undefined
     this.lastObservationSessionId = undefined
@@ -605,7 +592,7 @@ export class ComputerObserver {
   }
 
   async dispose(): Promise<void> {
-    await this.stop()
+    await this.stop(true)
     await this.helper.dispose()
   }
 
@@ -675,24 +662,15 @@ export class ComputerObserver {
       throw new ComputerUseError('BAD_MESSAGE', 'The fallback point is outside the observed capture bounds.')
     }
 
-    const grant = this.actionGrants.get(this.grantKey(params.sessionId, application.id))
-    if (grant === undefined) {
-      this.pendingActionGrant = {
-        sessionId: params.sessionId,
-        application: cloneApplication(application),
-        requestedAt: this.now().toISOString(),
-      }
-      this.statusMessage = `Approve actions for ${application.name} in Desktop settings before retrying.`
-      this.bump()
+    if (!this.targetAllowed(target)) {
       throw new ComputerUseError(
         'PERMISSION_DENIED',
-        `Actions for ${application.name} require a session-only grant in Desktop settings.`,
+        `${application.name} is not allowed in Computer Control settings.`,
       )
     }
     if (this.actionsPaused) {
       throw new ComputerUseError('PERMISSION_DENIED', 'Computer actions are paused in Desktop settings.')
     }
-    this.pendingActionGrant = undefined
     return { params, target: cloneTarget(target), observation, ...(element === undefined ? {} : { element }) }
   }
 
@@ -751,15 +729,110 @@ export class ComputerObserver {
     )
   }
 
-  private grantKey(sessionId: string, applicationId: string): string {
-    return `${sessionId}\0${applicationId}`
+  private applicationAccess(): ComputerApplicationAccess[] {
+    const running = new Map<string, ComputerTarget & { pid: number }>()
+    for (const target of this.targets) {
+      if (target.kind !== 'application' || target.pid === undefined) continue
+      const key = target.bundleId ?? target.id
+      const existing = running.get(key)
+      if (existing === undefined || target.frontmost === true) {
+        running.set(key, { ...target, pid: target.pid })
+      }
+    }
+    const result: ComputerApplicationAccess[] = [...running.values()].map(target => {
+      const rule = target.bundleId === undefined
+        ? undefined
+        : this.policy.applicationRules.find(candidate => candidate.bundleId === target.bundleId)
+      return {
+        id: target.id,
+        name: target.name,
+        ...(target.bundleId === undefined ? {} : { bundleId: target.bundleId }),
+        pid: target.pid,
+        frontmost: target.frontmost ?? false,
+        running: true,
+        allowed: this.targetAllowed(target),
+        policy: rule?.access ?? 'default',
+        canSetPolicy: target.bundleId !== undefined,
+      }
+    })
+    for (const rule of this.policy.applicationRules) {
+      if (running.has(rule.bundleId)) continue
+      result.push({
+        id: `bundle:${rule.bundleId}`,
+        name: rule.name,
+        bundleId: rule.bundleId,
+        frontmost: false,
+        running: false,
+        allowed: rule.access === 'allow',
+        policy: rule.access,
+        canSetPolicy: true,
+      })
+    }
+    return result.sort((left, right) => {
+      if (left.frontmost !== right.frontmost) return left.frontmost ? -1 : 1
+      if (left.running !== right.running) return left.running ? -1 : 1
+      return left.name.localeCompare(right.name)
+    })
   }
 
-  private clearActionAccess(): void {
+  private resolveAllowedTarget(reference?: string): ComputerTarget {
+    const applications = this.targets.filter((target): target is ComputerTarget & { pid: number } =>
+      target.kind === 'application' && target.pid !== undefined)
+    const normalized = reference?.trim().toLocaleLowerCase()
+    let target: ComputerTarget | undefined
+    if (normalized === undefined || normalized === '') {
+      target = applications.find(candidate => candidate.frontmost === true)
+      if (target === undefined) {
+        throw new ComputerUseError('NOT_FOUND', 'No frontmost application is available to observe.')
+      }
+    } else {
+      const exact = applications.filter(candidate =>
+        candidate.id.toLocaleLowerCase() === normalized ||
+        candidate.bundleId?.toLocaleLowerCase() === normalized ||
+        candidate.name.toLocaleLowerCase() === normalized)
+      const partial = exact.length === 0
+        ? applications.filter(candidate => candidate.name.toLocaleLowerCase().includes(normalized))
+        : []
+      const matches = exact.length > 0 ? exact : partial
+      if (matches.length === 0) {
+        throw new ComputerUseError('NOT_FOUND', `The application "${reference}" is not running.`)
+      }
+      if (matches.length > 1) {
+        target = matches.find(candidate => candidate.frontmost === true)
+        if (target === undefined) {
+          throw new ComputerUseError('CONFLICT', `More than one running application matches "${reference}".`)
+        }
+      } else {
+        target = matches[0]
+      }
+    }
+    if (!this.targetAllowed(target)) {
+      throw new ComputerUseError(
+        'PERMISSION_DENIED',
+        `${target.name} is not allowed in Computer Control settings.`,
+      )
+    }
+    return cloneTarget(target)
+  }
+
+  private targetAllowed(target: ComputerTarget): boolean {
+    if (target.kind !== 'application' || target.pid === undefined) return false
+    const bundleId = target.bundleId
+    const lockScreen = bundleId === 'com.apple.loginwindow' ||
+      bundleId === 'com.apple.ScreenSaver.Engine' || /lock screen|loginwindow/i.test(target.name)
+    if (lockScreen && !this.policy.lockScreenOperations) return false
+    const rule = bundleId === undefined
+      ? undefined
+      : this.policy.applicationRules.find(candidate => candidate.bundleId === bundleId)
+    return rule === undefined ? this.policy.allowAnyApplication : rule.access === 'allow'
+  }
+
+  private clearTransientObservation(): void {
+    this.activeController?.abort()
     this.activeActionController?.abort()
-    this.actionGrants.clear()
-    this.pendingActionGrant = undefined
-    this.actionsPaused = true
+    this.selectedTarget = undefined
+    this.lastObservation = undefined
+    this.lastObservationSessionId = undefined
   }
 
   private bump(): void {

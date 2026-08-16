@@ -99,11 +99,9 @@ const bridge: DesktopBridge = {
   computer: {
     getState: () => ipcRenderer.invoke('desktop:computer:get-state'),
     refresh: () => ipcRenderer.invoke('desktop:computer:refresh'),
-    selectTarget: input => ipcRenderer.invoke('desktop:computer:select-target', input),
-    grantPendingActions: () => ipcRenderer.invoke('desktop:computer:grant-pending-actions'),
+    updatePolicy: input => ipcRenderer.invoke('desktop:computer:update-policy', input),
     pauseActions: () => ipcRenderer.invoke('desktop:computer:pause-actions'),
     resumeActions: () => ipcRenderer.invoke('desktop:computer:resume-actions'),
-    revokeActions: () => ipcRenderer.invoke('desktop:computer:revoke-actions'),
     stop: () => ipcRenderer.invoke('desktop:computer:stop'),
     openPermissionSettings: kind => ipcRenderer.invoke('desktop:computer:open-permission-settings', kind),
     onChanged(listener) {

@@ -48,7 +48,7 @@ import {
   parseDesktopWorktreeRecoveryPreviewInput,
   parseDesktopWorktreeHandoffConfirmInput,
   parseDesktopWorktreeHandoffPreflightInput,
-  parseSelectComputerTargetInput,
+  parseUpdateComputerControlPolicyInput,
   parseUpdateAppSnapshotSettingsInput,
   WorktreeSummary,
 } from '@dolphinminer/dsh-desktop-protocol'
@@ -60,6 +60,7 @@ import {
 } from './app-snapshots'
 import { ComputerCaptureStore, ComputerObserver } from './computer-observer'
 import { ComputerActionAuditStore } from './computer-action-audit'
+import { ComputerControlPolicyStore } from './computer-policy'
 import { AutomationController } from './automation-controller'
 import {
   AutomationDispatcher,
@@ -715,15 +716,11 @@ function installIpcHandlers(
     assertTrustedSender(event)
     return computer.refresh()
   })
-  ipcMain.handle('desktop:computer:select-target', async (event, value: unknown) => {
+  ipcMain.handle('desktop:computer:update-policy', (event, value: unknown) => {
     assertTrustedSender(event)
-    const input = parseSelectComputerTargetInput(value)
-    if (input === undefined) throw new Error('The computer target request is invalid.')
-    return computer.selectTarget(input.targetId)
-  })
-  ipcMain.handle('desktop:computer:grant-pending-actions', event => {
-    assertTrustedSender(event)
-    return computer.grantPendingActions()
+    const input = parseUpdateComputerControlPolicyInput(value)
+    if (input === undefined) throw new Error('The Computer Control policy request is invalid.')
+    return computer.updatePolicy(input)
   })
   ipcMain.handle('desktop:computer:pause-actions', event => {
     assertTrustedSender(event)
@@ -732,10 +729,6 @@ function installIpcHandlers(
   ipcMain.handle('desktop:computer:resume-actions', event => {
     assertTrustedSender(event)
     return computer.resumeActions()
-  })
-  ipcMain.handle('desktop:computer:revoke-actions', event => {
-    assertTrustedSender(event)
-    return computer.revokeActions()
   })
   ipcMain.handle('desktop:computer:stop', async event => {
     assertTrustedSender(event)
@@ -971,6 +964,10 @@ app.whenReady().then(async () => {
     new ComputerCaptureStore(join(app.getPath('temp'), 'com.dolphinminer.dsh-desktop', 'computer-captures')),
     {
       audit: new ComputerActionAuditStore(join(desktopDataPath, 'computer-actions.v1.json')),
+      policyStore: new ComputerControlPolicyStore(
+        join(desktopDataPath, 'computer-control-policy.v1.json'),
+        error => console.error('Could not load Computer Control policy.', error),
+      ),
       onChange: snapshot => {
         if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('desktop:computer-changed', snapshot)
@@ -978,7 +975,7 @@ app.whenReady().then(async () => {
       },
     },
   )
-  await computerObserver.stop()
+  await computerObserver.stop(false)
 
   const gitService = new GitService()
   const gitTurnAttributions = new GitTurnAttributionService(
@@ -1360,7 +1357,7 @@ app.whenReady().then(async () => {
     computer: {
       getPermissions: signal => computerObserver!.getPermissions(signal),
       listApplications: signal => computerObserver!.listApplications(signal),
-      observe: (sessionId, signal) => computerObserver!.observe(sessionId, signal),
+      observe: (params, signal) => computerObserver!.observe(params.sessionId, params.application, signal),
       act: (params, signal) => {
         assertActiveSession(params.sessionId, signal)
         return computerObserver!.act(params, signal)
@@ -1398,7 +1395,7 @@ app.whenReady().then(async () => {
     onDisconnect: () => {
       activityTracker.clear()
       connections.hostDisconnected()
-      void computerObserver?.stop().catch(() => undefined)
+      void computerObserver?.stop(false).catch(() => undefined)
       try {
         const recovered = automationDispatcher.recoverAbandonedRuns()
         if (recovered.length > 0) {

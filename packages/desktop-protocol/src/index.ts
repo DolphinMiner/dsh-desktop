@@ -77,7 +77,7 @@ export * from './worktree-cleanup.js'
 export * from './worktree-handoff.js'
 export * from './worktree-recovery.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 20 as const
+export const DESKTOP_PROTOCOL_VERSION = 21 as const
 
 export type ConnectionProvider = 'linear'
 export type ConnectionAccess = 'read-only' | 'read-write'
@@ -418,6 +418,7 @@ const MAX_TOKEN_LENGTH = 32_768
 const MAX_LABEL_LENGTH = 160
 const MAX_STATUS_MESSAGE_LENGTH = 1_000
 const MAX_LIST_ITEMS = 1_000
+const MAX_APPLICATION_REFERENCE_LENGTH = 512
 
 const ERROR_CODES: readonly DesktopProtocolError['code'][] = [
   'AUTH_EXPIRED', 'BAD_MESSAGE', 'CANCELLED', 'CONFLICT', 'DESKTOP_UNAVAILABLE', 'DUPLICATE_REQUEST',
@@ -719,9 +720,13 @@ export function parseCapabilityParams<M extends DesktopCapabilityMethod>(
     return Object.keys(value).length === 0 ? {} as DesktopCapabilityParams<M> : undefined
   }
   if (method === 'computer.observe') {
-    return isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH)
-      ? { sessionId: value.sessionId } as DesktopCapabilityParams<M>
-      : undefined
+    if (!isBoundedString(value.sessionId, MAX_SESSION_ID_LENGTH) ||
+      (value.application !== undefined && !isBoundedString(value.application, MAX_APPLICATION_REFERENCE_LENGTH)) ||
+      !Object.keys(value).every(key => key === 'sessionId' || key === 'application')) return undefined
+    return {
+      sessionId: value.sessionId,
+      ...(value.application === undefined ? {} : { application: value.application }),
+    } as DesktopCapabilityParams<M>
   }
   if (method === 'computer.act') {
     return parseComputerActParams(value) as DesktopCapabilityParams<M> | undefined

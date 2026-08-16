@@ -10,12 +10,9 @@ import {
   IconCloseOutline16,
   IconDownloadOutline16,
   IconLinkOutline16,
-  IconPauseOutline16,
-  IconPlayOutline16,
   IconPlusOutline16,
   IconRefreshOutline16,
   IconRightUpOutline16,
-  IconStopFill16,
   IconTrashOutline16,
   Input,
   Modal,
@@ -32,9 +29,6 @@ import type {
   ConnectionAccess,
   ConnectionSnapshot,
   ConnectionSummary,
-  ComputerControlSnapshot,
-  ComputerPermissionStatus,
-  ComputerTargetKind,
   DisconnectConnectionInput,
   DesktopRendererCommand,
   DesktopWorktreeCleanupConfirmInput,
@@ -43,7 +37,6 @@ import type {
   DesktopWorktreeRecoveryPreviewInput,
   DesktopWorktreeHandoffConfirmInput,
   DesktopWorktreeHandoffPreflightInput,
-  SelectComputerTargetInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,
   WorktreeRecoveryPreview,
@@ -58,10 +51,6 @@ import type {
 
 import {
   canReconnect,
-  computerActionStateDot,
-  computerActionStatusLabel,
-  computerPermissionLabel,
-  computerTargetGroupLabel,
   connectionStateDot,
   connectionStatusLabel,
 } from './view-model.js'
@@ -72,6 +61,7 @@ import {
   installAppSnapshotDelivery,
 } from './app-snapshots.js'
 import { runDesktopCommand } from './desktop-command.js'
+import { ComputerControlSection, type DesktopComputerBridge } from './computer-control.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
 
@@ -88,19 +78,6 @@ interface DesktopConnectionsBridge {
   cancelOAuth(input: CancelOAuthInput): Promise<void>
   onChanged(listener: (snapshot: ConnectionSnapshot) => void): () => void
   onOAuthResult(listener: (result: OAuthResultNotice) => void): () => void
-}
-
-interface DesktopComputerBridge {
-  getState(): Promise<ComputerControlSnapshot>
-  refresh(): Promise<ComputerControlSnapshot>
-  selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
-  grantPendingActions(): Promise<ComputerControlSnapshot>
-  pauseActions(): Promise<ComputerControlSnapshot>
-  resumeActions(): Promise<ComputerControlSnapshot>
-  revokeActions(): Promise<ComputerControlSnapshot>
-  stop(): Promise<ComputerControlSnapshot>
-  openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
-  onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
 }
 
 interface DesktopWorktreesBridge {
@@ -217,75 +194,6 @@ const styles: Record<string, CSSProperties> = {
     overflowWrap: 'anywhere',
   },
   confirm: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
-  permissionList: { borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)', marginBottom: 22 },
-  permissionRow: {
-    alignItems: 'center',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    display: 'grid',
-    gap: 12,
-    gridTemplateColumns: 'minmax(0, 1fr) auto 32px',
-    minHeight: 52,
-  },
-  permissionName: { fontSize: 13, fontWeight: 600 },
-  select: {
-    appearance: 'auto',
-    background: 'var(--dsw-alias-bg-layer-1, #f7f7f5)',
-    border: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    borderRadius: 4,
-    boxSizing: 'border-box',
-    color: 'inherit',
-    font: 'inherit',
-    minHeight: 36,
-    padding: '6px 10px',
-    width: '100%',
-  },
-  computerStatus: {
-    alignItems: 'center',
-    borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10,
-    justifyContent: 'space-between',
-    marginTop: 20,
-    paddingTop: 16,
-  },
-  computerSection: {
-    borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    display: 'grid',
-    gap: 12,
-    marginTop: 20,
-    paddingTop: 16,
-  },
-  computerSectionHeader: {
-    alignItems: 'center',
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10,
-    justifyContent: 'space-between',
-  },
-  computerSectionTitle: { fontSize: 13, fontWeight: 650, lineHeight: '20px', margin: 0 },
-  computerActions: { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 },
-  grantNotice: {
-    alignItems: 'center',
-    background: 'var(--dsw-alias-state-warning-secondary, #fff6df)',
-    borderRadius: 4,
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 12,
-    justifyContent: 'space-between',
-    padding: '12px 14px',
-  },
-  computerRecordList: { borderTop: '1px solid var(--dsw-alias-border-l2, #deded9)' },
-  computerRecord: {
-    alignItems: 'center',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #deded9)',
-    display: 'grid',
-    gap: 12,
-    gridTemplateColumns: 'minmax(0, 1fr) auto',
-    minHeight: 48,
-    padding: '6px 0',
-  },
-  computerRecordIdentity: { display: 'grid', gap: 1, minWidth: 0 },
   worktreeDetails: {
     display: 'grid',
     gap: 10,
@@ -1624,336 +1532,6 @@ function WorktreesSection(): React.JSX.Element {
   )
 }
 
-function PermissionRow({
-  label,
-  status,
-  kind,
-  bridge,
-}: {
-  label: string
-  status: ComputerPermissionStatus
-  kind: 'screen-recording' | 'accessibility'
-  bridge: DesktopComputerBridge
-}): React.JSX.Element {
-  return (
-    <div style={styles.permissionRow}>
-      <span style={styles.permissionName}>{label}</span>
-      <span style={styles.status}>
-        <StateDot state={status === 'granted' ? 'done' : status === 'unavailable' ? 'warning' : 'error'} />
-        {computerPermissionLabel(status)}
-      </span>
-      {status !== 'granted' && status !== 'unavailable' ? (
-        <Button
-          size="sm"
-          variant="toolbar"
-          icon={<IconRightUpOutline16 />}
-          aria-label={`Open ${label} settings`}
-          title={`Open ${label} settings`}
-          onClick={() => void bridge.openPermissionSettings(kind)}
-        />
-      ) : <span />}
-    </div>
-  )
-}
-
-function ComputerSection(): React.JSX.Element {
-  const bridge = window.dshDesktop?.computer
-  const [snapshot, setSnapshot] = useState<ComputerControlSnapshot>()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
-
-  const refresh = async (): Promise<void> => {
-    if (bridge === undefined) {
-      setError('The desktop computer bridge is unavailable.')
-      setLoading(false)
-      return
-    }
-    try {
-      setSnapshot(await bridge.refresh())
-      setError(undefined)
-    } catch (cause) {
-      setError(errorMessage(cause))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    void refresh()
-    if (bridge === undefined) return
-    return bridge.onChanged(next => {
-      setSnapshot(next)
-      setLoading(false)
-    })
-  }, [bridge])
-
-  const selectTarget = async (targetId: string): Promise<void> => {
-    if (bridge === undefined || targetId.length === 0) return
-    setLoading(true)
-    try {
-      setSnapshot(await bridge.selectTarget({ targetId }))
-      setError(undefined)
-    } catch (cause) {
-      setError(errorMessage(cause))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const stop = async (): Promise<void> => {
-    if (bridge === undefined) return
-    setLoading(true)
-    try {
-      setSnapshot(await bridge.stop())
-      setError(undefined)
-    } catch (cause) {
-      setError(errorMessage(cause))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const runActionControl = async (
-    operation: 'grant' | 'pause' | 'resume' | 'revoke',
-  ): Promise<void> => {
-    if (bridge === undefined) return
-    setLoading(true)
-    try {
-      const next = operation === 'grant'
-        ? await bridge.grantPendingActions()
-        : operation === 'pause'
-          ? await bridge.pauseActions()
-          : operation === 'resume'
-            ? await bridge.resumeActions()
-            : await bridge.revokeActions()
-      setSnapshot(next)
-      setError(undefined)
-    } catch (cause) {
-      setError(errorMessage(cause))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const groups: ComputerTargetKind[] = ['application', 'window', 'display']
-  const permissions = snapshot?.permissions
-  const grants = snapshot?.actionGrants ?? []
-  const pendingGrant = snapshot?.pendingActionGrant
-  const selectedForActions = snapshot?.selectedTarget !== undefined &&
-    snapshot.selectedTarget.kind !== 'display'
-  const actionState = snapshot?.acting === true
-    ? { dot: 'ongoing' as const, label: 'Acting' }
-    : snapshot?.auditAvailable === false
-      ? { dot: 'error' as const, label: 'Audit unavailable' }
-      : permissions?.canAct !== true
-        ? { dot: 'error' as const, label: 'Permission required' }
-        : !selectedForActions
-          ? { dot: 'warning' as const, label: 'Observation only' }
-          : snapshot?.actionsPaused !== false
-            ? { dot: 'warning' as const, label: 'Paused' }
-            : { dot: 'done' as const, label: 'Enabled' }
-  return (
-    <section style={styles.root} aria-labelledby="desktop-computer-heading">
-      <header style={styles.header}>
-        <h2 id="desktop-computer-heading" style={styles.heading}>Computer</h2>
-        <Button
-          size="sm"
-          variant="toolbar"
-          icon={<IconRefreshOutline16 />}
-          aria-label="Refresh computer targets"
-          title="Refresh computer targets"
-          disabled={loading}
-          onClick={() => void refresh()}
-        />
-      </header>
-
-      {permissions !== undefined && bridge !== undefined && (
-        <div style={styles.permissionList}>
-          <PermissionRow
-            label="Screen Recording"
-            status={permissions.screenRecording}
-            kind="screen-recording"
-            bridge={bridge}
-          />
-          <PermissionRow
-            label="Accessibility"
-            status={permissions.accessibility}
-            kind="accessibility"
-            bridge={bridge}
-          />
-        </div>
-      )}
-
-      <label style={styles.field}>
-        <span style={styles.label}>Observation target</span>
-        <select
-          style={styles.select}
-          value={snapshot?.selectedTarget?.id ?? ''}
-          disabled={loading || snapshot?.permissions.supported === false}
-          onChange={event => void selectTarget(event.currentTarget.value)}
-        >
-          <option value="" disabled>Select an application, window, or display</option>
-          {groups.map(kind => {
-            const targets = snapshot?.targets.filter(target => target.kind === kind) ?? []
-            return targets.length === 0 ? null : (
-              <optgroup key={kind} label={computerTargetGroupLabel(kind)}>
-                {targets.map(target => (
-                  <option key={target.id} value={target.id}>
-                    {target.applicationName === undefined ? target.name : `${target.applicationName} - ${target.name}`}
-                  </option>
-                ))}
-              </optgroup>
-            )
-          })}
-        </select>
-      </label>
-
-      {error !== undefined && (
-        <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-error-secondary, #fef0ef)' }}>
-          {error}
-        </div>
-      )}
-      {snapshot?.statusMessage !== undefined && error === undefined && (
-        <div role="status" style={styles.notice}>{snapshot.statusMessage}</div>
-      )}
-
-      <div style={styles.computerStatus}>
-        <span style={styles.metadata}>
-          {snapshot?.observing === true
-            ? 'Observing'
-            : snapshot?.acting === true
-              ? 'Performing approved action'
-            : snapshot?.lastObservation === undefined
-              ? snapshot?.enabled === true ? 'Ready' : 'Stopped'
-              : `Last observed ${new Date(snapshot.lastObservation.observedAt).toLocaleString()} / ` +
-                `${snapshot.lastObservation.elementCount} elements`}
-        </span>
-        {snapshot?.enabled === true && (
-          <Button
-            size="sm"
-            variant="outline"
-            icon={<IconStopFill16 />}
-            disabled={loading}
-            onClick={() => void stop()}
-          >
-            Stop
-          </Button>
-        )}
-      </div>
-
-      <div style={styles.computerSection}>
-        <div style={styles.computerSectionHeader}>
-          <h3 style={styles.computerSectionTitle}>Computer actions</h3>
-          <span style={styles.status}>
-            <StateDot state={actionState.dot} />
-            {actionState.label}
-          </span>
-        </div>
-
-        <div style={styles.computerActions}>
-          {grants.length > 0 && snapshot?.actionsPaused === false ? (
-            <Button
-              size="sm"
-              variant="outline"
-              icon={<IconPauseOutline16 />}
-              disabled={loading}
-              onClick={() => void runActionControl('pause')}
-            >
-              Pause
-            </Button>
-          ) : grants.length > 0 ? (
-            <Button
-              size="sm"
-              variant="outline"
-              icon={<IconPlayOutline16 />}
-              disabled={loading || permissions?.canAct !== true || snapshot?.auditAvailable !== true}
-              onClick={() => void runActionControl('resume')}
-            >
-              Resume
-            </Button>
-          ) : null}
-          {(grants.length > 0 || pendingGrant !== undefined) && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<IconTrashOutline16 />}
-              disabled={loading}
-              onClick={() => void runActionControl('revoke')}
-            >
-              Revoke
-            </Button>
-          )}
-        </div>
-
-        {snapshot?.auditAvailable === false && (
-          <div role="alert" style={{ ...styles.notice, background: 'var(--dsw-alias-state-error-secondary, #fef0ef)', marginBottom: 0 }}>
-            Action audit is unavailable. Computer actions are blocked.
-          </div>
-        )}
-
-        {pendingGrant !== undefined && (
-          <div style={styles.grantNotice}>
-            <div style={styles.computerRecordIdentity}>
-              <span style={styles.itemTitle}>{pendingGrant.application.name}</span>
-              <span style={styles.metadata}>Session {pendingGrant.sessionId}</span>
-            </div>
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<IconCheckOutline16 />}
-              disabled={loading || permissions?.canAct !== true || snapshot?.auditAvailable !== true}
-              onClick={() => void runActionControl('grant')}
-            >
-              Allow for this session
-            </Button>
-          </div>
-        )}
-
-        {grants.length === 0 && pendingGrant === undefined && (
-          <span style={styles.metadata}>No session grants</span>
-        )}
-        {grants.length > 0 && (
-          <div style={styles.computerRecordList}>
-            {grants.map(grant => (
-              <div key={`${grant.sessionId}:${grant.application.id}`} style={styles.computerRecord}>
-                <div style={styles.computerRecordIdentity}>
-                  <span style={styles.permissionName}>{grant.application.name}</span>
-                  <span style={styles.metadata}>Session {grant.sessionId}</span>
-                </div>
-                <span style={styles.metadata}>{new Date(grant.grantedAt).toLocaleTimeString()}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div style={styles.computerSection}>
-        <div style={styles.computerSectionHeader}>
-          <h3 style={styles.computerSectionTitle}>Recent actions</h3>
-          <span style={styles.metadata}>{snapshot?.recentActions.length ?? 0}</span>
-        </div>
-        {snapshot?.recentActions.length === 0 && <span style={styles.metadata}>No actions recorded</span>}
-        {snapshot !== undefined && snapshot.recentActions.length > 0 && (
-          <div style={styles.computerRecordList}>
-            {snapshot.recentActions.map(action => (
-              <div key={action.actionId} style={styles.computerRecord}>
-                <div style={styles.computerRecordIdentity}>
-                  <span style={styles.permissionName}>{action.kind} / {action.targetName}</span>
-                  <span style={styles.metadata}>{new Date(action.updatedAt).toLocaleString()}</span>
-                </div>
-                <span style={styles.status}>
-                  <StateDot state={computerActionStateDot(action.status)} />
-                  {computerActionStatusLabel(action.status)}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
 function AutomationsSection(): React.JSX.Element {
   const desktop = window.dshDesktop
   return (
@@ -2003,8 +1581,8 @@ export function apply(ctx: ClientContext): void {
     name: 'settings.section',
     id: 'computer',
     order: 13,
-    label: 'Computer',
-  }, ComputerSection))
+    label: 'Computer Control',
+  }, () => <ComputerControlSection bridge={bridge?.computer} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'worktrees',

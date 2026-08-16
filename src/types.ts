@@ -64,11 +64,9 @@ export interface DesktopBridge {
   computer: {
     getState(): Promise<ComputerControlSnapshot>
     refresh(): Promise<ComputerControlSnapshot>
-    selectTarget(input: SelectComputerTargetInput): Promise<ComputerControlSnapshot>
-    grantPendingActions(): Promise<ComputerControlSnapshot>
+    updatePolicy(input: UpdateComputerControlPolicyInput): Promise<ComputerControlSnapshot>
     pauseActions(): Promise<ComputerControlSnapshot>
     resumeActions(): Promise<ComputerControlSnapshot>
-    revokeActions(): Promise<ComputerControlSnapshot>
     stop(): Promise<ComputerControlSnapshot>
     openPermissionSettings(kind: 'screen-recording' | 'accessibility'): Promise<void>
     onChanged(listener: (snapshot: ComputerControlSnapshot) => void): () => void
@@ -143,7 +141,7 @@ import type {
   GitPushResult,
   GitRevertPreview,
   GitRevertResult,
-  SelectComputerTargetInput,
+  UpdateComputerControlPolicyInput,
   UpdateAppSnapshotSettingsInput,
   WorktreeCleanupPreview,
   WorktreeCleanupResult,

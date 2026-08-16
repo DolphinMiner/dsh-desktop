@@ -215,11 +215,16 @@ test('routes bounded computer observation and action capabilities', async () => 
             canObserve: true,
             canAct: false,
           },
+          policy: {
+            allowAnyApplication: false,
+            lockScreenOperations: false,
+            applicationRules: [],
+          },
           applications: [],
         }
       },
-      observe: async sessionId => {
-        calls.push(`observe:${sessionId}`)
+      observe: async params => {
+        calls.push(`observe:${params.sessionId}:${params.application ?? 'frontmost'}`)
         return observation
       },
       act: async params => {
@@ -244,7 +249,10 @@ test('routes bounded computer observation and action capabilities', async () => 
 
   assert.equal((await handlers['computer.getPermissions']({}, context)).canObserve, true)
   assert.deepEqual((await handlers['computer.listApps']({}, context)).applications, [])
-  assert.equal((await handlers['computer.observe']({ sessionId: 'session-1' }, context)).snapshotId, 'snapshot-1')
+  assert.equal((await handlers['computer.observe']({
+    sessionId: 'session-1',
+    application: 'Editor',
+  }, context)).snapshotId, 'snapshot-1')
   assert.equal((await handlers['computer.act']({
     actionId: '11111111-1111-4111-8111-111111111111',
     sessionId: 'session-1',
@@ -256,7 +264,7 @@ test('routes bounded computer observation and action capabilities', async () => 
       clickCount: 1,
     },
   }, context)).observation.snapshotId, 'snapshot-2')
-  assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1', 'act:session-1:click'])
+  assert.deepEqual(calls, ['permissions', 'applications', 'observe:session-1:Editor', 'act:session-1:click'])
 })
 
 test('routes workspace-bound Git discovery, status, and review with caller cancellation', async () => {
