@@ -163,10 +163,12 @@ let activitySnapshot: DesktopActivitySnapshot = { runningSessionIds: [], workspa
 function updateDesktopActivity(snapshot: DesktopActivitySnapshot): void {
   activitySnapshot = snapshot
   const count = snapshot.runningSessionIds.length
-  const title = count === 0
-    ? 'DSH Desktop'
-    : `DSH Desktop (${String(count)} ${count === 1 ? 'task' : 'tasks'} running)`
-  if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.setTitle(title)
+  if (process.platform !== 'darwin' && mainWindow !== undefined && !mainWindow.isDestroyed()) {
+    const title = count === 0
+      ? 'DSH Desktop'
+      : `DSH Desktop (${String(count)} ${count === 1 ? 'task' : 'tasks'} running)`
+    mainWindow.setTitle(title)
+  }
   if (process.platform === 'darwin') app.dock?.setBadge(count === 0 ? '' : String(count))
 }
 
@@ -446,7 +448,11 @@ function createWindow(restoredState?: PersistedWindowState): BrowserWindow {
     minHeight: 700,
     show: false,
     backgroundColor: '#f5f6f3',
-    title: 'DSH Desktop',
+    title: process.platform === 'darwin' ? '' : 'DSH Desktop',
+    ...(process.platform === 'darwin' ? {
+      titleBarStyle: 'hiddenInset' as const,
+      trafficLightPosition: { x: 16, y: 18 },
+    } : {}),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,

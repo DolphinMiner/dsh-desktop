@@ -84,6 +84,7 @@ import {
   type BrowserPanelToggleSlotProps,
 } from './browser-panel.js'
 import { BrowserPanelController } from './browser-panel-controller.js'
+import { DesktopTitlebar } from './desktop-shell.js'
 import { GitReviewView, type DesktopGitBridge } from './git-review.js'
 import { openOfficialSettings } from './settings-navigation.js'
 import { SettingsStyles, SettingsToggle } from './settings-ui.js'
@@ -2389,6 +2390,12 @@ export function apply(ctx: ClientContext): void {
     }), 'dsh-desktop: native command bridge')
     installAppSnapshotIntegration(ctx, bridge.appSnapshots)
   }
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'desktop-titlebar',
+    order: -100,
+    locale: DESKTOP_LOCALE_NAMESPACE,
+  }, props => <DesktopTitlebar {...props} layout={ctx.layout} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'snapshots',
