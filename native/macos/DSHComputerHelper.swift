@@ -927,6 +927,12 @@ private func emit<Value: Encodable>(_ response: Value) {
 @main
 private struct DSHComputerHelper {
     static func main() async {
+        // SCContentFilter(desktopIndependentWindow:) calls SLSGetDisplaysWithRect,
+        // which requires the CoreGraphics system (CGS) connection to be initialized.
+        // In a bare CLI process CGS is initialized lazily by the first CoreGraphics
+        // call, so forcing one here prevents the CGS_REQUIRE_INIT assertion (SIGABRT)
+        // when capturing window or application targets.
+        _ = CGMainDisplayID()
         var requestId = "unknown"
         do {
             let input = FileHandle.standardInput.readDataToEndOfFile()
