@@ -37,7 +37,7 @@
     "dist:mac": "npm run build && npm run prepare:electron-licenses && electron-builder --mac dmg zip --arm64"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.0-rc.6"
+    "@deepseek-ai/dsh": "0.1.0-rc.7"
   },
   "devDependencies": {
     "@types/node": "24.10.9",
